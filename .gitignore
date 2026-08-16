@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Models are fetched and hash-verified, never committed (spec 3)
+models/
+*.gguf
+*.onnx
+
+# Audio, transcripts, metrics and personal vocabulary stay local (spec 13.2)
+eval/data/
+eval/results/
+eval/audio/
+*.wav
+metrics.jsonl
+vocab.toml
