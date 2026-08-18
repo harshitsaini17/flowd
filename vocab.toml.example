@@ -1,0 +1,14 @@
+# Copy to $XDG_CONFIG_HOME/flowd/vocab.toml and edit.
+# Reload without restarting: flowctl reload
+
+[terms]
+# Canonical spellings, passed to the LLM as <vocab> (phase 3+).
+Hyprland = "Hyprland"
+PipeWire = "PipeWire"
+flowd = "flowd"
+
+[replace]
+# Fuzzy STT fixes, applied deterministically in basic_clean.
+"hyper land" = "Hyprland"
+"pipe wire" = "PipeWire"
+"flow d" = "flowd"
