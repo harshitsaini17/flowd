@@ -1,0 +1,11 @@
+{
+  "models": [
+    {
+      "name": "LFM2.5-350M-QAD-Q4_0.gguf",
+      "size_bytes": 219312832,
+      "sha256": "3d10b6ab8fc91a919534b9558e266255aca0bbc7f6d015963599aa9e74e05b1d",
+      "url": "https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-QAD-Q4_0.gguf",
+      "license": "LFM Open License"
+    }
+  ]
+}

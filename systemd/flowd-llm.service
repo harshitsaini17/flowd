@@ -1,0 +1,14 @@
+[Unit]
+Description=flowd cleanup LLM (llama-server, LFM2.5-350M)
+Documentation=https://github.com/harshitsaini17/flowd
+
+[Service]
+Type=simple
+Environment=FLOWD_MODEL=%h/.local/share/flowd/models/LFM2.5-350M-QAD-Q4_0.gguf
+ExecStart=/usr/bin/llama-server -m ${FLOWD_MODEL} -c 2048 --jinja \
+          --host 127.0.0.1 --port 8177 -t 4
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
