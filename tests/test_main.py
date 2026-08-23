@@ -125,3 +125,27 @@ def test_lock_path_points_at_the_repo_lockfile() -> None:
     """A missing lockfile downgrades to a warning, so the path must be right."""
     assert lock_path().name == "models.lock"
     assert lock_path().is_file(), "models.lock should exist in a source checkout"
+
+
+# --- version reporting -------------------------------------------------------
+
+
+def test_version_flag_prints_the_package_version(capsys: pytest.CaptureFixture[str]) -> None:
+    """`.github/ISSUE_TEMPLATE/bug_report.md` asks reporters to run this."""
+    import flowd
+
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["--version"])
+    assert exc.value.code == 0
+    assert flowd.__version__ in capsys.readouterr().out
+
+
+def test_reported_version_matches_the_package_metadata() -> None:
+    """A skew here makes every bug report name a version that was never released."""
+    import tomllib
+
+    import flowd
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+    assert flowd.__version__ == declared

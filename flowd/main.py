@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from flowd import __version__
 from flowd.audio import AudioCapture, load_wav
 from flowd.config import Config, data_dir, load_config, runtime_dir, state_dir
 from flowd.inject.base import InjectResult
@@ -144,6 +145,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="with --replay, run as fast as possible instead of real time",
     )
     parser.add_argument("--log-level", default=None, choices=["debug", "info", "warning", "error"])
+    # Bug reports ask for this, so it prints without touching config, the
+    # models or the socket: `--version` must answer on a machine where the
+    # thing being reported is that flowd will not start.
+    parser.add_argument("--version", action="version", version=f"flowd {__version__}")
     return parser
 
 
