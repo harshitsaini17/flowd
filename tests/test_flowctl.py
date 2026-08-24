@@ -129,13 +129,21 @@ def test_help_is_not_an_error(tmp_path: Path) -> None:
     assert "usage" in result.stdout.lower()
 
 
-def test_malformed_reply_is_reported(tmp_path: Path) -> None:
-    """A daemon mid-upgrade could answer with something that is not JSON."""
-    sock = tmp_path / "flowd.sock"
+def _run_against_raw_reply(raw: bytes, sock: Path) -> subprocess.CompletedProcess[str]:
+    """Answer one `status` request with bytes a real daemon would never send.
+
+    The fake reads the request line before replying, exactly as
+    `flowd.control.serve` does. An earlier version wrote and closed without
+    reading, which raced the client: when the close landed first, `sendall`
+    failed with EPIPE and the test saw "broken pipe" instead of the malformed
+    reply it meant to exercise. A fake that does not follow the protocol tests
+    the timing of the test rather than the behaviour of the client.
+    """
 
     async def scenario() -> subprocess.CompletedProcess[str]:
-        async def on_client(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-            writer.write(b"not json at all\n")
+        async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readline()
+            writer.write(raw)
             await writer.drain()
             writer.close()
 
@@ -146,7 +154,12 @@ def test_malformed_reply_is_reported(tmp_path: Path) -> None:
             server.close()
             await server.wait_closed()
 
-    result = asyncio.run(scenario())
+    return asyncio.run(scenario())
+
+
+def test_malformed_reply_is_reported(tmp_path: Path) -> None:
+    """A daemon mid-upgrade could answer with something that is not JSON."""
+    result = _run_against_raw_reply(b"not json at all\n", tmp_path / "flowd.sock")
     assert result.returncode != 0
     assert "malformed" in result.stderr.lower()
 
@@ -157,22 +170,7 @@ def test_reply_that_is_valid_json_but_not_an_object_is_reported(tmp_path: Path) 
     Without a type check that is an AttributeError traceback in the user's
     terminal on every hotkey press, rather than a diagnosable message.
     """
-    sock = tmp_path / "flowd.sock"
-
-    async def scenario() -> subprocess.CompletedProcess[str]:
-        async def on_client(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-            writer.write(b"123\n")
-            await writer.drain()
-            writer.close()
-
-        server = await asyncio.start_unix_server(on_client, path=str(sock))
-        try:
-            return await asyncio.to_thread(_run, ["status"], sock)
-        finally:
-            server.close()
-            await server.wait_closed()
-
-    result = asyncio.run(scenario())
+    result = _run_against_raw_reply(b"123\n", tmp_path / "flowd.sock")
     assert result.returncode != 0
     assert "malformed" in result.stderr.lower()
     assert "Traceback" not in result.stderr
