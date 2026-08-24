@@ -30,17 +30,23 @@ class SessionMetrics:
     _marks: dict[str, float] = field(default_factory=dict, init=False)
     _counts: Counter[str] = field(default_factory=Counter, init=False)
     _checks: Counter[int] = field(default_factory=Counter, init=False)
-    _origin: float | None = field(default=None, init=False)
+    _origin: float = field(default=0.0, init=False)
+
+    def __post_init__(self) -> None:
+        # The origin is fixed when the session begins, not at the first mark.
+        # Taking the first mark as the origin reported it as 0.0 ms however long
+        # that stage really took, and the first mark is `mic_open` — the stage
+        # with the tightest budget in spec 10.1 (`t_mic_open - t_cmd` <= 100 ms)
+        # and so the one whose budget most needs checking. The daemon builds this
+        # object as the command arrives, which is exactly that budget's `t_cmd`.
+        self._origin = self.clock()
 
     def has(self, stage: str) -> bool:
         """True once `stage` has been marked; lets callers mark a stage only once."""
         return stage in self._marks
 
     def mark(self, stage: str) -> None:
-        now = self.clock()
-        if self._origin is None:
-            self._origin = now
-        self._marks[stage] = (now - self._origin) * 1000.0
+        self._marks[stage] = (self.clock() - self._origin) * 1000.0
 
     def count(self, key: str, n: int = 1) -> None:
         self._counts[key] += n

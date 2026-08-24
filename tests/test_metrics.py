@@ -4,14 +4,28 @@ from pathlib import Path
 from flowd.metrics import SessionMetrics, read_records, summarise, write_record
 
 
-def test_marks_are_relative_and_monotonic() -> None:
+def test_marks_are_relative_to_the_session_start() -> None:
     clock = iter([100.0, 100.25, 100.9])
     m = SessionMetrics(session_id="s1", mode="default", clock=lambda: next(clock))
     m.mark("mic_open")
     m.mark("first_partial")
     record = m.to_record()
-    assert record["stages"]["mic_open_ms"] == 0.0
-    assert record["stages"]["first_partial_ms"] == 250.0
+    assert record["stages"]["mic_open_ms"] == 250.0
+    assert record["stages"]["first_partial_ms"] == 900.0
+
+
+def test_the_first_mark_is_measured_not_assumed_to_be_zero() -> None:
+    """spec 10.1's first row is `t_mic_open - t_cmd` with a 100 ms budget.
+
+    Taking the first mark as the origin reported that stage as 0.0 ms however
+    long the microphone actually took to open, so the stage with the tightest
+    budget in the spec was the one stage whose budget could never be checked —
+    and phase 1's acceptance criterion is that every stage is timed.
+    """
+    clock = iter([50.0, 50.4])
+    m = SessionMetrics(session_id="s1", mode="default", clock=lambda: next(clock))
+    m.mark("mic_open")
+    assert m.to_record()["stages"]["mic_open_ms"] == 400.0
 
 
 def test_record_excludes_transcript_by_default() -> None:

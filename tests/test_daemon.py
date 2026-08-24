@@ -250,6 +250,27 @@ async def test_mic_open_is_timed() -> None:
     assert "inject_ms" in d.last_record["stages"]
 
 
+async def test_the_release_instant_is_marked() -> None:
+    """Two of spec 10.1's budgets are measured from release, not from the hotkey.
+
+    "Release → last chunk committed" (<= 300 ms) and "release → text injected"
+    (p50 <= 600 ms) are both deltas from the moment the speaker stopped. Every
+    mark is relative to the start of the session, so without a mark at release
+    neither delta exists — including the end-to-end budget that is the headline
+    number for the whole product. A session's recorded length would otherwise be
+    indistinguishable from its latency.
+    """
+    d = daemon(FakeSttEngine([[Committed("some words to finalize")]]))
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    stages = d.last_record["stages"]
+    assert "released_ms" in stages
+    # Release comes after the microphone opened and before the text was injected,
+    # so both budget subtractions land the right way round.
+    assert stages["mic_open_ms"] <= stages["released_ms"] <= stages["inject_ms"]
+
+
 async def test_capture_is_released_on_cancel() -> None:
     capture = FakeCapture()
     d = daemon(FakeSttEngine([]), capture=capture)
@@ -336,3 +357,35 @@ async def test_max_duration_finalizes_the_session() -> None:
     await d._check_max_duration()
     assert injected == ["Ran out of time."]
     assert (await d.handle({"cmd": "status"}))["state"] == "idle"
+
+
+async def test_cancelled_session_is_still_logged() -> None:
+    """spec 10.2: one line per session, and a cancelled session is a session.
+
+    Dropping the record loses the only signal that says how often dictation is
+    abandoned — the symptom of a misfiring hotkey or a microphone that opens
+    slowly — and `flowctl stats` would report a clean history of a tool nobody
+    could actually use.
+    """
+    d = daemon(FakeSttEngine([[Committed("never mind")]]))
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "cancel"})
+    assert d.last_record.get("errors") == ["cancelled"]
+    assert "mic_open_ms" in d.last_record["stages"]
+
+
+async def test_cancelling_keeps_the_previous_text_for_flowctl_last() -> None:
+    """spec 5.7: cancel discards this session, it does not erase the last one."""
+    d = daemon(FakeSttEngine([[Committed("keep this one")]]))
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    # A fresh engine for the second session: `FakeSttEngine.finalize` drains
+    # every remaining script entry, so one engine cannot serve two sessions —
+    # the first session's stop would swallow the second session's lines.
+    d.stt = FakeSttEngine([[Committed("drop this one")]])
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "cancel"})
+    assert (await d.handle({"cmd": "last"}))["text"] == "Keep this one."
