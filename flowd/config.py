@@ -65,9 +65,22 @@ class Audio:
 
 @dataclass(frozen=True, slots=True)
 class Vad:
+    # Inert since ADR 0002: with Moonshine's own segmentation supplying the
+    # speech signal there is no model of ours to threshold. It is still
+    # accepted, because `_build` rejects unknown keys and a config written
+    # from spec 8's published `[vad]` block would otherwise stop flowd from
+    # starting. ADR 0002 records both facts.
     threshold: float = 0.5
     commit_silence_ms: int = 350
     tail_ms: int = 150
+    # How far the transcript frontier may trail the audio already fed before
+    # the gap counts as silence rather than transcription lag. Swept against a
+    # real 44s stream on the reference machine (ADR 0002): per-event lag runs
+    # p50 -80 ms, p90 180 ms, max 576 ms, and at 500 ms six stretches of
+    # continuously loud audio still accrued enough silence to commit mid-phrase.
+    # At 900 ms only the clip's two genuine pauses did. Raising this delays a
+    # commit; lowering it invents pauses, which is the worse failure.
+    lag_allowance_ms: int = 900
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +182,7 @@ _POSITIVE_INT = {
     "max_session_s",
     "commit_silence_ms",
     "tail_ms",
+    "lag_allowance_ms",
     "max_uncommitted_words",
     "min_chunk_words",
     "max_chunk_words",
