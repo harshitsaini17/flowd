@@ -8,6 +8,7 @@ import dataclasses
 import logging
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -58,17 +59,28 @@ def _verify_or_exit(cfg: Config) -> None:
 class _ReplayCapture:
     """Feeds a WAV through the real pipeline (spec 11.2)."""
 
-    def __init__(self, pcm: np.ndarray, block: int, sample_rate: int, realtime: bool) -> None:
+    def __init__(
+        self,
+        pcm: np.ndarray,
+        block: int,
+        sample_rate: int,
+        realtime: bool,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._pcm = pcm
         self._block = block
         self._sample_rate = sample_rate
         self._realtime = realtime
+        self._clock = clock
+        self._sleep = sleep
         self._pos = 0
-        self._last = time.monotonic()
+        self._started_at = clock()
 
     def start(self) -> None:
         self._pos = 0
-        self._last = time.monotonic()
+        self._started_at = self._clock()
 
     def stop(self) -> None:
         pass
@@ -76,15 +88,21 @@ class _ReplayCapture:
     def read(self) -> np.ndarray:
         if self._pos >= len(self._pcm):
             return np.empty(0, dtype=np.float32)
+        chunk = self._pcm[self._pos : self._pos + self._block]
         if self._realtime:
             # Pace playback at the configured rate so measured latencies mean
             # something. `--fast` skips this.
-            due = self._last + self._block / self._sample_rate
-            now = time.monotonic()
+            #
+            # The deadline is absolute — start plus the audio delivered so far —
+            # not "a block after the previous wait". A microphone keeps its own
+            # schedule, and Moonshine decodes in bursts: a relative deadline adds
+            # every burst that outran a block to the clip instead of catching up
+            # on the cheap blocks after it, so a 12 s clip took 16 s and every
+            # latency reported was inflated by however slow the machine was.
+            due = self._started_at + (self._pos + len(chunk)) / self._sample_rate
+            now = self._clock()
             if now < due:
-                time.sleep(due - now)
-            self._last = time.monotonic()
-        chunk = self._pcm[self._pos : self._pos + self._block]
+                self._sleep(due - now)
         self._pos += self._block
         return chunk
 
@@ -115,7 +133,13 @@ async def _replay(cfg: Config, path: Path, fast: bool) -> int:
     capture = _ReplayCapture(pcm, block, cfg.audio.sample_rate, realtime=not fast)
     # The capture rate must reach the engine: Moonshine resamples from whatever
     # rate it is told, so a wrong value transcribes as gibberish (ADR 0001).
-    engine = load_engine(cfg.stt, data_dir() / "models", cfg.audio.sample_rate)
+    engine = load_engine(
+        cfg.stt,
+        data_dir() / "models",
+        cfg.audio.sample_rate,
+        vad_cfg=cfg.vad,
+        block_ms=cfg.audio.block_ms,
+    )
 
     def no_inject(text: str, inject_cfg: Any, **kwargs: Any) -> InjectResult:
         return InjectResult(ok=True, backend="replay")
@@ -167,7 +191,13 @@ def main(argv: list[str] | None = None) -> int:
     from flowd.control import AlreadyRunning
     from flowd.daemon import Daemon
 
-    engine = load_engine(cfg.stt, data_dir() / "models", cfg.audio.sample_rate)
+    engine = load_engine(
+        cfg.stt,
+        data_dir() / "models",
+        cfg.audio.sample_rate,
+        vad_cfg=cfg.vad,
+        block_ms=cfg.audio.block_ms,
+    )
     capture = AudioCapture(cfg.audio)
     state_dir().mkdir(parents=True, exist_ok=True)
     daemon = Daemon(cfg=cfg, stt=engine, capture=capture)
