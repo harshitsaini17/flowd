@@ -24,16 +24,27 @@ X11_TEXT_TARGETS = b"TIMESTAMP\nTARGETS\nMULTIPLE\nSTRING\nUTF8_STRING\ntext/pla
 class Recorder:
     """Captures subprocess invocations instead of running them."""
 
-    def __init__(self, *, types: bytes = WAYLAND_TEXT_TYPES) -> None:
+    def __init__(
+        self,
+        *,
+        types: bytes = WAYLAND_TEXT_TYPES,
+        fail_on: Callable[[list[str]], bool] | None = None,
+    ) -> None:
         self.calls: list[list[str]] = []
         self.kwargs: list[dict[str, Any]] = []
         self.stdins: list[bytes | None] = []
         self._types = types
+        self._fail_on = fail_on
 
     def run(self, argv: list[str], **kwargs: Any) -> Any:
         self.calls.append(list(argv))
         self.kwargs.append(dict(kwargs))
         self.stdins.append(kwargs.get("input"))
+        # Recorded before raising, so a test can assert what was attempted as
+        # well as what came back. A recorder that can never fail would leave
+        # every cleanup path in `inject` untested.
+        if self._fail_on is not None and self._fail_on(argv):
+            raise FileNotFoundError(f"{argv[0]} not installed")
         listing = "--list-types" in argv or "TARGETS" in argv
         stdout = self._types if listing else b"previous clipboard"
 
@@ -60,6 +71,18 @@ class Recorder:
         return [
             stdin for argv, stdin in zip(self.calls, self.stdins, strict=True) if predicate(argv)
         ]
+
+
+def clipboard_writes(rec: Recorder, *, wayland: bool) -> list[bytes | None]:
+    """Stdin of every call that *writes* the clipboard, in call order.
+
+    Identified by flags, not by tool name: `xclip` reads with `-o` and writes
+    with `-i`, so matching on `argv[0]` alone picks up the snapshot read as well
+    and the assertion drifts by one.
+    """
+    if wayland:
+        return rec.stdins_where(lambda argv: argv[0] == "wl-copy")
+    return rec.stdins_where(lambda argv: argv[0] == "xclip" and "-i" in argv)
 
 
 def wayland_clipboard(rec: Recorder, **kw: Any) -> ClipboardBackend:
@@ -158,6 +181,46 @@ def test_clipboard_restores_previous_text_on_x11() -> None:
     assert written == [b"new", b"previous clipboard"], "set the text, then restore the snapshot"
 
 
+@pytest.mark.parametrize(("wayland", "paste_tool"), [(True, "wtype"), (False, "xdotool")])
+def test_clipboard_is_restored_when_the_paste_keystroke_fails(
+    wayland: bool, paste_tool: str
+) -> None:
+    """The snapshot must come back even when the paste step raises.
+
+    This is the case where restore matters most and the only one where it can
+    be skipped: the dictated text is already on the clipboard by then, so an
+    exception between setting and restoring leaves the user's clipboard
+    holding our text permanently. `inject_text` catches the exception and falls
+    through to a typing backend, so the user still gets their text and never
+    learns their clipboard was eaten (spec 5.7 step 4, spec 14.2).
+    """
+    rec = Recorder(
+        types=WAYLAND_TEXT_TYPES if wayland else X11_TEXT_TARGETS,
+        fail_on=lambda argv: argv[0] == paste_tool,
+    )
+    backend = (wayland_clipboard if wayland else x11_clipboard)(rec)
+    with pytest.raises(FileNotFoundError):
+        backend.inject("new", is_terminal=False)
+    written = clipboard_writes(rec, wayland=wayland)
+    assert written == [b"new", b"previous clipboard"], "clipboard left holding the dictated text"
+
+
+def test_clipboard_declines_when_the_paste_tool_is_missing() -> None:
+    """`available()` must check the tool that sends the keystroke, not only the
+    one that writes the clipboard.
+
+    On Wayland the two are different packages: `wl-copy` ships in
+    `wl-clipboard` and the keystroke needs `wtype`. Claiming availability with
+    `wtype` absent spends this backend's turn in `inject.order` and touches the
+    user's clipboard for a paste that cannot happen — which is exactly what the
+    comment in `available()` already says it exists to avoid.
+    """
+    rec = Recorder()
+    backend = wayland_clipboard(rec, have=lambda tool: tool == "wl-copy")
+    assert backend.available() is False, "claimed available without the paste tool"
+    assert rec.calls == [], "touched the clipboard while merely reporting availability"
+
+
 def test_x11_selection_targets_are_recognised_as_text() -> None:
     """`xclip -t TARGETS -o` lists atoms like TIMESTAMP, TARGETS and MULTIPLE.
 
@@ -224,16 +287,27 @@ def test_non_terminal_paste_has_no_shift() -> None:
 
 
 def test_clipboard_availability_follows_the_session_type() -> None:
-    """On Wayland, xclip alone is not enough: the backend runs wl-paste.
+    """The session type decides which tools are needed, and pasting needs two.
 
-    Reporting available and then calling a tool that is not installed would
-    burn the clipboard backend's turn in `inject.order` on a FileNotFoundError.
+    On Wayland, xclip alone is not enough: the backend runs wl-copy and wtype.
+    Reporting available and then calling a tool that is not installed would burn
+    the clipboard backend's turn in `inject.order` on a FileNotFoundError — and
+    for the keystroke half it would do so *after* overwriting the clipboard.
     """
     rec = Recorder()
-    only: Callable[[str], Callable[[str], bool]] = lambda want: lambda tool: tool == want  # noqa: E731
-    assert x11_clipboard(rec, have=only("xclip")).available() is True
-    assert wayland_clipboard(rec, have=only("xclip")).available() is False
-    assert wayland_clipboard(rec, have=only("wl-copy")).available() is True
+
+    def having(*tools: str) -> Callable[[str], bool]:
+        return lambda tool: tool in tools
+
+    assert x11_clipboard(rec, have=having("xclip", "xdotool")).available() is True
+    assert wayland_clipboard(rec, have=having("wl-copy", "wtype")).available() is True
+    # The other session's tools, however completely installed.
+    assert wayland_clipboard(rec, have=having("xclip", "xdotool")).available() is False
+    assert x11_clipboard(rec, have=having("wl-copy", "wtype")).available() is False
+    # Half-installed: the clipboard tool present, the keystroke tool absent.
+    assert wayland_clipboard(rec, have=having("wl-copy")).available() is False
+    assert x11_clipboard(rec, have=having("xclip")).available() is False
+    assert rec.calls == [], "availability must not touch the clipboard"
 
 
 # --- Ordered fallthrough ----------------------------------------------------

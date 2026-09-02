@@ -71,7 +71,18 @@ class ClipboardBackend:
         # Checked per session type, not "either tool": reporting available and
         # then invoking a tool that is not installed would spend this backend's
         # turn in `inject.order` on a FileNotFoundError.
-        return self._have("wl-copy") if self._wayland else self._have("xclip")
+        #
+        # Both tools, because pasting takes two of them and on Wayland they are
+        # separate packages: `wl-copy` from wl-clipboard writes the clipboard,
+        # `wtype` sends the keystroke. With only the first installed this
+        # backend would set the clipboard for a paste that cannot happen, and
+        # while `inject` now restores the snapshot either way, declining the
+        # turn is better than touching the user's clipboard to no purpose.
+        return all(self._have(tool) for tool in self._required_tools())
+
+    def _required_tools(self) -> tuple[str, str]:
+        """(clipboard tool, paste-keystroke tool) for this session type."""
+        return ("wl-copy", "wtype") if self._wayland else ("xclip", "xdotool")
 
     def _tools(self) -> tuple[list[str], list[str], list[str]]:
         """Return (list-types, paste, copy) argv prefixes for this session type."""
@@ -126,12 +137,25 @@ class ClipboardBackend:
             except Exception as exc:
                 log.debug("could not snapshot clipboard: %s", exc)
 
-        self._set_clipboard(copy, text.encode("utf-8"))
-        self._send_paste(is_terminal)
-        self._sleep(self._restore_delay_s)
-
-        if saved is not None:
-            try:
-                self._set_clipboard(copy, saved)
-            except Exception as exc:
-                log.warning("could not restore clipboard: %s", exc)
+        # `finally`, because everything from here on can raise and the snapshot
+        # must go back regardless: once our text is on the clipboard, an
+        # exception on the way out would leave it there permanently. Injection
+        # then falls through to a typing backend, so the user gets their text
+        # and never learns their clipboard was overwritten (spec 5.7 step 4).
+        #
+        # The set is inside the `try` rather than above it: if the copy tool can
+        # ever fail *after* changing the clipboard, excluding it costs the user
+        # their clipboard, while including it costs one misleading log line when
+        # the tool was never able to run at all.
+        try:
+            self._set_clipboard(copy, text.encode("utf-8"))
+            self._send_paste(is_terminal)
+            # Only reached when the paste succeeded: the delay exists to let the
+            # target read the clipboard, and nothing will read it otherwise.
+            self._sleep(self._restore_delay_s)
+        finally:
+            if saved is not None:
+                try:
+                    self._set_clipboard(copy, saved)
+                except Exception as exc:
+                    log.warning("could not restore clipboard: %s", exc)
