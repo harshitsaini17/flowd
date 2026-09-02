@@ -38,6 +38,7 @@ class Capture(Protocol):
 class OverlayLike(Protocol):
     def show(self) -> None: ...
     def hide(self) -> None: ...
+    def fade(self) -> None: ...
     def render(self, **zones: str) -> None: ...
     def stop(self) -> None: ...
 
@@ -174,11 +175,23 @@ class Daemon:
         self._render()
 
     def _render(self) -> None:
+        """Paint the three preview zones (spec 6.1).
+
+        A chunk moves from pending to polished when it resolves. Phase 2 has no
+        LLM and resolves nothing, so in practice the polished zone stays empty
+        and everything shows dimmed until phase 3 fills it; the split is written
+        here rather than later because this is the code that owns it.
+
+        `Chunk.resolved` rather than a list of state names: the states that count
+        as finished are session.py's to define, and a second copy of that list
+        here would be one to forget when it changes.
+        """
         if self.overlay is None or self.session is None:
             return
-        # Phase 1 has no LLM: every chunk shows as pending until the final join.
-        pending = " ".join(c.raw for c in self.session.visible_chunks())
-        self.overlay.render(polished="", pending=pending, live=self.session.live_partial)
+        visible = self.session.visible_chunks()
+        polished = " ".join(c.text for c in visible if c.resolved)
+        pending = " ".join(c.raw for c in visible if not c.resolved)
+        self.overlay.render(polished=polished, pending=pending, live=self.session.live_partial)
 
     async def _finalize(self) -> dict[str, Any]:
         assert self.session is not None and self.metrics is not None
@@ -264,7 +277,12 @@ class Daemon:
             except OSError as exc:
                 log.warning("could not write metrics: %s", exc)
         if self.overlay is not None:
-            self.overlay.hide()
+            # A successful dictation fades, so the user sees what landed in the
+            # window; one with nothing to show goes at once (spec 6.1).
+            if text:
+                self.overlay.fade()
+            else:
+                self.overlay.hide()
         self.session = None
         self.metrics = None
 
@@ -295,6 +313,11 @@ class Daemon:
         finally:
             server.close()
             await server.wait_closed()
+            # The overlay is our child (spec 9.5). It does exit when its stdin
+            # closes, but only once it notices; telling it to quit means the
+            # daemon does not leave a stale preview over the user's work.
+            if self.overlay is not None:
+                self.overlay.stop()
 
     async def _check_max_duration(self) -> None:
         if self.session is None or self.machine.state is not State.RECORDING:

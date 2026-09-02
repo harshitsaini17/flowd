@@ -158,6 +158,8 @@ prefers that to a preview that eats the user's keystrokes.
   `gtk_layer_init_for_window` returning without error as proof that a window is
   a layer surface. It is not, and the difference is a focus-stealing overlay.
 - **Testing (11).** The focus property itself needs a compositor and a focused
-  client, so it stays a manual `hyprctl` check, scripted for repeatability and
-  evidenced above. What CI can hold is the layered-state assertion and its
-  negative twin: the fallback path must produce no ready line.
+  client, so it stays a manual `hyprctl` check, evidenced above and scripted for
+  repeatability as `scripts/check_overlay_focus.py`, which drives the real child
+  through `OverlayProcess` and asks the compositor after each step. What CI can
+  hold is the layered-state assertion and its negative twin: the fallback path
+  must produce no ready line.

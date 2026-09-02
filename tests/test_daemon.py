@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import json
 from pathlib import Path
 from typing import Any
@@ -60,19 +62,27 @@ class FakeCapture:
 class FakeOverlay:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
+        self.calls: list[str] = []
         self.visible = False
+        self.stopped = False
 
     def show(self) -> None:
         self.visible = True
+        self.calls.append("show")
 
     def hide(self) -> None:
         self.visible = False
+        self.calls.append("hide")
+
+    def fade(self) -> None:
+        self.visible = False
+        self.calls.append("fade")
 
     def render(self, **zones: str) -> None:
         self.messages.append(dict(zones))
 
     def stop(self) -> None:
-        pass
+        self.stopped = True
 
 
 def daemon(
@@ -311,6 +321,80 @@ async def test_overlay_hidden_after_session() -> None:
     overlay = d.overlay
     assert isinstance(overlay, FakeOverlay)
     assert overlay.visible is False
+
+
+async def test_overlay_child_is_stopped_when_the_daemon_exits(tmp_path: Path) -> None:
+    """The overlay is a child process (spec 9.5), so somebody has to reap it.
+
+    It does exit on its own when stdin closes, but only once it notices. A daemon
+    that owns a `stop()` and does not call it leaves a GTK process holding a
+    layer surface for as long as the compositor lets it — a preview from a
+    session that ended, on top of the user's work.
+    """
+    d = daemon(FakeSttEngine([]))
+    socket_path = tmp_path / "flowd.sock"
+    task = asyncio.create_task(d.run(socket_path))
+    for _ in range(100):  # wait for the run loop to be up, without a fixed sleep
+        if socket_path.exists():
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    assert overlay.stopped is True
+
+
+async def test_resolved_chunks_render_in_the_polished_zone() -> None:
+    """The three zones split by chunk state (spec 6.1): a resolved chunk shows as
+    polished, an unresolved one as pending.
+
+    Phase 2 has no LLM and so never resolves a chunk, which is why this sets the
+    state directly. The split is phase 3's contract, pinned here because
+    `_render` is the code that has to honour it, and a `_render` that ignores
+    state would otherwise pass every phase 2 test.
+    """
+    d = daemon(
+        FakeSttEngine([[Committed("first chunk here")], [Committed("second chunk here")]]),
+        capture=FakeCapture([np.zeros(1600, dtype=np.float32) for _ in range(2)]),
+    )
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    assert d.session is not None
+    d.session.chunks[0].polished = "First chunk here."
+    d.session.chunks[0].state = "DONE"
+    await d.pump()
+
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    assert overlay.messages[-1]["polished"] == "First chunk here."
+    assert overlay.messages[-1]["pending"] == "second chunk here"
+
+
+async def test_overlay_fades_when_text_was_injected() -> None:
+    """spec 6.1: the preview lingers briefly on success, so the user sees what
+    landed. Cutting it at the instant of injection leaves them unsure whether
+    anything was typed at all."""
+    d = daemon(FakeSttEngine([[Committed("some words here now")]]))
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    assert overlay.calls == ["show", "fade"]
+
+
+async def test_overlay_hides_at_once_when_nothing_was_injected() -> None:
+    """A cancelled session has nothing to show off, so it goes immediately."""
+    d = daemon(FakeSttEngine([[Committed("discard me")]]))
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "cancel"})
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    assert overlay.calls == ["show", "hide"]
 
 
 async def test_microphone_failure_is_reported_and_releases_the_machine() -> None:
