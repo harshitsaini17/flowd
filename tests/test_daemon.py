@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
 import json
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +11,7 @@ import numpy as np
 from flowd.config import Config, Hotkey, Inject
 from flowd.daemon import Daemon
 from flowd.inject.base import InjectResult
-from flowd.stt import Committed, FakeSttEngine, Partial
+from flowd.stt import Committed, Event, FakeSttEngine, Partial
 
 
 class Clock:
@@ -217,6 +219,98 @@ async def test_start_while_recording_is_ignored() -> None:
     await d.handle({"cmd": "start"})
     reply = await d.handle({"cmd": "start"})
     assert reply["ok"] is False
+
+
+class BlockingSttEngine:
+    """An engine whose `feed` blocks, the way a real Moonshine decode does.
+
+    Measured on this machine, one `feed` call is 0.2 ms at the median but
+    553 ms at p95 and 1,596 ms at worst: most calls only buffer, and every
+    eighth or so runs the model. Those are the windows that matter, and
+    `FakeSttEngine` returns instantly so it cannot expose them.
+
+    `feed` blocks on an event with a timeout rather than forever, so a test that
+    fails leaves a failure rather than a hung suite.
+    """
+
+    def __init__(self, block_s: float = 1.5) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.entered_at = 0.0
+        self.in_feed = False
+        #: Set if `reset` is called while a `feed` is still running — the race a
+        #: naive `to_thread` would introduce, since both touch one Moonshine
+        #: stream.
+        self.concurrent_reset = False
+        self._block_s = block_s
+
+    def feed(self, pcm: np.ndarray) -> list[Event]:
+        self.in_feed = True
+        self.entered_at = time.monotonic()
+        self.entered.set()
+        try:
+            self.release.wait(self._block_s)
+            return [Partial("mid decode")]
+        finally:
+            self.in_feed = False
+
+    def finalize(self) -> list[Event]:
+        return [Committed("mid decode")]
+
+    def reset(self) -> None:
+        if self.in_feed:
+            self.concurrent_reset = True
+
+
+async def test_the_control_socket_answers_during_a_decode() -> None:
+    """spec 5.9 budgets `flowctl` under 50 ms, and spec 4 puts STT on its own
+    worker for this reason: the loop must stay free while the model runs.
+
+    `cancel` is the safety valve that stops a runaway session (spec 9.4). If a
+    decode holds the only thread, that valve waits behind it — up to 1.6 s on
+    this machine.
+
+    The wait happens in a worker thread rather than on the loop, because a loop
+    that is blocked cannot resume the coroutine measuring it: `asked_at` would
+    then be recorded after the decode finished and the assertion would pass for
+    the wrong reason. The delta measured is decode-start to command-start.
+    """
+    stt = BlockingSttEngine(block_s=1.5)
+    d = daemon(stt)
+    await d.handle({"cmd": "start"})
+
+    pump = asyncio.create_task(d.pump())
+    await asyncio.to_thread(stt.entered.wait, 3.0)
+    asked_at = time.monotonic()
+    reply = await d.handle({"cmd": "status"})
+    stt.release.set()
+    await pump
+
+    waited_ms = (asked_at - stt.entered_at) * 1000
+    assert reply["ok"] is True
+    assert waited_ms < 250, f"control socket blocked {waited_ms:.0f} ms behind the decoder"
+
+
+async def test_cancel_does_not_reset_the_engine_mid_decode() -> None:
+    """Moving STT off the loop must not let two callers touch one stream.
+
+    `_discard` calls `stt.reset()`, and Moonshine holds a single stream per
+    session, so a `cancel` arriving while a decode is in flight would reset it
+    underneath the worker. This guards the fix rather than the old behaviour:
+    inline STT cannot reach it (the loop is blocked, so no command is
+    dispatched at all), but a `to_thread` without mutual exclusion can.
+    """
+    stt = BlockingSttEngine(block_s=1.0)
+    d = daemon(stt)
+    await d.handle({"cmd": "start"})
+
+    pump = asyncio.create_task(d.pump())
+    await asyncio.to_thread(stt.entered.wait, 3.0)
+    cancel = asyncio.create_task(d.handle({"cmd": "cancel"}))
+    stt.release.set()
+    await pump
+    assert (await cancel)["ok"] is True
+    assert stt.concurrent_reset is False, "reset ran while a decode was still in flight"
 
 
 async def test_debounce_still_applies_through_the_daemon() -> None:
