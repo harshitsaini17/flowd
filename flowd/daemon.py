@@ -207,8 +207,14 @@ class Daemon:
                 self.metrics.count("chunks")
         self._render()
 
-    def _render(self) -> None:
+    def _render(self, live: str | None = None) -> None:
         """Paint the three preview zones (spec 6.1).
+
+        `live` overrides the live zone for a status note that belongs *beside*
+        the transcript rather than instead of it — the time-limit note, where the
+        user has text and also needs to know why dictation ended. `_show_status`
+        is the other shape, blanking all three zones for when there is no
+        transcript to show.
 
         A chunk moves from pending to polished when it resolves. Phase 2 has no
         LLM and resolves nothing, so in practice the polished zone stays empty
@@ -224,9 +230,20 @@ class Daemon:
         visible = self.session.visible_chunks()
         polished = " ".join(c.text for c in visible if c.resolved)
         pending = " ".join(c.raw for c in visible if not c.resolved)
-        self.overlay.render(polished=polished, pending=pending, live=self.session.live_partial)
+        self.overlay.render(
+            polished=polished,
+            pending=pending,
+            live=self.session.live_partial if live is None else live,
+        )
 
-    async def _finalize(self) -> dict[str, Any]:
+    async def _finalize(self, note: str | None = None) -> dict[str, Any]:
+        """Flush, clean, join and inject. `note` is a status line for the final
+        frame — the auto-stop reason, which the user needs beside their text.
+
+        Painted here rather than by the caller because it has to be the *last*
+        render before the fade: the events from `stt.finalize()` each trigger a
+        render of their own, so a note painted earlier would be wiped by them.
+        """
         assert self.session is not None and self.metrics is not None
         # The release instant, marked before any finalize work begins. Two of
         # spec 10.1's budgets are deltas from here rather than from the hotkey —
@@ -245,6 +262,13 @@ class Daemon:
             self._on_stt_event(event)
         self.metrics.mark("finalized")
 
+        if note is not None:
+            # After the finalize events, so their renders cannot wipe it, and
+            # before the no-speech branch below, so that `_show_status("No
+            # speech")` deliberately replaces it: a user who hit the time limit
+            # with nothing transcribed needs to know nothing was heard first.
+            self._render(live=note)
+
         raw_parts = [c.raw for c in self.session.visible_chunks()]
         if not any(part.strip() for part in raw_parts):
             # spec 9.1: no speech at all means inject nothing.
@@ -255,7 +279,10 @@ class Daemon:
             # would be ignored until the daemon was restarted.
             self.machine.handle(Event.CHUNKS_RESOLVED)
             self.machine.handle(Event.INJECT_DONE)
-            self._end_session(text="", reason="no speech")
+            # `linger` even though there is no text: spec 9.1 asks for "No
+            # speech" to stay up for a second, and the default would hide it in
+            # the same tick it was rendered.
+            self._end_session(text="", reason="no speech", linger=True)
             return {"ok": True, "reason": "no speech"}
 
         cleaned = [basic_clean(part) for part in raw_parts]
@@ -308,7 +335,7 @@ class Daemon:
             self.overlay.hide()
         self.session = None
 
-    def _end_session(self, text: str, reason: str | None) -> None:
+    def _end_session(self, text: str, reason: str | None, linger: bool | None = None) -> None:
         assert self.metrics is not None
         if text:
             self.last_text = text
@@ -326,7 +353,12 @@ class Daemon:
         if self.overlay is not None:
             # A successful dictation fades, so the user sees what landed in the
             # window; one with nothing to show goes at once (spec 6.1).
-            if text:
+            #
+            # `linger` overrides that default for the case where there is no text
+            # but there *is* something to read: spec 9.1 wants "No speech" up for
+            # a second, and inferring the choice from `text` alone hid it, since
+            # the message and the teardown went out in the same tick.
+            if linger if linger is not None else bool(text):
                 self.overlay.fade()
             else:
                 self.overlay.hide()
@@ -373,4 +405,6 @@ class Daemon:
         if elapsed >= self.cfg.audio.max_session_s:
             log.info("session hit max_session_s; finalizing")
             if self.machine.handle(Event.MAX_DURATION) is Action.FLUSH_AND_FINALIZE:
-                await self._finalize()
+                # spec 4's table and spec 9.1: an auto-stop says so, or the user
+                # cannot tell it from their own stop.
+                await self._finalize(note="time limit")
