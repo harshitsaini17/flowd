@@ -15,8 +15,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install PortAudio (sounddevice runtime dependency)
         run: sudo apt-get update && sudo apt-get install -y libportaudio2
+      # `setup-python` resolves the version, `uv` is handed the exact
+      # interpreter it produced. Both halves are load-bearing: `3.x` is
+      # `setup-python` syntax that `uv` cannot parse ("No interpreter found for
+      # executable name `3.x`"), and `uv --python 3` or `--python python3`
+      # silently prefers uv's own managed build over the one on PATH, so the
+      # "latest" leg would quietly test whatever uv happened to have cached.
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v3
-      - run: uv venv --python ${{ matrix.python-version }}
+      - run: uv venv --python '${{ steps.python.outputs.python-path }}'
       - run: uv pip install -e '.[dev]'
       - run: uv run ruff check .
       - run: uv run ruff format --check .
