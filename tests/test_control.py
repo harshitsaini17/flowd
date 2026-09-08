@@ -28,6 +28,37 @@ def test_parse_rejects_missing_cmd() -> None:
         parse_command(b'{"args": []}')
 
 
+@pytest.mark.parametrize("cmd", ["[]", "{}", "5", "true", '["toggle"]'])
+def test_parse_rejects_a_cmd_that_is_not_a_string(cmd: str) -> None:
+    """A `cmd` of the wrong JSON type must be rejected, not crash the handler.
+
+    `VALID_COMMANDS` is a frozenset, so the membership test hashes `cmd`, and an
+    unhashable value raises TypeError instead of failing the test. `on_client`
+    answers ValueError; a TypeError escapes it, so the client gets no reply at
+    all — the connection just closes.
+    """
+    with pytest.raises(ValueError, match="unknown command"):
+        parse_command(f'{{"cmd": {cmd}}}'.encode())
+
+
+async def test_a_wrongly_typed_cmd_still_gets_an_error_reply(tmp_path: Path) -> None:
+    """Every request gets an answer, including a nonsensical one.
+
+    A client that receives nothing has to wait out its own timeout to learn the
+    request failed, and cannot tell "the daemon rejected this" from "the daemon
+    is wedged" — which is the difference `flowctl` reports to the user.
+    """
+    sock = tmp_path / "flowd.sock"
+    server = await serve(sock, _echo)
+    try:
+        reply = await send(sock, {"cmd": []})
+        assert reply["ok"] is False
+        assert "unknown command" in reply["error"]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
 async def _echo(request: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "cmd": request["cmd"]}
 

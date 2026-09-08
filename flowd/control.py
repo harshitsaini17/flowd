@@ -35,7 +35,13 @@ def parse_command(line: bytes) -> dict[str, Any]:
     cmd = request.get("cmd")
     if cmd is None:
         raise ValueError("missing 'cmd' field")
-    if cmd not in VALID_COMMANDS:
+    # The isinstance check comes first and is load-bearing: `VALID_COMMANDS` is
+    # a frozenset, so membership hashes `cmd`, and an unhashable value from a
+    # hand-rolled client would raise TypeError. `on_client` answers ValueError,
+    # so that would escape it and the client would get no reply at all — closing
+    # the connection silently, which reads to the user as a wedged daemon.
+    # Short-circuiting keeps one message for every wrong `cmd`, hashable or not.
+    if not isinstance(cmd, str) or cmd not in VALID_COMMANDS:
         raise ValueError(f"unknown command: {cmd!r}")
     return request
 
