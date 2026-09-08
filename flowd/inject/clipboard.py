@@ -6,6 +6,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from subprocess import CalledProcessError
 
 from flowd.inject.base import Runner, run
 from flowd.inject.base import have as _tool_exists
@@ -72,17 +73,24 @@ class ClipboardBackend:
         # then invoking a tool that is not installed would spend this backend's
         # turn in `inject.order` on a FileNotFoundError.
         #
-        # Both tools, because pasting takes two of them and on Wayland they are
-        # separate packages: `wl-copy` from wl-clipboard writes the clipboard,
-        # `wtype` sends the keystroke. With only the first installed this
-        # backend would set the clipboard for a paste that cannot happen, and
-        # while `inject` now restores the snapshot either way, declining the
-        # turn is better than touching the user's clipboard to no purpose.
+        # Every tool this backend invokes, because on Wayland they come from
+        # different packages: `wl-copy` and `wl-paste` from wl-clipboard write
+        # and read the clipboard, and `wtype` sends the keystroke. Missing the
+        # keystroke tool would set the clipboard for a paste that cannot
+        # happen; missing the read tool would leave us unable to see what we
+        # are about to destroy or to put it back. Declining the turn costs
+        # nothing — a typing backend still delivers the text.
         return all(self._have(tool) for tool in self._required_tools())
 
-    def _required_tools(self) -> tuple[str, str]:
-        """(clipboard tool, paste-keystroke tool) for this session type."""
-        return ("wl-copy", "wtype") if self._wayland else ("xclip", "xdotool")
+    def _required_tools(self) -> tuple[str, ...]:
+        """Every command `inject` will run for this session type.
+
+        `xclip` appears once because it both reads and writes; on Wayland those
+        are two separate commands.
+        """
+        if self._wayland:
+            return ("wl-copy", "wl-paste", "wtype")
+        return ("xclip", "xdotool")
 
     def _tools(self) -> tuple[list[str], list[str], list[str]]:
         """Return (list-types, paste, copy) argv prefixes for this session type."""
@@ -117,11 +125,23 @@ class ClipboardBackend:
     def inject(self, text: str, *, is_terminal: bool) -> None:
         list_types, paste, copy = self._tools()
 
-        types = ""
+        # Which exception comes back decides everything here, because "the
+        # clipboard is empty" and "the tool is broken" both arrive as a failure.
         try:
             types = self._run(list_types, capture=True).stdout.decode("utf-8", "replace")
-        except Exception as exc:  # an empty clipboard is not an error
-            log.debug("could not list clipboard types: %s", exc)
+        except CalledProcessError as exc:
+            # The tool ran and answered. A non-zero exit is how both `wl-paste`
+            # ("Nothing is copied") and `xclip` report an empty clipboard, and
+            # an empty clipboard is not an error: there is nothing to preserve
+            # and nothing to restore, so writing our text is safe.
+            log.debug("clipboard is empty: %s", exc)
+            types = ""
+        except Exception as exc:
+            # The tool never ran, or never answered. The clipboard's contents
+            # are now unknowable, and writing over an unknown payload could
+            # destroy an image (spec 9.4) with no snapshot to put back. Raising
+            # hands the turn to the next backend, which still delivers the text.
+            raise RuntimeError(f"could not read the clipboard: {exc}") from exc
 
         offered = [t.strip() for t in types.splitlines() if t.strip()]
         formats = [t for t in offered if t not in _SELECTION_METADATA]
@@ -135,7 +155,11 @@ class ClipboardBackend:
             try:
                 saved = self._run(paste, capture=True).stdout
             except Exception as exc:
-                log.debug("could not snapshot clipboard: %s", exc)
+                # No exception kind excuses this one: the listing above already
+                # reported formats, so there is a payload here and the empty
+                # case does not apply. Proceeding without the snapshot would
+                # leave the dictated text on the user's clipboard permanently.
+                raise RuntimeError(f"could not read the clipboard: {exc}") from exc
 
         # `finally`, because everything from here on can raise and the snapshot
         # must go back regardless: once our text is on the clipboard, an

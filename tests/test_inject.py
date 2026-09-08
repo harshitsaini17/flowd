@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from subprocess import CalledProcessError
 from typing import Any
 
 import pytest
@@ -29,12 +30,19 @@ class Recorder:
         *,
         types: bytes = WAYLAND_TEXT_TYPES,
         fail_on: Callable[[list[str]], bool] | None = None,
+        error: Callable[[list[str]], Exception] | None = None,
     ) -> None:
         self.calls: list[list[str]] = []
         self.kwargs: list[dict[str, Any]] = []
         self.stdins: list[bytes | None] = []
         self._types = types
         self._fail_on = fail_on
+        # Which exception a failing call raises, because the kind is the whole
+        # signal: `FileNotFoundError` means the tool never ran, while
+        # `CalledProcessError` means it ran and reported a non-zero exit. A
+        # recorder that could only raise one of them could not tell the
+        # clipboard code's two branches apart.
+        self._error = error or (lambda argv: FileNotFoundError(f"{argv[0]} not installed"))
 
     def run(self, argv: list[str], **kwargs: Any) -> Any:
         self.calls.append(list(argv))
@@ -44,7 +52,7 @@ class Recorder:
         # well as what came back. A recorder that can never fail would leave
         # every cleanup path in `inject` untested.
         if self._fail_on is not None and self._fail_on(argv):
-            raise FileNotFoundError(f"{argv[0]} not installed")
+            raise self._error(argv)
         listing = "--list-types" in argv or "TARGETS" in argv
         stdout = self._types if listing else b"previous clipboard"
 
@@ -221,6 +229,80 @@ def test_clipboard_declines_when_the_paste_tool_is_missing() -> None:
     assert rec.calls == [], "touched the clipboard while merely reporting availability"
 
 
+def test_clipboard_declines_without_the_tool_that_reads_the_clipboard() -> None:
+    """`available()` must also check the tool it reads the clipboard *with*.
+
+    Snapshotting is what makes this backend safe to use at all, and on Wayland
+    the read is `wl-paste` while the write is `wl-copy` — two commands, not one.
+    With `wl-paste` unusable the backend can neither see what it is about to
+    destroy nor put it back, so it must not take its turn.
+
+    In practice both ship in `wl-clipboard`, so this exact combination is rare;
+    it is checked because `available()` claims to check the tools it invokes,
+    and because the same read failing at call time (below) needs no missing
+    package at all.
+    """
+    rec = Recorder()
+    backend = wayland_clipboard(rec, have=lambda tool: tool != "wl-paste")
+    assert backend.available() is False, "claimed available without the clipboard read tool"
+    assert rec.calls == [], "touched the clipboard while merely reporting availability"
+
+
+def test_clipboard_declines_when_the_type_listing_cannot_run() -> None:
+    """A listing that never ran leaves the clipboard's contents unknowable.
+
+    Proceeding would overwrite an unknown payload — possibly an image, which
+    spec 9.4 forbids destroying — with no snapshot to restore, so the dictated
+    text would sit on the user's clipboard permanently. Declining hands the
+    turn to a typing backend, which still delivers the text.
+    """
+    rec = Recorder(fail_on=lambda argv: "--list-types" in argv)
+    with pytest.raises(RuntimeError, match="could not read the clipboard"):
+        wayland_clipboard(rec).inject("new", is_terminal=False)
+    assert clipboard_writes(rec, wayland=True) == [], "overwrote a clipboard it could not read"
+
+
+def test_clipboard_proceeds_when_the_clipboard_is_empty() -> None:
+    """An empty clipboard is not a failure, and must not be treated as one.
+
+    `wl-paste --list-types` exits non-zero with "Nothing is copied" when the
+    clipboard is empty — the same failing exit as a tool that is broken. The
+    difference is that this one *ran*, so what it reports is true: there is
+    nothing to preserve, and nothing to restore afterwards. Discriminating on
+    failure alone would make this backend decline on the commonest case there
+    is, which is why the exception kind is what decides.
+    """
+    rec = Recorder(
+        fail_on=lambda argv: "--list-types" in argv,
+        error=lambda argv: CalledProcessError(1, argv, stderr=b"Nothing is copied"),
+    )
+    wayland_clipboard(rec).inject("new", is_terminal=False)
+    assert clipboard_writes(rec, wayland=True) == [b"new"], "declined on an empty clipboard"
+
+
+@pytest.mark.parametrize("wayland", [True, False])
+def test_clipboard_declines_when_the_snapshot_cannot_be_read(wayland: bool) -> None:
+    """Text is on the clipboard, but reading it back failed.
+
+    The listing already proved there is a payload, so this is not the empty
+    case and no exception kind excuses it: without the snapshot there is
+    nothing to restore, and overwriting it would destroy the user's clipboard
+    permanently. This needs no missing package — one timed-out read is enough.
+    """
+    read_argv = (
+        ["wl-paste", "--no-newline"] if wayland else ["xclip", "-selection", "clipboard", "-o"]
+    )
+    rec = Recorder(
+        types=WAYLAND_TEXT_TYPES if wayland else X11_TEXT_TARGETS,
+        fail_on=lambda argv: argv == read_argv,
+        error=lambda argv: CalledProcessError(1, argv),
+    )
+    backend = wayland_clipboard(rec) if wayland else x11_clipboard(rec)
+    with pytest.raises(RuntimeError, match="could not read the clipboard"):
+        backend.inject("new", is_terminal=False)
+    assert clipboard_writes(rec, wayland=wayland) == [], "overwrote a clipboard it could not save"
+
+
 def test_x11_selection_targets_are_recognised_as_text() -> None:
     """`xclip -t TARGETS -o` lists atoms like TIMESTAMP, TARGETS and MULTIPLE.
 
@@ -287,12 +369,14 @@ def test_non_terminal_paste_has_no_shift() -> None:
 
 
 def test_clipboard_availability_follows_the_session_type() -> None:
-    """The session type decides which tools are needed, and pasting needs two.
+    """The session type decides which tools are needed, and pasting needs all of them.
 
-    On Wayland, xclip alone is not enough: the backend runs wl-copy and wtype.
-    Reporting available and then calling a tool that is not installed would burn
-    the clipboard backend's turn in `inject.order` on a FileNotFoundError — and
-    for the keystroke half it would do so *after* overwriting the clipboard.
+    On Wayland that is three commands from two packages — `wl-copy` and
+    `wl-paste` write and read the clipboard, `wtype` sends the keystroke — while
+    on X11 `xclip` does both halves of the clipboard work. Reporting available
+    and then calling a tool that is not installed would burn the clipboard
+    backend's turn in `inject.order` on a FileNotFoundError — and for the
+    keystroke half it would do so *after* overwriting the clipboard.
     """
     rec = Recorder()
 
@@ -300,12 +384,12 @@ def test_clipboard_availability_follows_the_session_type() -> None:
         return lambda tool: tool in tools
 
     assert x11_clipboard(rec, have=having("xclip", "xdotool")).available() is True
-    assert wayland_clipboard(rec, have=having("wl-copy", "wtype")).available() is True
+    assert wayland_clipboard(rec, have=having("wl-copy", "wl-paste", "wtype")).available() is True
     # The other session's tools, however completely installed.
     assert wayland_clipboard(rec, have=having("xclip", "xdotool")).available() is False
-    assert x11_clipboard(rec, have=having("wl-copy", "wtype")).available() is False
-    # Half-installed: the clipboard tool present, the keystroke tool absent.
-    assert wayland_clipboard(rec, have=having("wl-copy")).available() is False
+    assert x11_clipboard(rec, have=having("wl-copy", "wl-paste", "wtype")).available() is False
+    # Half-installed: the clipboard tools present, the keystroke tool absent.
+    assert wayland_clipboard(rec, have=having("wl-copy", "wl-paste")).available() is False
     assert x11_clipboard(rec, have=having("xclip")).available() is False
     assert rec.calls == [], "availability must not touch the clipboard"
 
