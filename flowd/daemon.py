@@ -98,6 +98,11 @@ class Daemon:
             if error is not None:
                 return {"ok": False, "error": error}
             self.cfg = new_cfg
+            # The state machine holds its own copy of the window, taken at
+            # construction, so assigning `self.cfg` alone would report success
+            # and change nothing. Every other config value is read live through
+            # `self.cfg`; this is the one that has to be pushed.
+            self.machine.set_debounce_ms(new_cfg.hotkey.debounce_ms)
             return {"ok": True}
 
         event = {
