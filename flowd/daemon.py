@@ -173,24 +173,36 @@ class Daemon:
         if not self._recording():
             return
         pcm = self.capture.read()
+        # Carried out of the `async with` rather than handled inside it: the
+        # fatal path calls `_discard`, which acquires this same lock, so
+        # handling it here would deadlock the daemon instead of crashing it —
+        # trading a loud failure for a silent one.
+        failure: Exception | None = None
         async with self._stt_lock:
             # `cancel` may have landed while we waited for the lock, in which
             # case the session it belonged to is gone and its audio is not ours
             # to decode.
             if not self._recording():
                 return
-            # Off the loop: one `feed` call is 0.2 ms at the median on this
-            # machine but 553 ms at p95 and 1.6 s at worst, because most calls
-            # only buffer and every eighth or so runs the model. Inline, those
-            # are windows in which the control socket cannot be answered and
-            # `flowctl cancel` — the valve that stops a runaway session — waits
-            # behind the decoder, against spec 5.9's 50 ms budget.
-            events = await asyncio.to_thread(self.stt.feed, pcm)
-            # Dispatched under the lock as well, so a `cancel` cannot discard
-            # the session between the decode returning and its events being
-            # applied to it.
-            for event in events:
-                self._on_stt_event(event)
+            try:
+                # Off the loop: one `feed` call is 0.2 ms at the median on this
+                # machine but 553 ms at p95 and 1.6 s at worst, because most
+                # calls only buffer and every eighth or so runs the model.
+                # Inline, those are windows in which the control socket cannot
+                # be answered and `flowctl cancel` — the valve that stops a
+                # runaway session — waits behind the decoder, against spec
+                # 5.9's 50 ms budget.
+                events = await asyncio.to_thread(self.stt.feed, pcm)
+                # Dispatched under the lock as well, so a `cancel` cannot
+                # discard the session between the decode returning and its
+                # events being applied to it.
+                for event in events:
+                    self._on_stt_event(event)
+            except Exception as exc:
+                failure = exc
+        if failure is not None:
+            await self._fail(failure)
+            return
         if self.capture.pending_seconds() > 2.0:
             log.warning("STT is behind real time: %.1f s queued", self.capture.pending_seconds())
 
@@ -302,7 +314,29 @@ class Daemon:
         self._end_session(text=final, reason=None)
         return {"ok": True, "text": final, "backend": result.backend}
 
+    async def _fail(self, exc: Exception) -> None:
+        """Route a mid-session engine failure to spec 4's fatal transition.
+
+        Spec 4 gives this its own row — any state + fatal error → IDLE,
+        releasing the microphone — and spec 9.1 requires the user be told.
+        Without this the exception unwinds `pump`, then `run`'s loop, and the
+        daemon exits with the microphone still open: the hotkey stops working
+        and the only sign is a recording light that never goes off.
+        """
+        log.exception("STT failed mid-session: %s", exc)
+        if self.machine.handle(Event.FATAL) is Action.RELEASE_MIC:
+            await self._discard(reason="fatal error")
+        self._notify(f"flowd: dictation failed ({exc})")
+
     async def _discard(self, reason: str = "cancelled") -> None:
+        # Which session this discard is for. Waiting on the lock below can take
+        # as long as one decode (~1.6 s at worst), and debounce only suppresses
+        # a `start` for 200 ms, so a user who cancels and re-presses their
+        # hotkey can have a *new* session by the time we resume. Everything
+        # after the lock is bookkeeping for the session that ended, and applying
+        # it to its successor would clear `self.session` with the microphone
+        # open — the next `stop` would then find nothing to inject.
+        discarding = self.session
         try:
             self.capture.stop()
         except Exception as exc:
@@ -319,6 +353,13 @@ class Daemon:
         # recorded either way — which is what `cancel` is urgent about.
         async with self._stt_lock:
             self.stt.reset()
+        # The reset above is kept even when a new session has begun: the lock is
+        # FIFO, so it runs before that session's first `feed`, and flushing the
+        # abandoned audio is exactly what it is for. What must not follow it is
+        # the bookkeeping, which belongs to a session that is already over.
+        if discarding is not None and self.session is not discarding:
+            log.debug("discard for session %s overtaken by a new session", discarding.id)
+            return
         if self.metrics is not None:
             # spec 10.2 asks for one line per session, and an abandoned session
             # is still a session: how often dictation gets cancelled is the

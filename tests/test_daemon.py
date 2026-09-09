@@ -369,6 +369,91 @@ async def test_cancel_does_not_reset_the_engine_mid_decode() -> None:
     assert stt.concurrent_reset is False, "reset ran while a decode was still in flight"
 
 
+class ExplodingSttEngine:
+    """An engine whose `feed` raises, the way a real decode can.
+
+    Moonshine runs inference inside a vendored ONNX Runtime; a malformed block,
+    an allocation failure or a stream left in a bad state surfaces here as an
+    exception. `FakeSttEngine` and `BlockingSttEngine` both always succeed, so
+    neither can reach the daemon's failure path.
+    """
+
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
+    def feed(self, pcm: np.ndarray) -> list[Event]:
+        raise RuntimeError("onnxruntime: allocation failed")
+
+    def finalize(self) -> list[Event]:
+        return []
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+
+async def test_a_failing_decode_releases_the_microphone_instead_of_killing_the_daemon() -> None:
+    """A decode that raises must end the session, not the process.
+
+    `pump` is awaited by `run`'s `while True`, so an exception escaping it
+    unwinds the loop and the daemon exits — with the microphone still open,
+    since nothing closed it on the way out. The user's hotkey then does nothing
+    at all, and the only sign is a recording light that never goes off.
+
+    Spec 4 gives this event a transition (any state + fatal error → IDLE,
+    releasing the microphone) and spec 9.1 says the user must be told. Both
+    exist; nothing reached them.
+    """
+    stt = ExplodingSttEngine()
+    capture = FakeCapture()
+    d = daemon(stt, capture)
+    await d.handle({"cmd": "start"})
+    assert capture.started is True
+
+    await d.pump()  # must not raise
+
+    assert (await d.handle({"cmd": "status"}))["state"] == "idle"
+    assert capture.stopped is True, "microphone left open after a failed decode"
+    assert d.session is None, "session survived a fatal error"
+
+
+async def test_a_cancel_waiting_on_a_decode_cannot_discard_the_next_session() -> None:
+    """A slow `cancel` must not reach past the session it was cancelling.
+
+    `_discard` sets the state to IDLE and then awaits the STT lock, which a
+    decode can hold for ~1.6 s. Debounce only suppresses a `start` for 200 ms,
+    so a user who cancels and immediately re-presses their hotkey gets a new
+    session while the old cancel is still queued. When it finally runs it
+    resets the stream, writes the new session's metrics as cancelled and clears
+    `self.session` — leaving the microphone open with no session attached, so
+    the next `stop` finds nothing to inject and the words are gone.
+
+    The lock is FIFO, so the queued reset still runs before the new session's
+    first `feed`: the abandoned audio is flushed, which is what the reset is
+    for. What must not follow it is the bookkeeping for a session that ended.
+    """
+    stt = BlockingSttEngine(block_s=1.0)
+    d = daemon(stt)
+    await d.handle({"cmd": "start"})
+
+    pump = asyncio.create_task(d.pump())
+    await asyncio.to_thread(stt.entered.wait, 3.0)
+    cancel = asyncio.create_task(d.handle({"cmd": "cancel"}))
+    await asyncio.sleep(0)  # let `_discard` reach the lock and block there
+
+    # The user presses their hotkey again. `Clock` advances a second per call,
+    # so this is well past the debounce window — a real re-press, not a bounce.
+    assert (await d.handle({"cmd": "start"}))["ok"] is True
+    new_session = d.session
+    assert new_session is not None
+
+    stt.release.set()
+    await pump
+    await cancel
+
+    assert d.session is new_session, "the stale cancel discarded the new session"
+    assert (await d.handle({"cmd": "status"}))["state"] == "recording"
+
+
 async def test_debounce_still_applies_through_the_daemon() -> None:
     """spec 9.1: a hotkey double-press must not end the session it just began.
 
