@@ -38,11 +38,14 @@ needs_system_python = pytest.mark.skipif(not HAS_SYSTEM_PYTHON, reason=f"no {SYS
 
 
 def run_overlay(
-    messages: str, timeout: int = 20, env: dict[str, str] | None = None
+    messages: str,
+    timeout: int = 20,
+    env: dict[str, str] | None = None,
+    args: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the overlay exactly as the daemon does: JSON lines on stdin."""
     return subprocess.run(
-        [SYSTEM_PYTHON, str(OVERLAY)],
+        [SYSTEM_PYTHON, str(OVERLAY), *(args or [])],
         input=messages,
         capture_output=True,
         text=True,
@@ -127,6 +130,40 @@ def test_overlay_exits_on_quit_message() -> None:
     # Nothing may go to stdout. The daemon does not drain it, so a chatty
     # overlay would eventually fill the pipe and block on its own print.
     assert proc.stdout == "", proc.stdout
+
+
+@needs_system_python
+@needs_display
+def test_overlay_accepts_the_settings_the_daemon_passes() -> None:
+    """The daemon spawns the child with `--max-lines` and `--fade-ms` on argv.
+
+    Every other test here launches it bare, so none of them covers the only
+    invocation that happens in production. If the child rejected either flag it
+    would exit 2 on every spawn, and since `OverlayProcess` swallows spawn
+    failures by design, the user would lose the preview with no explanation.
+    """
+    proc = run_overlay(
+        '{"type": "show"}\n{"type": "render", "live": "hi"}\n{"type": "quit"}\n',
+        args=["--max-lines", "7", "--fade-ms", "250"],
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "", proc.stdout
+
+
+@needs_system_python
+@needs_display
+def test_overlay_ignores_an_unknown_argument() -> None:
+    """A flag from a newer daemon must not take the preview down.
+
+    The overlay and the daemon are separate processes and can be updated
+    separately — the overlay runs on the system interpreter, outside the venv —
+    so argv can carry a flag this version has never heard of. Exiting would cost
+    the user their preview over a version skew, which is the same reasoning that
+    makes `_apply` ignore unknown message types.
+    """
+    proc = run_overlay('{"type": "quit"}\n', args=["--future-flag", "1"])
+    assert proc.returncode == 0, proc.stderr
+    assert "ignoring unrecognised arguments" in proc.stderr
 
 
 @needs_system_python
