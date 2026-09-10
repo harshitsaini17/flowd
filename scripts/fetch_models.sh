@@ -16,11 +16,16 @@ LFM_URL="https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/$LFM_FILE
 mkdir -p "$MODELS_DIR"
 
 echo "==> Fetching cleanup LLM (LFM Open License)"
+# Which files this run actually downloaded. Only these may change a hash that is
+# already pinned: anything else that no longer matches its pin has changed
+# underneath us, and re-pinning it would bless a possibly-corrupt file.
+DOWNLOADED=""
 if [[ -f "$MODELS_DIR/$LFM_FILE" ]]; then
   echo "    already present, skipping (models are never auto-upgraded)"
 else
   curl -fL --progress-bar -o "$MODELS_DIR/$LFM_FILE.part" "$LFM_URL"
   mv "$MODELS_DIR/$LFM_FILE.part" "$MODELS_DIR/$LFM_FILE"
+  DOWNLOADED="$LFM_FILE"
 fi
 
 echo "==> Warming the STT model cache (MIT code; English weights)"
@@ -38,38 +43,40 @@ echo "==> Writing $LOCK"
 # itself are pinned here; the STT weights are the concern of moonshine's own
 # verified downloader (ADR 0001), so duplicating their hashes would give flowd a
 # second, staler source of truth.
-( cd "$REPO_ROOT" && uv run python - "$MODELS_DIR" "$LOCK" "$LFM_FILE" "$LFM_URL" <<'PY'
+#
+# The building is `flowd.models.build_lock` rather than logic written out here,
+# because a heredoc cannot be tested: the rule that a file which no longer
+# matches its pin must not be re-pinned is the kind of thing that needs a test
+# more than it needs to be inline.
+( cd "$REPO_ROOT" && uv run python - "$MODELS_DIR" "$LOCK" "$LFM_FILE" "$LFM_URL" "$DOWNLOADED" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-from flowd.models import sha256_file
+from flowd.models import build_lock
 
-models_dir, lock_path, lfm_file, lfm_url = (
+models_dir, lock_path, lfm_file, lfm_url, downloaded = (
     Path(sys.argv[1]),
     Path(sys.argv[2]),
     sys.argv[3],
     sys.argv[4],
+    sys.argv[5],
 )
 sources = {lfm_file: (lfm_url, "LFM Open License")}
 
-entries = []
-for name, (url, licence) in sorted(sources.items()):
-    path = models_dir / name
-    if not path.is_file():
-        sys.exit(f"expected {path} to exist; run this script from the top")
-    entries.append(
-        {
-            "name": name,
-            "size_bytes": path.stat().st_size,
-            "sha256": sha256_file(path),
-            "url": url,
-            "license": licence,
-        }
+try:
+    doc = build_lock(
+        models_dir,
+        sources,
+        lock_path=lock_path,
+        downloaded=frozenset(n for n in downloaded.split() if n),
     )
+except ValueError as exc:
+    # A message, not a traceback: the reader has to act on this.
+    sys.exit(f"    {exc}")
 
-lock_path.write_text(json.dumps({"models": entries}, indent=2) + "\n")
-print(f"    pinned {len(entries)} file(s)")
+lock_path.write_text(json.dumps(doc, indent=2) + "\n")
+print(f"    pinned {len(doc['models'])} file(s)")
 PY
 )
 
