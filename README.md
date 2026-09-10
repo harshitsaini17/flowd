@@ -94,6 +94,17 @@ Edit `flowd.service` so `ExecStart` points at the virtualenv you just created â€
 the shipped path (`%h/.local/share/flowd/.venv/bin/flowd`) is a suggestion, not
 a guess about where you cloned the repo.
 
+Then set `-t` in `flowd-llm.service` to your physical cores minus two, which
+leaves a core for speech recognition and a core for everything else. systemd
+cannot count them for you, and the shipped `4` suits a 6-core machine:
+
+```bash
+lscpu -p=Core | grep -v '^#' | sort -u | wc -l
+```
+
+If you have moved `XDG_DATA_HOME`, edit that unit's `FLOWD_MODEL` path too â€”
+`scripts/fetch_models.sh` follows the variable and the unit file cannot.
+
 ```bash
 systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP
 systemctl --user enable --now flowd-llm flowd
