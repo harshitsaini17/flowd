@@ -1,11 +1,14 @@
+import asyncio
 import wave
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from flowd.config import Config, Hotkey, Logging
+import flowd.main as main
+from flowd.config import Config, Hotkey, Logging, state_dir
 from flowd.main import _ReplayCapture, build_parser, lock_path, replay_config
+from flowd.stt import Committed, FakeSttEngine
 
 
 def write_wav(path: Path, pcm: np.ndarray, sample_rate: int = 16000) -> Path:
@@ -195,3 +198,19 @@ def test_reported_version_matches_the_package_metadata() -> None:
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     declared = tomllib.loads(pyproject.read_text())["project"]["version"]
     assert flowd.__version__ == declared
+
+
+# --- replay leaves no trace ---------------------------------------------------
+
+
+def test_replay_writes_no_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A replay is a probe, not dictation. Written to metrics.jsonl it reads as
+    # a real session in `flowctl stats`, and an owner looking for their own
+    # timings finds the harness's instead.
+    engine = FakeSttEngine([[Committed("hello there")]])
+    monkeypatch.setattr(main, "load_engine", lambda *a, **kw: engine)
+    state_dir().mkdir(parents=True)
+    clip = write_wav(tmp_path / "clip.wav", np.zeros(1600, dtype=np.float32))
+
+    assert asyncio.run(main._replay(Config(), clip, fast=True)) == 0
+    assert not (state_dir() / "metrics.jsonl").exists()
