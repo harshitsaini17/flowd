@@ -274,9 +274,10 @@ class Daemon:
         self.metrics.mark("released")
         self.capture.stop()
         # Same worker and same lock as `feed`: `finalize` runs the model over
-        # whatever audio is left (246 ms on this machine) and touches the same
-        # stream, so it waits for any decode still in flight rather than
-        # entering beside it.
+        # whatever audio is still undecoded (anywhere from ~10 ms to ~850 ms on
+        # the owner's Ryzen 5 5600H, growing with backlog and CPU contention)
+        # and touches the same stream, so it waits for any decode still in
+        # flight rather than entering beside it.
         async with self._stt_lock:
             events = await asyncio.to_thread(self.stt.finalize)
         for event in events:
