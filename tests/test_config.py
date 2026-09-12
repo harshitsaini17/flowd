@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from flowd.config import load_config, reload_config, runtime_dir, state_dir
+from flowd.config import Stt, load_config, reload_config, runtime_dir, state_dir
 
 
 def test_missing_file_yields_spec_defaults(tmp_path: Path) -> None:
@@ -69,3 +69,10 @@ def test_config_is_immutable() -> None:
     cfg = load_config(Path("/nonexistent"))
     with pytest.raises(FrozenInstanceError):
         cfg.vad.commit_silence_ms = 1  # type: ignore[misc]
+
+
+def test_default_stt_model_is_small_streaming() -> None:
+    # Measured on the owner's 5600H over 80 LibriSpeech test-clean clips:
+    # small scored 3.71% WER against medium's 4.50% and decodes faster, so the
+    # overlay keeps up with continuous speech. See ADR 0005.
+    assert Stt().model == "small-streaming-en"

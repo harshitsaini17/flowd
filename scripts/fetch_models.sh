@@ -31,10 +31,12 @@ fi
 echo "==> Warming the STT model cache (MIT code; English weights)"
 # moonshine-voice fetches and CRC32C-verifies its own weights on first use, into
 # its own cache -- not into MODELS_DIR. Warming it here means the daemon never
-# downloads at runtime. The call is the one recorded in ADR 0001.
+# downloads at runtime. The call is the one recorded in ADR 0001, pinned to the
+# default model (ADR 0005); moonshine's own default for "en" is medium.
 ( cd "$REPO_ROOT" && uv run python -c '
+from moonshine_voice import string_to_model_arch
 from moonshine_voice.download import get_model_for_language
-path, arch = get_model_for_language("en")
+path, arch = get_model_for_language("en", string_to_model_arch("small-streaming"))
 print(f"    cached {arch.name} at {path}")
 ' )
 

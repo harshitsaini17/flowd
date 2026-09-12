@@ -85,7 +85,7 @@ class Vad:
 
 @dataclass(frozen=True, slots=True)
 class Stt:
-    model: str = "medium-streaming-en"
+    model: str = "small-streaming-en"  # ADR 0005
     max_uncommitted_words: int = 25
 
 
