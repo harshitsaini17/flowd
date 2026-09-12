@@ -126,8 +126,10 @@ class StreamingSttEngine:
         committer: Committer,
         block_ms: int = 100,
         sample_rate: int = 16000,
+        set_keyterms: Callable[[Sequence[str]], None] | None = None,
     ) -> None:
         self._new_stream = new_stream
+        self._set_keyterms = set_keyterms
         self._vad = vad
         self._committer = committer
         self._block_ms = block_ms
@@ -182,6 +184,15 @@ class StreamingSttEngine:
         if self._stream is not None:
             self._stop_stream(self._stream)
         self._discard()
+
+    def set_keyterms(self, terms: Sequence[str]) -> None:
+        """Bias recognition towards `terms` (vocab.toml `[terms]`).
+
+        Moonshine applies this from its next decode, including mid-stream, and
+        an empty sequence turns biasing off.
+        """
+        if self._set_keyterms is not None:
+            self._set_keyterms(list(terms))
 
     def _ensure_stream(self) -> Any:
         if self._stream is None:
@@ -326,4 +337,5 @@ def load_engine(
         ),
         block_ms=block_ms,
         sample_rate=sample_rate,
+        set_keyterms=transcriber.set_keyterms,
     )

@@ -789,3 +789,98 @@ async def test_cancelling_keeps_the_previous_text_for_flowctl_last() -> None:
     await d.pump()
     await d.handle({"cmd": "cancel"})
     assert (await d.handle({"cmd": "last"}))["text"] == "Keep this one."
+
+
+# --- personal vocabulary (spec 7.6) -------------------------------------------
+
+
+class KeytermEngine(FakeSttEngine):
+    """A scripted engine that records the keyterms it is given."""
+
+    def __init__(self, script: list[list[Event]]) -> None:
+        super().__init__(script)
+        self.keyterms: list[tuple[str, ...]] = []
+
+    def set_keyterms(self, terms: tuple[str, ...]) -> None:
+        self.keyterms.append(tuple(terms))
+
+
+def vocab_daemon(stt: Any, vocab_file: Path, injected: list[str]) -> Daemon:
+    d = daemon(stt, injected=injected)
+    d.vocab_file = vocab_file
+    d.config_file = vocab_file.with_name("config.toml")
+    return d
+
+
+async def test_vocab_replacements_apply_to_injected_text(tmp_path: Path) -> None:
+    vocab = tmp_path / "vocab.toml"
+    vocab.write_text('[replace]\n"stair-tier" = "STT"\n')
+    injected: list[str] = []
+    d = vocab_daemon(FakeSttEngine([[Committed("is it just a stair-tier model")]]), vocab, injected)
+    assert (await d.handle({"cmd": "reload"}))["ok"] is True
+    await d.handle({"cmd": "toggle"})
+    await d.pump()
+    await d.handle({"cmd": "toggle"})
+    assert injected == ["Is it just a STT model."]
+
+
+async def test_reload_pushes_vocab_terms_to_the_engine(tmp_path: Path) -> None:
+    # The recognizer is what hears "LLM" as a word; biasing it is the fix, so
+    # a reload that only updated the daemon's copy would change nothing.
+    vocab = tmp_path / "vocab.toml"
+    vocab.write_text('terms = ["LLM", "STT"]\n')
+    engine = KeytermEngine([])
+    d = vocab_daemon(engine, vocab, [])
+    assert (await d.handle({"cmd": "reload"}))["ok"] is True
+    assert engine.keyterms[-1] == ("LLM", "STT")
+
+
+async def test_reload_with_bad_vocab_keeps_the_old_one(tmp_path: Path) -> None:
+    vocab = tmp_path / "vocab.toml"
+    vocab.write_text('[replace]\n"stair-tier" = "STT"\n')
+    injected: list[str] = []
+    d = vocab_daemon(FakeSttEngine([[Committed("a stair-tier model")]]), vocab, injected)
+    assert (await d.handle({"cmd": "reload"}))["ok"] is True
+
+    vocab.write_text("[replace\n")
+    reply = await d.handle({"cmd": "reload"})
+    assert reply["ok"] is False
+    assert "vocab.toml" in reply["error"]
+
+    await d.handle({"cmd": "toggle"})
+    await d.pump()
+    await d.handle({"cmd": "toggle"})
+    assert injected == ["A STT model."]
+
+
+async def test_engines_without_keyterms_are_left_alone(tmp_path: Path) -> None:
+    vocab = tmp_path / "vocab.toml"
+    vocab.write_text('terms = ["LLM"]\n')
+    d = vocab_daemon(FakeSttEngine([]), vocab, [])
+    assert (await d.handle({"cmd": "reload"}))["ok"] is True
+
+
+async def test_startup_applies_vocab_before_the_first_session(tmp_path: Path) -> None:
+    vocab = tmp_path / "vocab.toml"
+    vocab.write_text('terms = ["LLM"]\n[replace]\n"stair-tier" = "STT"\n')
+    engine = KeytermEngine([[Committed("a stair-tier model")]])
+    injected: list[str] = []
+    d = vocab_daemon(engine, vocab, injected)
+    await d.load_startup_vocab()
+    assert engine.keyterms == [("LLM",)]
+    await d.handle({"cmd": "toggle"})
+    await d.pump()
+    await d.handle({"cmd": "toggle"})
+    assert injected == ["A STT model."]
+
+
+async def test_startup_with_broken_vocab_still_dictates(tmp_path: Path) -> None:
+    vocab = tmp_path / "vocab.toml"
+    vocab.write_text("[replace\n")
+    injected: list[str] = []
+    d = vocab_daemon(FakeSttEngine([[Committed("still works")]]), vocab, injected)
+    await d.load_startup_vocab()
+    await d.handle({"cmd": "toggle"})
+    await d.pump()
+    await d.handle({"cmd": "toggle"})
+    assert injected == ["Still works."]
