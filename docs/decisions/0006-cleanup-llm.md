@@ -1,6 +1,6 @@
 # 0006: Cleanup LLM for phase 3
 
-**Status:** proposed (awaiting owner approval, spec 13.2)
+**Status:** accepted (owner-approved, 2026-09-27)
 **Date:** 2026-09-27
 
 ## Context
@@ -51,7 +51,7 @@ failure changed a word: "can you remind me to call mom" became "can you
 remember to call mom" — exactly what spec 6's novel-word guardrail exists to
 catch. It was also the fastest and the most consistent (118 ms worst case).
 
-## Decision (proposed)
+## Decision
 
 Use Sotto cleanup LFM2.5-350M Q4_K_M for phase 3, with the trimmed server
 flags above, and keep spec 6's guardrails as the safety net rather than trusting
@@ -76,9 +76,13 @@ it clean rather than echo or answer.
 - **Prompt shape is decided by the model.** Sotto takes a completion prompt, not
   chat, which settles phase 0's unresolved `<new></new>` question for this
   model: phase 3's `cleanup.py` calls `/completion`, not `/v1/chat/completions`.
-- **Not yet done, pending approval:** `models.lock`, `scripts/fetch_models.sh`
-  and `systemd/flowd-llm.service` still name the 350M and the old flags. The two
-  candidate files are in `$XDG_DATA_HOME/flowd/models/candidates/`, outside the
-  lock, so the daemon's hash check is unaffected.
+- **Applied:** `models.lock` pins Sotto (`6cd4dfed…`, 229,311,200 bytes);
+  `scripts/fetch_models.sh`, `systemd/flowd-llm.service` and
+  `scripts/smoke_llm.sh` use it with the trimmed flags. The smoke test passes on
+  the completion format: "so um i think we should uh probably ship it on
+  monday" → "I think we should probably ship it on Monday."
+- **Owners with a phase 0-2 install** need `scripts/fetch_models.sh` and a
+  re-copy of `flowd-llm.service`; the old 350M file is no longer pinned and can
+  be deleted by hand.
 - **12 cases is a screen, not an eval.** Phase 3's recorded eval run (spec 11)
   is what accepts or rejects this choice.

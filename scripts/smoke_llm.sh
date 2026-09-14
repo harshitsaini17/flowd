@@ -5,7 +5,7 @@
 # prompt, prints the result, and stops the server on exit.
 set -euo pipefail
 
-MODEL="${FLOWD_MODEL:-${XDG_DATA_HOME:-$HOME/.local/share}/flowd/models/LFM2.5-350M-QAD-Q4_0.gguf}"
+MODEL="${FLOWD_MODEL:-${XDG_DATA_HOME:-$HOME/.local/share}/flowd/models/sotto-cleanup-lfm25-350m-q4_k_m.gguf}"
 PORT="${FLOWD_SMOKE_PORT:-8177}"
 LOG=/tmp/flowd-smoke-llm.log
 
@@ -20,7 +20,8 @@ THREADS=$(( PHYSICAL_CORES - 2 ))
 command -v llama-server >/dev/null || { echo "llama-server not found (pacman -S llama-cpp)." >&2; exit 1; }
 
 echo "==> Starting llama-server on 127.0.0.1:$PORT with -t $THREADS ($PHYSICAL_CORES physical cores)"
-llama-server -m "$MODEL" -c 2048 --jinja --host 127.0.0.1 --port "$PORT" -t "$THREADS" \
+llama-server -m "$MODEL" -c 1024 -np 1 -b 128 -ub 128 -cram 0 \
+  --host 127.0.0.1 --port "$PORT" -t "$THREADS" \
   >"$LOG" 2>&1 &
 SERVER_PID=$!
 trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
@@ -42,25 +43,23 @@ curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 || {
 }
 
 echo "==> Sending a cleanup prompt"
-# Note on prompt shape: spec 6 wraps the text to rewrite in <new></new> tags for
-# the self-correction merge. On this 350M model that tag reliably derails the
-# output -- it answered the tagged prompt in Portuguese while answering the same
-# untagged prompt correctly in English. Phases 3-4 own the real cleanup prompt and
-# must solve that; this smoke test only needs to prove the server round-trips and
-# the model can follow a cleanup instruction at all, so it sends the plain form.
-curl -fsS "http://127.0.0.1:$PORT/v1/chat/completions" \
+# Sotto is a base-model fine-tune, not a chat model: it takes the `### Input:` /
+# `### Output:` completion format from its model card, at temperature 0 with a
+# 1.05 repeat penalty, through `/completion` rather than the chat endpoint
+# (ADR 0006). Phase 0's `<new></new>` finding was on the general 350M chat
+# model; whether spec 6's merge shape works on Sotto is a phase 4 question.
+curl -fsS "http://127.0.0.1:$PORT/completion" \
   -H 'Content-Type: application/json' \
   -d '{
-    "messages": [
-      {"role": "system", "content": "Rewrite the user message as clean written English. Remove filler words. Fix punctuation and capitalization. Reply with only the rewritten sentence."},
-      {"role": "user", "content": "so um i think we should uh probably ship it on monday"}
-    ],
+    "prompt": "### Input:\nso um i think we should uh probably ship it on monday\n\n### Output:\n",
     "temperature": 0,
-    "max_tokens": 64
+    "repeat_penalty": 1.05,
+    "n_predict": 64,
+    "stop": ["###", "\n\n"]
   }' | python3 -c '
 import json, re, sys
 
-text = json.load(sys.stdin)["choices"][0]["message"]["content"].strip()
+text = json.load(sys.stdin)["content"].strip()
 print("RESULT:", text)
 
 # A 200 from the server is not a passing smoke test: the point is that the model

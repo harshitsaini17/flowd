@@ -347,7 +347,9 @@ The models are separately licensed and are **not** covered by flowd's licence:
   Licence that forbids commercial use. flowd is English-only today, so it stays
   on the permissive path; if you point `stt.model` at a non-English model, that
   licence is yours to honour.
-- **LFM2.5-350M** (cleanup, phase 3) — see the model card linked in
+- **Sotto cleanup LFM2.5-350M** (cleanup, phase 3) — a community fine-tune of
+  Liquid AI's LFM2.5-350M-Base under the LFM Open License v1.0, which limits
+  commercial use by larger companies. See the model card linked in
   [`models.lock`](models.lock) for its terms.
 
 `models.lock` records the exact revision and SHA-256 of every pinned file.

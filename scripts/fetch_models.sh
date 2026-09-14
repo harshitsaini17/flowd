@@ -10,8 +10,9 @@ MODELS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/flowd/models"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCK="$REPO_ROOT/models.lock"
 
-LFM_FILE="LFM2.5-350M-QAD-Q4_0.gguf"
-LFM_URL="https://huggingface.co/LiquidAI/LFM2.5-350M-GGUF/resolve/main/$LFM_FILE"
+# Sotto, a dictation-cleanup fine-tune of LFM2.5-350M-Base (ADR 0006).
+LFM_FILE="sotto-cleanup-lfm25-350m-q4_k_m.gguf"
+LFM_URL="https://huggingface.co/baddu/sotto-cleanup-lfm25-350m-GGUF/resolve/main/$LFM_FILE"
 
 mkdir -p "$MODELS_DIR"
 
@@ -64,7 +65,7 @@ models_dir, lock_path, lfm_file, lfm_url, downloaded = (
     sys.argv[4],
     sys.argv[5],
 )
-sources = {lfm_file: (lfm_url, "LFM Open License")}
+sources = {lfm_file: (lfm_url, "LFM Open License v1.0")}
 
 try:
     doc = build_lock(

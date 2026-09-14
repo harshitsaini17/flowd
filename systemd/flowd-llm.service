@@ -1,5 +1,5 @@
 [Unit]
-Description=flowd cleanup LLM (llama-server, LFM2.5-350M)
+Description=flowd cleanup LLM (llama-server, Sotto cleanup LFM2.5-350M)
 Documentation=https://github.com/harshitsaini17/flowd
 
 [Service]
@@ -9,7 +9,7 @@ Type=simple
 # you have moved XDG_DATA_HOME, `scripts/fetch_models.sh` honours it and this
 # line does not, so edit the path to match or llama-server will not find the
 # model. Everything inside flowd itself resolves the directory properly.
-Environment=FLOWD_MODEL=%h/.local/share/flowd/models/LFM2.5-350M-QAD-Q4_0.gguf
+Environment=FLOWD_MODEL=%h/.local/share/flowd/models/sotto-cleanup-lfm25-350m-q4_k_m.gguf
 # `-t` is physical cores minus two (spec 4), leaving one core for STT and one
 # for the rest of the desktop; 4 suits a 6-core machine. systemd cannot count
 # cores, so this is a value to set, not a default that adapts:
@@ -18,8 +18,13 @@ Environment=FLOWD_MODEL=%h/.local/share/flowd/models/LFM2.5-350M-QAD-Q4_0.gguf
 #
 # Too high is the mistake that matters — llama-server then competes with the
 # Moonshine decode for the same cores, and dictation latency is what suffers.
-ExecStart=/usr/bin/llama-server -m ${FLOWD_MODEL} -c 2048 --jinja \
-          --host 127.0.0.1 --port 8177 -t 4
+#
+# The rest trims memory (ADR 0006): cleanup chunks are 5-25 words, so one slot
+# with a 1,024-token context and small batches is ample, and the prompt cache
+# only holds memory for requests that never repeat. Together they save ~30 MB
+# at the same latency.
+ExecStart=/usr/bin/llama-server -m ${FLOWD_MODEL} -c 1024 -np 1 -b 128 -ub 128 \
+          -cram 0 --host 127.0.0.1 --port 8177 -t 4
 Restart=on-failure
 RestartSec=2
 
