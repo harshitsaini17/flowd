@@ -72,8 +72,9 @@ downloader, as ADR 0001 describes.
 
 - Spec 3's model table no longer describes the default. The spec is left as
   written and this record is the deviation from it.
-- Small is 136 MB on disk against medium's 257 MB, so it should be smaller in memory too, which would help phase
-  2's resident-memory finding; resident memory has not been re-measured.
+- Small is 136 MB on disk against medium's 257 MB. Re-measured 2026-09-27:
+  the daemon is 242.9 MB idle and 424.6 MB after dictating, against medium's
+  711.4 MB (phase 2 report, "Measurements").
 - Owners on slower machines who still see lag can drop to tiny with one line of
   config, at the accuracy cost shown above.
 - Not re-measured with small: spec 10.1's release-to-commit percentiles. The
