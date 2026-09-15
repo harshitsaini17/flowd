@@ -6,11 +6,11 @@ import re
 from collections.abc import Mapping
 
 #: Fillers removed wherever they stand alone as a word.
-_ALWAYS_FILLERS = ("um", "uh", "er", "ah", "hmm", "mm", "erm")
+ALWAYS_FILLERS = ("um", "uh", "er", "ah", "hmm", "mm", "erm")
 #: Removed only when set off by commas, so "I like pizza" survives.
 _HEDGED_FILLERS = ("like", "you know", "sort of", "kind of", "i mean")
 
-_FILLER_RE = re.compile(r"\b(?:" + "|".join(_ALWAYS_FILLERS) + r")\b[,]?\s*", re.IGNORECASE)
+_FILLER_RE = re.compile(r"\b(?:" + "|".join(ALWAYS_FILLERS) + r")\b[,]?\s*", re.IGNORECASE)
 #: The comma that opens the aside is consumed with it: "to, like, the store"
 #: must become "to the store", not "to, the store".
 _HEDGED_RE = re.compile(
@@ -33,11 +33,7 @@ def basic_clean(raw: str, replacements: Mapping[str, str] | None = None) -> str:
     text = _FILLER_RE.sub("", text)
     text = _REPEAT_RE.sub(r"\1", text)
 
-    for source, target in (replacements or {}).items():
-        # The target is text a user typed into vocab.toml, not a replacement
-        # template: a lambda keeps a backslash in it literal, where a plain
-        # string would be read as a group reference and raise re.error.
-        text = re.sub(re.escape(source), lambda _m, t=target: t, text, flags=re.IGNORECASE)  # type: ignore[misc]
+    text = apply_replacements(text, replacements)
 
     text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
     text = _MULTISPACE_RE.sub(" ", text).strip(" ,")
@@ -48,4 +44,19 @@ def basic_clean(raw: str, replacements: Mapping[str, str] | None = None) -> str:
     text = text[0].upper() + text[1:]
     if text[-1] not in ".!?":
         text += "."
+    return text
+
+
+def apply_replacements(text: str, replacements: Mapping[str, str] | None) -> str:
+    """Apply `vocab.toml` [replace] fixes, case-insensitively (spec 7.6).
+
+    Separate from `basic_clean` because the LLM path needs them too: spec 7.6
+    applies them "in basic_clean and before the LLM", so the model sees
+    "Hyprland" rather than guessing at "hyper land".
+    """
+    for source, target in (replacements or {}).items():
+        # The target is text a user typed into vocab.toml, not a replacement
+        # template: a lambda keeps a backslash in it literal, where a plain
+        # string would be read as a group reference and raise re.error.
+        text = re.sub(re.escape(source), lambda _m, t=target: t, text, flags=re.IGNORECASE)  # type: ignore[misc]
     return text

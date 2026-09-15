@@ -1,6 +1,6 @@
 import pytest
 
-from flowd.textclean import basic_clean
+from flowd.textclean import apply_replacements, basic_clean
 
 
 @pytest.mark.parametrize(
@@ -52,3 +52,10 @@ def test_is_fast_enough() -> None:
     for _ in range(100):
         basic_clean(text)
     assert (time.perf_counter() - start) / 100 < 0.001
+
+
+def test_apply_replacements_leaves_everything_else_alone() -> None:
+    assert apply_replacements("open hyper land now", {"hyper land": "Hyprland"}) == (
+        "open Hyprland now"
+    )
+    assert apply_replacements("um open it", None) == "um open it"
