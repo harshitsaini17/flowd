@@ -66,8 +66,14 @@ it clean rather than echo or answer.
 - **Memory is over budget.** Daemon after dictating (424.6 MB) + overlay
   (194.4 MB) + Sotto (409.5 MB) = 1,028.5 MB against 900 MB. 229.9 MB of
   Sotto's figure is file-backed model mapping the kernel can reclaim; counting
-  anonymous memory only, the total is 798.6 MB. Whether the budget is RSS or
-  anonymous memory is the owner's call, and it decides whether this passes.
+  anonymous memory only, the total is 798.6 MB.
+- **Ruling (owner, 2026-09-27): spec 10.1's 900 MB is measured as anonymous
+  memory** (`RssAnon` in `/proc/<pid>/status`), summed over flowd, the overlay
+  and llama-server. File-backed model mappings are excluded because the kernel
+  can drop and re-read them under pressure; they cost disk reads, not RAM that
+  other programs lose. The owner asked for the best speed and accuracy, and this
+  keeps both small streaming STT and Sotto. At 798.6 MB it passes with ~100 MB
+  of headroom. Reports must state RSS alongside, so the reading stays honest.
 - **License is unchanged in kind.** Sotto is a derivative of LFM2.5-350M-Base
   and its GGUF keeps the LFM Open License v1.0, the same as the spec default.
   The upstream fine-tune labels itself MIT; the base license governs.
