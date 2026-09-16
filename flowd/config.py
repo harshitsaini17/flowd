@@ -7,6 +7,7 @@ import tomllib
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 APP = "flowd"
 
@@ -112,6 +113,14 @@ class Llm:
     timeout_ms: int = 2000
     final_timeout_ms: int = 800
     max_tokens_factor: float = 1.5
+    #: spec 5.5: "Health check every 30 s while idle".
+    health_interval_s: int = 30
+    #: spec 5.5: "Mark the LLM down after 2 consecutive failures".
+    down_after_failures: int = 2
+    #: Must match llama-server's `-c` (systemd/flowd-llm.service). Prompt plus
+    #: `max_tokens` beyond this would be cut off mid-answer, so such text skips
+    #: the LLM instead.
+    context_tokens: int = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +184,7 @@ class Config:
 
 
 _POSITIVE_INT = {
+    "context_tokens",
     "debounce_ms",
     "sample_rate",
     "block_ms",
@@ -190,11 +200,17 @@ _POSITIVE_INT = {
     "short_bypass_words",
     "timeout_ms",
     "final_timeout_ms",
+    "health_interval_s",
+    "down_after_failures",
     "restore_delay_ms",
     "max_lines",
     "fade_ms",
 }
 _UNIT_FLOAT = {"threshold", "novel_word_max"}
+_POSITIVE_FLOAT = {"max_tokens_factor", "len_ratio_min", "len_ratio_max", "len_ratio_min_merged"}
+#: spec 13.2 forbids network calls: the cleanup server must be on this machine,
+#: or every dictation would leave it as plain HTTP.
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 _VALID_HOTKEY_MODES = ("toggle", "ptt")
 _VALID_LOG_LEVELS = ("debug", "info", "warning", "error")
 
@@ -226,6 +242,10 @@ def _validate_section(section: Any, name: str) -> None:
                 raise ValueError(f"[{name}] {field.name}: must be a number, got {value!r}")
             if not 0.0 <= float(value) <= 1.0:
                 raise ValueError(f"[{name}] {field.name}: must be between 0 and 1, got {value!r}")
+        if field.name in _POSITIVE_FLOAT and (
+            isinstance(value, bool) or not isinstance(value, int | float) or value <= 0
+        ):
+            raise ValueError(f"[{name}] {field.name}: must be a positive number, got {value!r}")
 
 
 def _validate(cfg: Config) -> None:
@@ -237,6 +257,8 @@ def _validate(cfg: Config) -> None:
         raise ValueError("[chunking] min_chunk_words must not exceed max_chunk_words")
     if cfg.guardrails.len_ratio_min > cfg.guardrails.len_ratio_max:
         raise ValueError("[guardrails] len_ratio_min must not exceed len_ratio_max")
+    if urlsplit(cfg.llm.url).hostname not in _LOOPBACK_HOSTS:
+        raise ValueError(f"[llm] url: must point at this machine ({', '.join(_LOOPBACK_HOSTS)})")
     if not cfg.inject.order:
         raise ValueError("[inject] order: must list at least one backend")
 

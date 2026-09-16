@@ -76,3 +76,36 @@ def test_default_stt_model_is_small_streaming() -> None:
     # small scored 3.71% WER against medium's 4.50% and decodes faster, so the
     # overlay keeps up with continuous speech. See ADR 0005.
     assert Stt().model == "small-streaming-en"
+
+
+def test_llm_health_defaults_follow_spec_5_5() -> None:
+    cfg = load_config(Path("/nonexistent/config.toml"))
+    assert cfg.llm.health_interval_s == 30
+    assert cfg.llm.down_after_failures == 2
+    assert cfg.llm.context_tokens == 1024
+
+
+@pytest.mark.parametrize(
+    "url", ["http://example.com:8177", "http://192.168.1.5:8177", "http://10.0.0.2"]
+)
+def test_llm_url_must_be_loopback(tmp_path: Path, url: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f'[llm]\nurl = "{url}"\n')
+    with pytest.raises(ValueError, match="llm"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:9000", "http://localhost:8177", "http://[::1]:8177"]
+)
+def test_loopback_llm_urls_are_accepted(tmp_path: Path, url: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f'[llm]\nurl = "{url}"\n')
+    assert load_config(path).llm.url == url
+
+
+def test_a_non_positive_length_ratio_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[guardrails]\nlen_ratio_min = 0\n")
+    with pytest.raises(ValueError, match="len_ratio_min"):
+        load_config(path)
