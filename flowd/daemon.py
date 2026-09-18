@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import subprocess
 import time
@@ -13,6 +14,8 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from flowd import guardrails
+from flowd.cleanup import CleanupClient
 from flowd.config import Config, config_path, reload_config, state_dir
 from flowd.inject import inject_text as real_inject
 from flowd.inject.base import InjectResult
@@ -21,7 +24,7 @@ from flowd.metrics import SessionMetrics, read_records, summarise, write_record
 from flowd.session import Session
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
-from flowd.textclean import basic_clean
+from flowd.textclean import apply_replacements, basic_clean
 from flowd.vocab import Vocab, load_vocab, vocab_path
 
 log = logging.getLogger(__name__)
@@ -64,6 +67,7 @@ class Daemon:
         write_metrics: bool = True,
         vocab: Vocab | None = None,
         vocab_file: Path | None = None,
+        cleanup: CleanupClient | None = None,
     ) -> None:
         self.cfg = cfg
         self.stt = stt
@@ -75,6 +79,8 @@ class Daemon:
         self.vocab_file = vocab_file or vocab_path()
         self.vocab = vocab or Vocab()
         self.metrics_path = metrics_path
+        # None runs every session through `basic_clean` alone, as phase 2 did.
+        self.cleanup = cleanup
         # False for `--replay`: a probe run is not dictation, and written to the
         # log it would show up in `flowctl stats` as one.
         self.write_metrics = write_metrics
@@ -83,6 +89,9 @@ class Daemon:
         self.metrics: SessionMetrics | None = None
         self.last_text: str = ""
         self.last_record: dict[str, Any] = {}
+        # The last session's STT text before cleanup, for the eval's raw WER
+        # (spec 11.3). In memory only, never logged (spec 13.2).
+        self.last_raw: str = ""
         # Moonshine runs off the loop (spec 4 gives STT its own worker), and
         # there is one stream per session, so the three calls that touch it —
         # `feed`, `finalize` and `reset` — must not overlap. Without this, a
@@ -90,6 +99,9 @@ class Daemon:
         # still reading it. Held only around those calls, so `status`, `last`
         # and `stats` continue to answer while the model runs.
         self._stt_lock = asyncio.Lock()
+        # Fire-and-forget work (desktop notifications), held so it is not
+        # garbage-collected mid-flight and so tests can wait for it.
+        self._background: set[asyncio.Future[None]] = set()
 
     # --- command handling -------------------------------------------------
 
@@ -113,6 +125,11 @@ class Daemon:
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
             await self.apply_vocab(new_vocab)
+            if self.cleanup is not None and new_cfg.llm != self.cfg.llm:
+                # The client holds its URL and timeouts from construction, so a
+                # changed [llm] table needs a new one or the reload is a no-op.
+                old, self.cleanup = self.cleanup, CleanupClient(new_cfg.llm)
+                await old.aclose()
             self.cfg = new_cfg
             # The state machine holds its own copy of the window, taken at
             # construction, so assigning `self.cfg` alone would report success
@@ -249,10 +266,9 @@ class Daemon:
         is the other shape, blanking all three zones for when there is no
         transcript to show.
 
-        A chunk moves from pending to polished when it resolves. Phase 2 has no
-        LLM and resolves nothing, so in practice the polished zone stays empty
-        and everything shows dimmed until phase 3 fills it; the split is written
-        here rather than later because this is the code that owns it.
+        A chunk moves from pending to polished when it resolves. Phase 3
+        resolves every chunk at release (`_clean`), so the polished zone fills
+        in the final frame.
 
         `Chunk.resolved` rather than a list of state names: the states that count
         as finished are session.py's to define, and a second copy of that list
@@ -335,22 +351,22 @@ class Daemon:
 
         raw_parts = [c.raw for c in self.session.visible_chunks()]
         if not any(part.strip() for part in raw_parts):
-            # spec 9.1: no speech at all means inject nothing.
-            self._show_status("No speech")
-            # Still walk the machine back to IDLE. The chunks resolved, to
-            # nothing, and there is nothing to inject; returning straight from
-            # FINALIZING would strand it there and every later hotkey press
-            # would be ignored until the daemon was restarted.
-            self.machine.handle(Event.CHUNKS_RESOLVED)
-            self.machine.handle(Event.INJECT_DONE)
-            # `linger` even though there is no text: spec 9.1 asks for "No
-            # speech" to stay up for a second, and the default would hide it in
-            # the same tick it was rendered.
-            self._end_session(text="", reason="no speech", linger=True)
-            return {"ok": True, "reason": "no speech"}
+            return self._no_speech()
 
-        cleaned = [basic_clean(part, self.vocab.replace) for part in raw_parts]
-        final = join_chunks(cleaned)
+        session = self.session
+        self.last_raw = " ".join(p.strip() for p in raw_parts if p.strip())
+        final = await self._clean(raw_parts)
+        if self.session is not session:
+            # A cancel landed while the LLM was working (spec 4: FINALIZING +
+            # cancel → IDLE, discard). `_discard` has already closed this
+            # session out, and `self.session` may be a new one by now, so
+            # nothing here may touch either.
+            return {"ok": False, "reason": "cancelled"}
+        if not final:
+            # Only fillers ("um, uh"): cleaning left nothing, and injecting an
+            # empty string would still paste over the user's selection.
+            return self._no_speech()
+        assert self.metrics is not None
         self.metrics.count("words", len(final.split()))
         self.metrics.text = final
 
@@ -364,7 +380,100 @@ class Daemon:
 
         self.machine.handle(Event.INJECT_DONE)
         self._end_session(text=final, reason=None)
+        if self.cleanup is not None and self.cleanup.down:
+            # spec 9.3: once per session, and only after the text is in: the
+            # user's words matter more than the news that cleanup is degraded.
+            #
+            # Not awaited: `notify-send` can take its full 2 s timeout, and the
+            # `stop` reply that `flowctl` is waiting on must not wait for it.
+            future = asyncio.get_running_loop().run_in_executor(
+                None, self._notify, "flowd: cleanup LLM is down; using basic cleanup"
+            )
+            self._background.add(future)
+            future.add_done_callback(self._background.discard)
         return {"ok": True, "text": final, "backend": result.backend}
+
+    def _no_speech(self) -> dict[str, Any]:
+        """spec 9.1: no speech at all means inject nothing."""
+        self._show_status("No speech")
+        # Still walk the machine back to IDLE. The chunks resolved, to
+        # nothing, and there is nothing to inject; returning straight from
+        # FINALIZING would strand it there and every later hotkey press
+        # would be ignored until the daemon was restarted.
+        self.machine.handle(Event.CHUNKS_RESOLVED)
+        self.machine.handle(Event.INJECT_DONE)
+        # `linger` even though there is no text: spec 9.1 asks for "No
+        # speech" to stay up for a second, and the default would hide it in
+        # the same tick it was rendered.
+        self._end_session(text="", reason="no speech", linger=True)
+        return {"ok": True, "reason": "no speech"}
+
+    async def _clean(self, raw_parts: list[str]) -> str:
+        """One LLM pass over the whole session, or `basic_clean` per chunk.
+
+        Resolves every visible chunk, so the final frame shows polished text.
+        Phase 3 is spec 12's single pass at release: the chunks are cleaned as
+        one text, which then belongs to the first chunk, the rest folding into
+        it as MERGED.
+        """
+        session = self.session
+        assert session is not None
+        chunks = session.visible_chunks()
+        raw = apply_replacements(" ".join(p.strip() for p in raw_parts), self.vocab.replace)
+        polished = await self._polish(raw)
+        if self.session is not session:
+            return ""  # cancelled while the LLM worked; `_finalize` bails out
+        if polished is None:
+            for chunk in chunks:
+                chunk.polished = basic_clean(chunk.raw, self.vocab.replace)
+                chunk.state = "FALLBACK"
+            final = join_chunks([c.polished or "" for c in chunks])
+        else:
+            final = join_chunks([polished])
+            chunks[0].polished = final
+            chunks[0].state = "DONE"
+            for chunk in chunks[1:]:
+                chunk.state = "MERGED"
+        for chunk in chunks:
+            chunk.t_resolved = self.clock()
+        self._render()
+        return final
+
+    async def _polish(self, raw: str) -> str | None:
+        """The LLM's rewrite of `raw` if it passes spec 7.4, else None.
+
+        Every None but the short bypass is a fallback, counted and attributed
+        in the metrics; the text itself is never logged (spec 13.2).
+        """
+        metrics = self.metrics
+        assert metrics is not None
+        if self.cleanup is None:
+            return None
+        if len(raw.split()) < self.cfg.chunking.short_bypass_words:
+            # spec 9.1: too short to be worth the round trip, and not a fallback.
+            metrics.count("bypassed")
+            return None
+        result = await self.cleanup.clean(raw, self.cfg.llm.final_timeout_ms)
+        if self.metrics is not metrics:
+            return None  # cancelled while waiting; the caller notices
+        metrics.mark("cleaned")
+        if result.text is None:
+            metrics.count("fallbacks")
+            metrics.error(f"llm: {result.error}")
+            return None
+        failed = guardrails.check(
+            raw,
+            result.text,
+            self.cfg.guardrails,
+            terms=self.vocab.terms,
+            merged=guardrails.has_correction_cue(raw, self.cfg.chunking.correction_cues),
+        )
+        if failed is not None:
+            log.info("cleanup output failed guardrail check %d; using fallback", failed)
+            metrics.fail(failed)
+            metrics.count("fallbacks")
+            return None
+        return result.text
 
     async def _fail(self, exc: Exception) -> None:
         """Route a mid-session engine failure to spec 4's fatal transition.
@@ -478,12 +587,19 @@ class Daemon:
         server = await serve(socket_path, self.handle)
         log.info("flowd listening on %s", socket_path)
         block_s = self.cfg.audio.block_ms / 1000.0
+        health = asyncio.create_task(self._health_loop()) if self.cleanup is not None else None
         try:
             while True:
                 await self.pump()
                 await self._check_max_duration()
                 await asyncio.sleep(block_s if self.session is not None else 0.2)
         finally:
+            if health is not None:
+                health.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await health
+            if self.cleanup is not None:
+                await self.cleanup.aclose()
             server.close()
             await server.wait_closed()
             # The overlay is our child (spec 9.5). It does exit when its stdin
@@ -491,6 +607,18 @@ class Daemon:
             # daemon does not leave a stale preview over the user's work.
             if self.overlay is not None:
                 self.overlay.stop()
+
+    async def _health_loop(self) -> None:
+        """spec 5.5: probe the LLM every `health_interval_s` while idle.
+
+        This is the only way back from `down`, since a down client sends no
+        cleanup requests. Skipped mid-session so a probe never competes with a
+        dictation for the server's single slot.
+        """
+        while True:
+            if self.cleanup is not None and self.session is None:
+                await self.cleanup.check_health()
+            await asyncio.sleep(self.cfg.llm.health_interval_s)
 
     async def _check_max_duration(self) -> None:
         if self.session is None or self.machine.state is not State.RECORDING:

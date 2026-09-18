@@ -219,3 +219,14 @@ def test_every_daemon_command_is_offered(monkeypatch: pytest.MonkeyPatch) -> Non
     from flowd.control import VALID_COMMANDS
 
     assert set(load_flowctl().COMMANDS) == set(VALID_COMMANDS)
+
+
+def test_reply_timeout_covers_a_stop_with_the_llm() -> None:
+    """A `stop` replies after finalize (~850 ms worst), the LLM pass (capped at
+    `final_timeout_ms`) and injection; the client must outwait all three."""
+    from flowd.config import Llm
+
+    worst_finalize_s = 0.85
+    needed_s = worst_finalize_s + Llm().final_timeout_ms / 1000 + 1  # 1 s for inject
+    timeout_s = load_flowctl().REPLY_TIMEOUT_S
+    assert timeout_s > needed_s

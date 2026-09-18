@@ -22,6 +22,11 @@ APP = "flowd"
 SOCKET_NAME = "flowd.sock"
 COMMANDS = ("start", "stop", "toggle", "cancel", "status", "last", "stats", "reload")
 USAGE = f"usage: flowctl {{{'|'.join(COMMANDS)}}} [--rewrite]"
+#: How long to wait for the daemon's reply. A `stop` answers only after STT
+#: finalize (up to ~850 ms), the cleanup pass (capped at `final_timeout_ms`,
+#: 800 ms) and injection; phase 2's 2 s left no margin once the LLM joined, and
+#: a timeout here reports an error for a dictation that actually succeeded.
+REPLY_TIMEOUT_S = 5.0
 
 
 def socket_path() -> str:
@@ -64,7 +69,7 @@ def main(argv: list[str]) -> int:
     path = socket_path()
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(2.0)
+            sock.settimeout(REPLY_TIMEOUT_S)
             sock.connect(path)
             sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
             chunks: list[bytes] = []

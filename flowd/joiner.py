@@ -12,6 +12,9 @@ _SENTENCE_START_RE = re.compile(r"(^|[.!?]\s+)([a-z])")
 #: Punctuation that cannot end dictated text; the final chunk often trails one
 #: because the speaker stopped mid-clause.
 _TRAILING_SOFT_PUNCT_RE = re.compile(r"[,;]+$")
+#: "weariness,?" — seen from the cleanup LLM when the speaker trailed off on a
+#: comma. The terminal mark wins; the comma before it is noise.
+_SOFT_BEFORE_TERMINAL_RE = re.compile(r"[,;]+([.!?])")
 #: A colon is kept: dictation that introduces a list legitimately ends in one.
 _TERMINALS = ".!?:"
 
@@ -22,6 +25,7 @@ def join_chunks(texts: Sequence[str]) -> str:
         return ""
     joined = _MULTISPACE_RE.sub(" ", joined)
     joined = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", joined).strip()
+    joined = _SOFT_BEFORE_TERMINAL_RE.sub(r"\1", joined)
     joined = _TRAILING_SOFT_PUNCT_RE.sub("", joined).strip()
     if not joined:
         return ""

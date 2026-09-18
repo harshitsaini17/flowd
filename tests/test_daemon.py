@@ -643,10 +643,9 @@ async def test_resolved_chunks_render_in_the_polished_zone() -> None:
     """The three zones split by chunk state (spec 6.1): a resolved chunk shows as
     polished, an unresolved one as pending.
 
-    Phase 2 has no LLM and so never resolves a chunk, which is why this sets the
-    state directly. The split is phase 3's contract, pinned here because
-    `_render` is the code that has to honour it, and a `_render` that ignores
-    state would otherwise pass every phase 2 test.
+    Chunks resolve only at release in phase 3, which is why this sets the state
+    directly mid-session: it pins `_render`'s split independently of when
+    resolution happens.
     """
     d = daemon(
         FakeSttEngine([[Committed("first chunk here")], [Committed("second chunk here")]]),

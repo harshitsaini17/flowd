@@ -126,6 +126,7 @@ def replay_config(cfg: Config) -> Config:
 
 
 async def _replay(cfg: Config, path: Path, fast: bool) -> int:
+    from flowd.cleanup import CleanupClient
     from flowd.daemon import Daemon
 
     pcm = load_wav(path, cfg.audio.sample_rate)
@@ -144,19 +145,30 @@ async def _replay(cfg: Config, path: Path, fast: bool) -> int:
     def no_inject(text: str, inject_cfg: Any, **kwargs: Any) -> InjectResult:
         return InjectResult(ok=True, backend="replay")
 
+    # The real cleanup client: a replay measures release → inject, and the LLM
+    # pass is the largest part of that in phase 3.
     daemon = Daemon(
         cfg=replay_config(cfg),
         stt=engine,
         capture=capture,
         injector=no_inject,
         write_metrics=False,
+        cleanup=CleanupClient(cfg.llm),
     )
-    await daemon.handle({"cmd": "start"})
-    while not capture.exhausted:
-        await daemon.pump()
-    reply = await daemon.handle({"cmd": "stop"})
+    try:
+        await daemon.handle({"cmd": "start"})
+        while not capture.exhausted:
+            await daemon.pump()
+        reply = await daemon.handle({"cmd": "stop"})
+    finally:
+        if daemon.cleanup is not None:
+            await daemon.cleanup.aclose()
+    record = daemon.last_record
     print(f"TEXT: {reply.get('text', '')}")
-    print(f"STAGES: {daemon.last_record.get('stages', {})}")
+    print(f"STAGES: {record.get('stages', {})}")
+    # Which path produced TEXT: the LLM, a bypass, or a fallback and why.
+    print(f"COUNTS: {record.get('counts', {})}")
+    print(f"FALLBACK: checks={record.get('fallback_checks', {})} errors={record.get('errors', [])}")
     return 0
 
 
@@ -188,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.replay is not None:
         return asyncio.run(_replay(cfg, args.replay, args.fast))
 
+    from flowd.cleanup import CleanupClient
     from flowd.control import AlreadyRunning
     from flowd.daemon import Daemon
     from flowd.overlay_ipc import OverlayProcess
@@ -206,7 +219,9 @@ def main(argv: list[str] | None = None) -> int:
     # GTK process. `--replay` deliberately gets none — it exists to measure
     # latency, and a window competing for cores would skew what it reports.
     overlay = OverlayProcess(cfg.overlay)
-    daemon = Daemon(cfg=cfg, stt=engine, capture=capture, overlay=overlay)
+    daemon = Daemon(
+        cfg=cfg, stt=engine, capture=capture, overlay=overlay, cleanup=CleanupClient(cfg.llm)
+    )
     try:
         asyncio.run(daemon.run(runtime_dir() / "flowd.sock"))
     except AlreadyRunning as exc:

@@ -48,3 +48,9 @@ def test_trailing_colon_is_kept() -> None:
 def test_mid_sentence_capitals_are_preserved() -> None:
     """Proper nouns and acronyms must survive; the joiner only ever adds case."""
     assert join_chunks(["i use Hyprland with PipeWire"]) == "I use Hyprland with PipeWire."
+
+
+def test_a_comma_before_terminal_punctuation_is_dropped() -> None:
+    # Seen from the cleanup LLM on the first eval run: "Pale for weariness,?"
+    assert join_chunks(["Pale for weariness,?"]) == "Pale for weariness?"
+    assert join_chunks(["wait ,. then go"]) == "Wait. Then go."
