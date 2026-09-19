@@ -19,15 +19,16 @@ flowd is under active development. What works today:
 | Live preview overlay while you speak | **works** |
 | Streaming transcription with incremental commits | **works** |
 | Per-session latency metrics (`flowctl stats`) | **works** |
-| LLM cleanup of filler words, punctuation and casing | **not yet** — phase 3 |
+| LLM cleanup of filler words, punctuation and casing | **works** — one pass at release |
 | Personal vocabulary (`vocab.toml`: recognizer terms, replacements) | **works** |
 | Per-application modes | **not yet** — phase 5 |
 
-Transcripts currently get rule-based tidying only: sentence casing, spacing
-around punctuation, a terminal full stop. The local language model that removes
-"um" and repairs half-finished sentences is the next phase. The
-[`flowd-llm`](systemd/flowd-llm.service) unit ships now so the model is in place
-when that lands.
+When you stop dictating, a small local language model
+([`flowd-llm`](systemd/flowd-llm.service), ADR 0006) removes fillers, applies
+self-corrections ("five, no wait, six" → "6") and fixes punctuation and casing.
+Its output is checked for invented content before anything is pasted, and when
+the model is slow, down or fails a check, flowd pastes rule-based tidying
+instead. Dictation never waits more than 800 ms on the model.
 
 The full architecture and build specification is [`docs/spec.md`](docs/spec.md);
 decisions that diverge from it are recorded in
@@ -292,6 +293,14 @@ hotkeys section. Elsewhere, check that `gtk4-layer-shell` and `python-gobject`
 are installed, and look for the overlay's reason in the log. The overlay is a
 separate process on purpose: if it crashes, dictation keeps working.
 
+**Text arrives without cleanup.** You get fillers and lowercase names when the
+model is not answering, and a desktop notification says so once per dictation.
+Check `systemctl --user status flowd-llm`. flowd probes it every 30 s and picks
+it up again on its own once it is back. A single dictation pasted without
+cleanup is usually a guardrail rejecting the model's output, which is the
+intended behaviour. `~/.local/state/flowd/metrics.jsonl` records each one by
+check number, never with the text.
+
 **A model fails verification.** Run `scripts/fetch_models.sh`. flowd refuses to
 start on a hash mismatch rather than running a model it cannot identify.
 
@@ -307,6 +316,34 @@ foreground with `flowd --log-level debug`.
 **Reporting a bug.** Include the output of `flowd --version`, your compositor
 and session type, and the last 50 journal lines. Please do not paste transcript
 text you would not want to be public.
+
+### Cleanup
+
+The `[llm]` table points at the local `llama-server`. The URL must be on this
+machine: flowd refuses to start with any other host. `final_timeout_ms` (800)
+is how long a release waits for the model before pasting the fallback.
+Dictations under five words skip the model, since there is nothing to gain
+from it (`[chunking] short_bypass_words`).
+
+## Evaluating changes
+
+Changing a prompt, a threshold or a model needs a before-and-after run on your
+own recordings (spec 11.4). Put `NNN.wav` (16 kHz mono) and `NNN.ref.txt` (the
+text you wanted) in `eval/data/`, optionally with `NNN.raw.txt` (exactly what
+you said), then:
+
+```bash
+uv run python eval/run_eval.py --no-llm   # baseline: rule-based cleanup only
+uv run python eval/run_eval.py            # with the model; needs flowd-llm running
+```
+
+Each run writes `eval/results/<date>-<sha>.json`: WER before and after cleanup,
+the fallback rate and which checks fired, release → paste latency, and every
+accepted output that added a word, listed for you to read. The results hold
+your transcripts, so `eval/data/` and `eval/results/` are gitignored.
+`uv run python eval/seed_librispeech.py` fills `eval/data/` from the LibriSpeech
+clips that `scripts/fetch_eval_audio.sh` fetches. That is useful for checking
+the harness, but read audiobooks are not dictation.
 
 ## Privacy
 
