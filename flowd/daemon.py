@@ -617,7 +617,11 @@ class Daemon:
         """
         while True:
             if self.cleanup is not None and self.session is None:
-                await self.cleanup.check_health()
+                try:
+                    await self.cleanup.check_health()
+                except Exception:
+                    # A dead loop leaves a down client down for good.
+                    log.exception("cleanup health probe failed")
             await asyncio.sleep(self.cfg.llm.health_interval_s)
 
     async def _check_max_duration(self) -> None:

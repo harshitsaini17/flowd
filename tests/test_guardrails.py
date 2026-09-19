@@ -133,3 +133,48 @@ def test_novel_words_lists_what_the_model_introduced() -> None:
 )
 def test_correction_cue_detection(raw: str, expected: bool) -> None:
     assert has_correction_cue(raw, CUES) is expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "output"),
+    [
+        ("i'm going to push the branch tonight", "I am going to push the branch tonight."),
+        ("we'll ship it after the review", "We will ship it after the review."),
+        ("you're on call this weekend", "You are on call this weekend."),
+    ],
+)
+def test_check_7_accepts_expanded_contractions(raw: str, output: str) -> None:
+    assert check(raw, output, CFG) is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "output"),
+    [
+        (
+            "so i think we should ship the release on friday",
+            "So I think we shouldn't ship the release on Friday.",
+        ),
+        (
+            "so i think we should ship the release on friday",
+            "So I don't think we should ship the release on Friday.",
+        ),
+        (
+            "i don't think we should ship it on friday",
+            "I think we should ship it on Friday.",
+        ),
+        ("the build is not green yet", "The build is green yet."),
+    ],
+)
+def test_check_9_rejects_a_flipped_negation(raw: str, output: str) -> None:
+    assert check(raw, output, CFG) == 9
+
+
+@pytest.mark.parametrize(
+    ("raw", "output"),
+    [
+        ("i don't think the tests pass", "I do not think the tests pass."),
+        ("we never merge on fridays", "We never merge on Fridays."),
+    ],
+)
+def test_check_9_accepts_a_rewritten_negation(raw: str, output: str) -> None:
+    assert check(raw, output, CFG) is None

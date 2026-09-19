@@ -149,3 +149,26 @@ async def test_text_too_long_for_the_context_skips_the_llm() -> None:
     assert result.error == "too long"
     assert [path for path, _ in server.requests] == ["/tokenize"]
     assert client.down is False
+
+
+def test_the_client_ignores_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Spec 13.2: a proxy in the environment must not carry transcripts off the
+    # machine, even though the configured URL is loopback.
+    monkeypatch.setenv("HTTP_PROXY", "http://10.9.9.9:3128")
+    monkeypatch.setenv("http_proxy", "http://10.9.9.9:3128")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    client = CleanupClient(Llm())
+    inner = client._client
+    assert inner._transport_for_url(httpx.URL(Llm().url)) is inner._transport
+
+
+async def test_a_closed_client_falls_back_instead_of_raising() -> None:
+    # `flowctl reload` closes the old client; a request already in flight on it
+    # must become a fallback, not an exception that strands FINALIZING.
+    client = FakeServer().client()
+    await client.aclose()
+    result = await client.clean("some words to clean up here", 800)
+    assert result.text is None
+    assert result.error is not None and result.error.startswith("error:")
+    assert await client.check_health() is False

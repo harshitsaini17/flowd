@@ -232,3 +232,20 @@ async def test_a_session_of_only_fillers_injects_nothing() -> None:
     assert injected == []
     assert reply == {"ok": True, "reason": "no speech"}
     assert str(d.machine.state) == "idle"
+
+
+async def test_the_health_loop_survives_a_failing_probe() -> None:
+    # The loop is the only way back from `down`; one bad probe must not end it.
+    cleanup = FakeCleanup()
+
+    async def boom() -> bool:
+        cleanup.health_checks += 1
+        raise RuntimeError("client closed")
+
+    cleanup.check_health = boom  # type: ignore[method-assign]
+    d = make(LONG_RAW, cleanup, [], cfg=Config(llm=Llm(health_interval_s=1)))
+    task = asyncio.create_task(d._health_loop())
+    await asyncio.sleep(0.01)
+    assert cleanup.health_checks == 1
+    assert not task.done()
+    task.cancel()

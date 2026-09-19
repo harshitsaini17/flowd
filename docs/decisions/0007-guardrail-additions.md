@@ -32,9 +32,15 @@ Three more gaps turned up while wiring the client:
 1. **Check 7, person or answer flip.** Reject when the output has a first- or
    second-person pronoun (`i me my mine you your yours we us our ours`) that the
    raw text does not have, or when it opens with `yes`, `no`, `yeah` or `nope`
-   and the raw text does not have that word.
+   and the raw text does not have that word. The pronoun inside a raw
+   contraction counts as present, so "i'm" → "I am" is a rewrite, not a flip.
 2. **Check 8, repeated content word.** Reject when a content word (stop-words
    removed) appears more often in the output than in the raw text.
+2a. **Check 9, negation count.** Reject when the output has a different
+   number of negations (`not`, `never`, `cannot`, any `…n't`) than the raw
+   text. Negations are stop words, so checks 3 and 8 never see one being
+   added or dropped. `no` is excluded, because in dictation it is mostly a
+   self-correction cue ("five no wait six").
 3. Checks run in number order and the first failure is recorded, so 7 and 8 are
    reached only by outputs that passed spec's 1–6. Neither adds a threshold.
 4. **Context guard.** `[llm] context_tokens = 1024`, matching `-c`. When raw
@@ -42,13 +48,20 @@ Three more gaps turned up while wiring the client:
    LLM and returns `"too long"`. The daemon falls back and counts it. It is not
    a server failure, so it does not count towards `down`.
 5. **Loopback only.** Config rejects an `[llm] url` whose host is not
-   `127.0.0.1`, `localhost` or `::1`.
+   `127.0.0.1`, `localhost` or `::1`, and the HTTP client ignores proxy
+   environment variables (`trust_env=False`) so a proxy cannot route the
+   request off the machine.
 6. **`flowctl` reply timeout 5 s.**
 7. **A timeout does not count towards `down`.** Only connect errors, HTTP errors
    and malformed replies do. A reply slower than 800 ms means a busy server, not
    a dead one, and marking it down would turn cleanup off for 30 s.
 
 ## Consequences
+
+- Still open, needs an owner ruling: an invented number ("…on Friday at 5")
+  passes when it stays under check 4's 20%, and a single correction cue
+  anywhere in the session loosens check 1's lower bound for all of it.
+  Both change spec 7.4 thresholds.
 
 - Known gap, unchanged: a rewrite that reorders words without adding any (for
   example "delete old branch push main" into a different command) passes every

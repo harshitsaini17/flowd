@@ -77,6 +77,27 @@ _NUMBER_WORDS.update(
 _PERSON_PRONOUNS = frozenset(_words("i me my mine you your yours we us our ours"))
 #: Check 7: an output that opens with one of these is answering, not rewriting.
 _ANSWER_WORDS = frozenset(_words("yes no yeah nope"))
+#: Check 9: words that negate. Not "no": in dictation it is mostly a
+#: self-correction cue ("five no wait six") that the rewrite rightly drops.
+_NEGATIONS = frozenset(_words("not never cannot"))
+
+
+def _is_negation(token: str) -> bool:
+    return token in _NEGATIONS or token.endswith("n't")
+
+
+def _negations(toks: Iterable[str]) -> int:
+    return sum(1 for t in toks if _is_negation(t))
+
+
+def _with_contraction_pronouns(toks: Iterable[str]) -> set[str]:
+    """Tokens plus the pronoun inside each contraction: "i'm" also counts as "i"."""
+    out = set()
+    for t in toks:
+        out.add(t)
+        if "'" in t:
+            out.add(t.split("'", 1)[0])
+    return out
 
 
 def tokens(text: str) -> list[str]:
@@ -145,7 +166,7 @@ def check(
             return 6
 
     raw_set = set(raw_tokens)
-    if _PERSON_PRONOUNS & set(out_tokens) - raw_set:
+    if _PERSON_PRONOUNS & set(out_tokens) - _with_contraction_pronouns(raw_tokens):
         return 7
     if out_tokens[0] in _ANSWER_WORDS and out_tokens[0] not in raw_set:
         return 7
@@ -154,6 +175,10 @@ def check(
     out_counts = Counter(t for t in out_tokens if t not in STOP_WORDS)
     if any(n > raw_counts[t] for t, n in out_counts.items() if t in raw_counts):
         return 8
+    # Negations are stop words, so checks 3 and 8 never see them; one gained or
+    # lost flips the meaning while every other check passes (ADR 0007).
+    if _negations(out_tokens) != _negations(raw_tokens):
+        return 9
     return None
 
 

@@ -53,7 +53,13 @@ class CleanupClient:
 
     def __init__(self, cfg: Llm, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.cfg = cfg
-        self._client = httpx.AsyncClient(base_url=cfg.url, transport=transport)
+        self._client = httpx.AsyncClient(
+            # trust_env=False: a proxy in the environment would otherwise route
+            # loopback requests, and the transcripts in them, off the machine.
+            base_url=cfg.url,
+            transport=transport,
+            trust_env=False,
+        )
         self._failures = 0
         self.down = False
 
@@ -90,7 +96,8 @@ class CleanupClient:
                 )
         except TimeoutError:
             return CleanupResult(None, "timeout")
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            # RuntimeError: the client was closed under us by `flowctl reload`.
             self._record_failure(exc)
             return CleanupResult(None, f"error: {type(exc).__name__}")
         self._failures = 0
@@ -105,7 +112,7 @@ class CleanupClient:
             async with asyncio.timeout(self.cfg.timeout_ms / 1000):
                 response = await self._client.get("/health")
                 response.raise_for_status()
-        except (TimeoutError, httpx.HTTPError) as exc:
+        except (TimeoutError, httpx.HTTPError, RuntimeError) as exc:
             self._record_failure(exc)
             return False
         if self.down:
