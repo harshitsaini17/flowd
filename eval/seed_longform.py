@@ -22,11 +22,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 RATE = 16_000
 GAP_S = 0.6
+_TO_PCM = ("-f", "s16le", "-ac", "1", "-ar", str(RATE), "-")
 
 
 def decode(flac: Path) -> np.ndarray:
     pcm = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", str(flac), "-f", "s16le", "-ac", "1", "-ar", str(RATE), "-"],
+        ["ffmpeg", "-v", "error", "-i", str(flac), *_TO_PCM],
         check=True,
         capture_output=True,
     ).stdout
