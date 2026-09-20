@@ -84,7 +84,9 @@ async def test_accepted_llm_output_is_injected() -> None:
     d = make(LONG_RAW, cleanup, injected)
     await dictate(d)
     assert injected == [LONG_CLEAN]
-    assert cleanup.calls == [(LONG_RAW, Config().llm.final_timeout_ms)]
+    # Sent while recording, as soon as it was committed (spec 6.3), so it gets
+    # the recording-time budget, not the release one.
+    assert cleanup.calls == [(LONG_RAW, Config().llm.timeout_ms)]
     assert "cleaned_ms" in d.last_record["stages"]
     assert "fallbacks" not in d.last_record["counts"]
     assert d.last_raw == LONG_RAW
@@ -178,8 +180,10 @@ async def test_a_cancel_during_the_llm_injects_nothing() -> None:
     d = make(LONG_RAW, cleanup, injected)
     await d.handle({"cmd": "start"})
     await d.pump()
+    while not cleanup.calls:  # dispatched at commit, then held open by the gate
+        await asyncio.sleep(0)
     stop = asyncio.create_task(d.handle({"cmd": "stop"}))
-    while not cleanup.calls:
+    while str(d.machine.state) != "finalizing":
         await asyncio.sleep(0)
     await d.handle({"cmd": "cancel"})
     cleanup.gate.set()

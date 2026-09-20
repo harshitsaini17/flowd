@@ -95,6 +95,9 @@ def summarise(results: Sequence[FileResult]) -> dict[str, Any]:
     """The run's metrics, in spec 11.3's table order."""
     tried = [r for r in results if r.llm_tried]
     fallbacks = [r for r in tried if r.fell_back]
+    # Phase 3 records carry no `llm_chunks`: one request per session.
+    chunks = sum(r.record.get("counts", {}).get("llm_chunks", 1) for r in tried)
+    rejected = sum(r.record.get("counts", {}).get("fallbacks", 0) for r in tried)
     checks: dict[str, int] = {}
     errors: dict[str, int] = {}
     for r in fallbacks:
@@ -108,11 +111,12 @@ def summarise(results: Sequence[FileResult]) -> dict[str, Any]:
         "raw_wer": wer([(r.raw_ref, r.raw) for r in results if r.raw_ref is not None]),
         "cleaned_wer": wer([(r.ref, r.final) for r in results]),
         "llm_sessions": len(tried),
-        "fallbacks": len(fallbacks),
-        # spec 11.3: chunks rejected / chunks. Phase 3 sends one request per
-        # session, so a session is the chunk; short-bypassed sessions never
+        "llm_chunks": chunks,
+        "sessions_with_fallback": len(fallbacks),
+        "fallbacks": rejected,
+        # spec 11.3: chunks rejected / chunks. Short-bypassed sessions never
         # reach the LLM and count in neither term.
-        "fallback_rate": round(100.0 * len(fallbacks) / len(tried), 1) if tried else None,
+        "fallback_rate": round(100.0 * rejected / chunks, 1) if chunks else None,
         "fallback_checks": checks,
         "fallback_errors": errors,
         "flagged_for_review": sum(1 for r in results if r.novel),

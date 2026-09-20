@@ -19,8 +19,9 @@ from flowd.cleanup import CleanupClient
 from flowd.config import Config, config_path, reload_config, state_dir
 from flowd.inject import inject_text as real_inject
 from flowd.inject.base import InjectResult
-from flowd.joiner import join_chunks
+from flowd.joiner import stitch
 from flowd.metrics import SessionMetrics, read_records, summarise, write_record
+from flowd.scheduler import Scheduler
 from flowd.session import Session
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
@@ -87,6 +88,9 @@ class Daemon:
         self.machine = Machine(debounce_ms=cfg.hotkey.debounce_ms, clock=clock)
         self.session: Session | None = None
         self.metrics: SessionMetrics | None = None
+        # Polishes the session's committed text chunk by chunk while the user
+        # speaks (spec 6); one per session, made in `_begin`.
+        self.scheduler: Scheduler | None = None
         self.last_text: str = ""
         self.last_record: dict[str, Any] = {}
         # The last session's STT text before cleanup, for the eval's raw WER
@@ -182,6 +186,15 @@ class Daemon:
             clock=self.clock,
             log_transcripts=self.cfg.logging.log_transcripts,
         )
+        self.scheduler = Scheduler(
+            self.session,
+            self._polish,
+            lambda raw: basic_clean(raw, self.vocab.replace),
+            self.cfg.chunking,
+            timeout_ms=self.cfg.llm.timeout_ms,
+            on_change=self._render,
+            clock=self.clock,
+        )
         try:
             self.capture.start()
         except Exception as exc:
@@ -189,6 +202,7 @@ class Daemon:
             self.machine.handle(Event.FATAL)
             self.session = None
             self.metrics = None
+            self.scheduler = None
             self._notify(f"flowd: microphone unavailable ({exc})")
             return {"ok": False, "error": str(exc)}
         self.metrics.mark("mic_open")
@@ -253,8 +267,10 @@ class Daemon:
         else:
             self.session.live_partial = ""
             if event.text.strip():
-                self.session.add_chunk(event.text)
                 self.metrics.count("chunks")
+                assert self.scheduler is not None
+                # Renders itself when a chunk is dispatched or resolves.
+                self.scheduler.on_committed(event.text)
         self._render()
 
     def _render(self, live: str | None = None) -> None:
@@ -266,9 +282,9 @@ class Daemon:
         is the other shape, blanking all three zones for when there is no
         transcript to show.
 
-        A chunk moves from pending to polished when it resolves. Phase 3
-        resolves every chunk at release (`_clean`), so the polished zone fills
-        in the final frame.
+        A chunk moves from pending to polished when it resolves, which the
+        scheduler does while the user is still speaking (spec 6). Committed text
+        not yet sent as a chunk is pending too.
 
         `Chunk.resolved` rather than a list of state names: the states that count
         as finished are session.py's to define, and a second copy of that list
@@ -278,7 +294,7 @@ class Daemon:
             return
         visible = self.session.visible_chunks()
         polished = " ".join(c.text for c in visible if c.resolved)
-        pending = " ".join(c.raw for c in visible if not c.resolved)
+        pending = " ".join([c.raw for c in visible if not c.resolved] + self.session.pending_raw)
         self.overlay.render(
             polished=polished,
             pending=pending,
@@ -349,19 +365,32 @@ class Daemon:
             # with nothing transcribed needs to know nothing was heard first.
             self._render(live=note)
 
-        raw_parts = [c.raw for c in self.session.visible_chunks()]
-        if not any(part.strip() for part in raw_parts):
+        session, scheduler = self.session, self.scheduler
+        assert scheduler is not None
+        if not session.pending_raw and not session.chunks:
             return self._no_speech()
-
-        session = self.session
-        self.last_raw = " ".join(p.strip() for p in raw_parts if p.strip())
-        final = await self._clean(raw_parts)
-        if self.session is not session:
+        # spec 6.5 steps 3-4: only the last chunk should still need the LLM.
+        await scheduler.flush(self.cfg.llm.final_timeout_ms)
+        # `cancelled` as well as the identity check: `_discard` cancels the
+        # scheduler (waking this flush) before it can take the STT lock and
+        # clear `self.session`, so the session can still look current here.
+        if scheduler.cancelled or self.session is not session:
             # A cancel landed while the LLM was working (spec 4: FINALIZING +
             # cancel → IDLE, discard). `_discard` has already closed this
             # session out, and `self.session` may be a new one by now, so
             # nothing here may touch either.
             return {"ok": False, "reason": "cancelled"}
+        assert self.metrics is not None
+        if scheduler.bypassed:
+            # spec 9.1: too short to be worth the round trip, and not a fallback.
+            self.metrics.count("bypassed")
+        if scheduler.abandoned:
+            self.metrics.count("fallbacks", scheduler.abandoned)
+            self.metrics.error("llm: deadline")
+        visible = session.visible_chunks()
+        self.last_raw = " ".join(c.raw for c in visible)
+        final = stitch([(c.raw, c.text) for c in visible])
+        self._render()
         if not final:
             # Only fillers ("um, uh"): cleaning left nothing, and injecting an
             # empty string would still paste over the user's selection.
@@ -408,55 +437,24 @@ class Daemon:
         self._end_session(text="", reason="no speech", linger=True)
         return {"ok": True, "reason": "no speech"}
 
-    async def _clean(self, raw_parts: list[str]) -> str:
-        """One LLM pass over the whole session, or `basic_clean` per chunk.
+    async def _polish(self, raw: str, *, context: str, merged: bool, timeout_ms: int) -> str | None:
+        """The LLM's rewrite of one chunk if it passes spec 7.4, else None.
 
-        Resolves every visible chunk, so the final frame shows polished text.
-        Phase 3 is spec 12's single pass at release: the chunks are cleaned as
-        one text, which then belongs to the first chunk, the rest folding into
-        it as MERGED.
-        """
-        session = self.session
-        assert session is not None
-        chunks = session.visible_chunks()
-        raw = apply_replacements(" ".join(p.strip() for p in raw_parts), self.vocab.replace)
-        polished = await self._polish(raw)
-        if self.session is not session:
-            return ""  # cancelled while the LLM worked; `_finalize` bails out
-        if polished is None:
-            for chunk in chunks:
-                chunk.polished = basic_clean(chunk.raw, self.vocab.replace)
-                chunk.state = "FALLBACK"
-            final = join_chunks([c.polished or "" for c in chunks])
-        else:
-            final = join_chunks([polished])
-            chunks[0].polished = final
-            chunks[0].state = "DONE"
-            for chunk in chunks[1:]:
-                chunk.state = "MERGED"
-        for chunk in chunks:
-            chunk.t_resolved = self.clock()
-        self._render()
-        return final
-
-    async def _polish(self, raw: str) -> str | None:
-        """The LLM's rewrite of `raw` if it passes spec 7.4, else None.
-
-        Every None but the short bypass is a fallback, counted and attributed
-        in the metrics; the text itself is never logged (spec 13.2).
+        Called by the scheduler. Every None with a cleanup client configured is
+        a fallback, counted and attributed in the metrics; the text itself is
+        never logged (spec 13.2). `context` is the last polished sentences:
+        Sotto's prompt has no slot for it (ADR 0006), so it reaches the
+        guardrails only, as known words for check 3 and repeats for check 6.
         """
         metrics = self.metrics
-        assert metrics is not None
-        if self.cleanup is None:
+        if self.cleanup is None or metrics is None:
             return None
-        if len(raw.split()) < self.cfg.chunking.short_bypass_words:
-            # spec 9.1: too short to be worth the round trip, and not a fallback.
-            metrics.count("bypassed")
-            return None
-        result = await self.cleanup.clean(raw, self.cfg.llm.final_timeout_ms)
+        raw = apply_replacements(raw, self.vocab.replace)
+        result = await self.cleanup.clean(raw, timeout_ms)
         if self.metrics is not metrics:
             return None  # cancelled while waiting; the caller notices
         metrics.mark("cleaned")
+        metrics.count("llm_chunks")
         if result.text is None:
             metrics.count("fallbacks")
             metrics.error(f"llm: {result.error}")
@@ -465,8 +463,11 @@ class Daemon:
             raw,
             result.text,
             self.cfg.guardrails,
+            context=context,
             terms=self.vocab.terms,
-            merged=guardrails.has_correction_cue(raw, self.cfg.chunking.correction_cues),
+            # Scoped to this chunk (≤ `max_chunk_words` plus one merged
+            # predecessor), so one cue no longer loosens the whole session.
+            merged=merged or guardrails.has_correction_cue(raw, self.cfg.chunking.correction_cues),
         )
         if failed is not None:
             log.info("cleanup output failed guardrail check %d; using fallback", failed)
@@ -498,6 +499,10 @@ class Daemon:
         # it to its successor would clear `self.session` with the microphone
         # open — the next `stop` would then find nothing to inject.
         discarding = self.session
+        if self.scheduler is not None and self.scheduler.session is discarding:
+            # Stop polishing for a session nobody will read, and wake a
+            # `flush` waiting on it so the cancel is not held up by the LLM.
+            self.scheduler.cancel()
         try:
             self.capture.stop()
         except Exception as exc:
@@ -566,6 +571,7 @@ class Daemon:
                 self.overlay.hide()
         self.session = None
         self.metrics = None
+        self.scheduler = None
 
     # --- helpers ----------------------------------------------------------
 

@@ -54,3 +54,47 @@ def test_a_comma_before_terminal_punctuation_is_dropped() -> None:
     # Seen from the cleanup LLM on the first eval run: "Pale for weariness,?"
     assert join_chunks(["Pale for weariness,?"]) == "Pale for weariness?"
     assert join_chunks(["wait ,. then go"]) == "Wait. Then go."
+
+
+def test_stitch_drops_a_period_the_llm_added_at_a_mid_sentence_cut() -> None:
+    from flowd.joiner import stitch
+
+    pairs = [
+        (
+            "so I was thinking we should move the meeting",
+            "I was thinking we should move the meeting.",
+        ),
+        ("to friday afternoon.", "To Friday afternoon."),
+    ]
+    assert stitch(pairs) == "I was thinking we should move the meeting to Friday afternoon."
+
+
+def test_stitch_keeps_a_boundary_the_speaker_ended() -> None:
+    from flowd.joiner import stitch
+
+    pairs = [
+        ("We should move the meeting.", "We should move the meeting."),
+        ("Friday works for me.", "Friday works for me."),
+    ]
+    assert stitch(pairs) == "We should move the meeting. Friday works for me."
+
+
+def test_stitch_keeps_a_question_mark_and_a_capital_i() -> None:
+    from flowd.joiner import stitch
+
+    pairs = [
+        ("can you send it", "Can you send it?"),
+        ("i need it today", "I need it today."),
+    ]
+    # A question the LLM recognised is kept; "I" is never lowercased.
+    assert stitch(pairs) == "Can you send it? I need it today."
+
+
+def test_stitch_lowercases_only_when_the_raw_continued_in_lowercase() -> None:
+    from flowd.joiner import stitch
+
+    pairs = [
+        ("we deploy on", "We deploy on."),
+        ("Monday morning", "Monday morning."),
+    ]
+    assert stitch(pairs) == "We deploy on Monday morning."

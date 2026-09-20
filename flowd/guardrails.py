@@ -190,3 +190,13 @@ def has_correction_cue(raw: str, cues: Iterable[str]) -> bool:
     """
     padded = f" {' '.join(tokens(raw))} "
     return any(f" {' '.join(tokens(cue))} " in padded for cue in cues)
+
+
+def starts_with_correction_cue(raw: str, cues: Iterable[str]) -> bool:
+    """Whether `raw` opens with a self-correction cue (spec 6.4, chunk start)."""
+    words = tokens(raw)
+    for cue in cues:
+        cue_words = tokens(cue)
+        if cue_words and words[: len(cue_words)] == cue_words:
+            return True
+    return False

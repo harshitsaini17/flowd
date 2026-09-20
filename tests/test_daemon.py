@@ -643,25 +643,27 @@ async def test_resolved_chunks_render_in_the_polished_zone() -> None:
     """The three zones split by chunk state (spec 6.1): a resolved chunk shows as
     polished, an unresolved one as pending.
 
-    Chunks resolve only at release in phase 3, which is why this sets the state
-    directly mid-session: it pins `_render`'s split independently of when
-    resolution happens.
+    This sets the state directly mid-session: it pins `_render`'s split
+    independently of when the scheduler resolves chunks. Each commit is at
+    least `min_chunk_words`, so each becomes its own chunk.
     """
     d = daemon(
-        FakeSttEngine([[Committed("first chunk here")], [Committed("second chunk here")]]),
+        FakeSttEngine(
+            [[Committed("first chunk here right now")], [Committed("second chunk here right now")]]
+        ),
         capture=FakeCapture([np.zeros(1600, dtype=np.float32) for _ in range(2)]),
     )
     await d.handle({"cmd": "start"})
     await d.pump()
     assert d.session is not None
-    d.session.chunks[0].polished = "First chunk here."
+    d.session.chunks[0].polished = "First chunk here right now."
     d.session.chunks[0].state = "DONE"
     await d.pump()
 
     overlay = d.overlay
     assert isinstance(overlay, FakeOverlay)
-    assert overlay.messages[-1]["polished"] == "First chunk here."
-    assert overlay.messages[-1]["pending"] == "second chunk here"
+    assert overlay.messages[-1]["polished"] == "First chunk here right now."
+    assert overlay.messages[-1]["pending"] == "second chunk here right now"
 
 
 async def test_overlay_fades_when_text_was_injected() -> None:

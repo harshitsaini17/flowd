@@ -16,6 +16,7 @@ models/
 # Audio, transcripts, metrics and personal vocabulary stay local (spec 13.2)
 eval/data/
 eval/results/
+eval/long/
 eval/audio/
 *.wav
 metrics.jsonl

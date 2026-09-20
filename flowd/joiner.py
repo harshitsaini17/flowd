@@ -33,3 +33,30 @@ def join_chunks(texts: Sequence[str]) -> str:
     if joined[-1] not in _TERMINALS:
         joined += "."
     return joined
+
+
+#: A pronoun that stays capitalised mid-sentence: "I", "I'm", "I'll".
+_CAPITAL_I_RE = re.compile(r"^I(\b|')")
+
+
+def stitch(pairs: Sequence[tuple[str, str]]) -> str:
+    """Join chunk texts polished separately, repairing the seams (spec 6.5 step 5).
+
+    Each pair is `(raw, text)`. A chunk is cut on a pause or a word cap, often
+    mid-sentence, and the LLM rounds each one off as a sentence. Where the raw
+    text did not end a sentence, the period the LLM added is dropped, and the
+    next chunk's capital is undone when its raw text started in lowercase —
+    so "move the meeting. To Friday." comes out "move the meeting to Friday.".
+    A "?" or "!" is kept: the LLM heard a question, and that is not a seam.
+    """
+    texts = [text.strip() for _, text in pairs]
+    for i in range(len(pairs) - 1):
+        raw, nxt_raw = pairs[i][0].strip(), pairs[i + 1][0].strip()
+        if not texts[i] or not texts[i + 1] or not raw or raw[-1] in _TERMINALS:
+            continue
+        if texts[i].endswith("."):
+            texts[i] = texts[i][:-1]
+        first = texts[i + 1]
+        if nxt_raw[:1].islower() and first[:1].isupper() and not _CAPITAL_I_RE.match(first):
+            texts[i + 1] = first[:1].lower() + first[1:]
+    return join_chunks(texts)
