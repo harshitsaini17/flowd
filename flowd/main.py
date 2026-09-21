@@ -17,6 +17,7 @@ import numpy as np
 from flowd import __version__
 from flowd.audio import AudioCapture, load_wav
 from flowd.config import Config, data_dir, load_config, runtime_dir, state_dir
+from flowd.context import detect
 from flowd.inject.base import InjectResult
 from flowd.models import verify_models
 from flowd.stt import load_engine
@@ -220,7 +221,12 @@ def main(argv: list[str] | None = None) -> int:
     # latency, and a window competing for cores would skew what it reports.
     overlay = OverlayProcess(cfg.overlay)
     daemon = Daemon(
-        cfg=cfg, stt=engine, capture=capture, overlay=overlay, cleanup=CleanupClient(cfg.llm)
+        cfg=cfg,
+        stt=engine,
+        capture=capture,
+        overlay=overlay,
+        cleanup=CleanupClient(cfg.llm),
+        context=detect,
     )
     try:
         asyncio.run(daemon.run(runtime_dir() / "flowd.sock"))

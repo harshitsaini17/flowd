@@ -60,3 +60,15 @@ def apply_replacements(text: str, replacements: Mapping[str, str] | None) -> str
         # string would be read as a group reference and raise re.error.
         text = re.sub(re.escape(source), lambda _m, t=target: t, text, flags=re.IGNORECASE)  # type: ignore[misc]
     return text
+
+
+def minimal_clean(raw: str, replacements: Mapping[str, str] | None = None) -> str:
+    """Code mode's cleanup: fillers out, nothing else touched.
+
+    No casing, no terminal punctuation: `git status --short` must reach the
+    terminal as said, not as "Git status --short.". Repeated words are kept
+    too — in a command they are often meant ("dash dash short").
+    """
+    text = _FILLER_RE.sub("", raw.strip())
+    text = apply_replacements(text, replacements)
+    return _MULTISPACE_RE.sub(" ", text).strip(" ,")

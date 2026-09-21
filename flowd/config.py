@@ -170,17 +170,33 @@ class Config:
     inject: Inject = Inject()
     overlay: Overlay = Overlay()
     logging: Logging = Logging()
+    #: spec 8.1's three, plus the common Linux ids for each mode's apps.
+    #: Matched case-insensitively (context.py); terminals default to code.
     modes: tuple[tuple[str, str], ...] = (
         ("code", "code"),
+        ("code-oss", "code"),
+        ("codium", "code"),
+        ("dev.zed.zed", "code"),
+        ("jetbrains-idea", "code"),
+        ("jetbrains-pycharm", "code"),
+        ("neovide", "code"),
         ("org.telegram.desktop", "chat"),
+        ("slack", "chat"),
+        ("discord", "chat"),
+        ("vesktop", "chat"),
+        ("signal", "chat"),
+        ("element", "chat"),
+        ("whatsapp-for-linux", "chat"),
         ("thunderbird", "email"),
+        ("org.gnome.evolution", "email"),
+        ("geary", "email"),
     )
 
     def mode_for(self, app_id: str | None) -> str:
         """Map an app id to a cleanup mode; unknown or None means default."""
         if app_id is None:
             return "default"
-        return dict(self.modes).get(app_id, "default")
+        return {k.casefold(): v for k, v in self.modes}.get(app_id.casefold(), "default")
 
 
 _POSITIVE_INT = {

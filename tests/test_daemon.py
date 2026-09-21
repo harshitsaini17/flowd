@@ -885,3 +885,25 @@ async def test_startup_with_broken_vocab_still_dictates(tmp_path: Path) -> None:
     await d.pump()
     await d.handle({"cmd": "toggle"})
     assert injected == ["Still works."]
+
+
+async def test_a_vocab_edit_applies_to_the_next_dictation_without_a_restart(
+    tmp_path: Path,
+) -> None:
+    """Phase 5 acceptance: replacement works after `flowctl reload`, same daemon."""
+    vocab = tmp_path / "vocab.toml"
+    vocab.write_text("")
+    injected: list[str] = []
+    d = vocab_daemon(FakeSttEngine([[Committed("open hyper land")]]), vocab, injected)
+    assert (await d.handle({"cmd": "reload"}))["ok"] is True
+    await d.handle({"cmd": "toggle"})
+    await d.pump()
+    await d.handle({"cmd": "toggle"})
+
+    vocab.write_text('[replace]\n"hyper land" = "Hyprland"\n')
+    assert (await d.handle({"cmd": "reload"}))["ok"] is True
+    d.stt = FakeSttEngine([[Committed("open hyper land")]])
+    await d.handle({"cmd": "toggle"})
+    await d.pump()
+    await d.handle({"cmd": "toggle"})
+    assert injected == ["Open hyper land.", "Open Hyprland."]

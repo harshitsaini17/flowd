@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from flowd.config import Stt, load_config, reload_config, runtime_dir, state_dir
+from flowd.config import Config, Stt, load_config, reload_config, runtime_dir, state_dir
 
 
 def test_missing_file_yields_spec_defaults(tmp_path: Path) -> None:
@@ -109,3 +109,12 @@ def test_a_non_positive_length_ratio_is_rejected(tmp_path: Path) -> None:
     path.write_text("[guardrails]\nlen_ratio_min = 0\n")
     with pytest.raises(ValueError, match="len_ratio_min"):
         load_config(path)
+
+
+def test_default_modes_cover_common_chat_mail_and_editor_apps() -> None:
+    cfg = Config()
+    assert cfg.mode_for("code") == "code"
+    assert cfg.mode_for("Slack") == "chat"
+    assert cfg.mode_for("discord") == "chat"
+    assert cfg.mode_for("thunderbird") == "email"
+    assert cfg.mode_for("dev.zed.Zed") == "code"

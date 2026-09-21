@@ -39,7 +39,7 @@ def join_chunks(texts: Sequence[str]) -> str:
 _CAPITAL_I_RE = re.compile(r"^I(\b|')")
 
 
-def stitch(pairs: Sequence[tuple[str, str]]) -> str:
+def stitch(pairs: Sequence[tuple[str, str]], *, sentence: bool = True) -> str:
     """Join chunk texts polished separately, repairing the seams (spec 6.5 step 5).
 
     Each pair is `(raw, text)`. A chunk is cut on a pause or a word cap, often
@@ -48,7 +48,12 @@ def stitch(pairs: Sequence[tuple[str, str]]) -> str:
     next chunk's capital is undone when its raw text started in lowercase —
     so "move the meeting. To Friday." comes out "move the meeting to Friday.".
     A "?" or "!" is kept: the LLM heard a question, and that is not a seam.
+
+    `sentence=False` (code mode) only joins with single spaces: a command has
+    no sentences to repair.
     """
+    if not sentence:
+        return " ".join(t.strip() for _, t in pairs if t.strip())
     texts = [text.strip() for _, text in pairs]
     for i in range(len(pairs) - 1):
         raw, nxt_raw = pairs[i][0].strip(), pairs[i + 1][0].strip()

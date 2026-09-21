@@ -17,15 +17,17 @@ import numpy as np
 from flowd import guardrails
 from flowd.cleanup import CleanupClient
 from flowd.config import Config, config_path, reload_config, state_dir
+from flowd.context import AppContext
 from flowd.inject import inject_text as real_inject
 from flowd.inject.base import InjectResult
 from flowd.joiner import stitch
 from flowd.metrics import SessionMetrics, read_records, summarise, write_record
+from flowd.modes import Style, finish, style_for
 from flowd.scheduler import Scheduler
 from flowd.session import Session
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
-from flowd.textclean import apply_replacements, basic_clean
+from flowd.textclean import apply_replacements, basic_clean, minimal_clean
 from flowd.vocab import Vocab, load_vocab, vocab_path
 
 log = logging.getLogger(__name__)
@@ -46,6 +48,11 @@ class OverlayLike(Protocol):
     def fade(self) -> None: ...
     def render(self, **zones: str) -> None: ...
     def stop(self) -> None: ...
+
+
+async def _no_llm(raw: str, *, context: str, merged: bool, timeout_ms: int) -> str | None:
+    """The polish for a mode that does not use the LLM: always its fallback."""
+    return None
 
 
 class Daemon:
@@ -69,6 +76,7 @@ class Daemon:
         vocab: Vocab | None = None,
         vocab_file: Path | None = None,
         cleanup: CleanupClient | None = None,
+        context: Callable[[Config], AppContext] | None = None,
     ) -> None:
         self.cfg = cfg
         self.stt = stt
@@ -82,6 +90,11 @@ class Daemon:
         self.metrics_path = metrics_path
         # None runs every session through `basic_clean` alone, as phase 2 did.
         self.cleanup = cleanup
+        # Reads the focused app at session start (spec 5.6). None, as in tests
+        # and `--replay`, means every session is `default` and not a terminal.
+        self.context = context
+        self.app = AppContext(None, "default", False)
+        self.style: Style = style_for("default")
         # False for `--replay`: a probe run is not dictation, and written to the
         # log it would show up in `flowctl stats` as one.
         self.write_metrics = write_metrics
@@ -175,21 +188,35 @@ class Daemon:
 
     def _begin(self) -> dict[str, Any]:
         session_id = uuid.uuid4().hex[:12]
+        # Once, here: spec 9.4 keeps the mode chosen at start if focus moves.
+        self.app = (
+            self.context(self.cfg)
+            if self.context is not None
+            else AppContext(None, "default", False)
+        )
+        self.style = style_for(self.app.mode)
         # `started_at` takes the injected clock, not `time.monotonic`: the
         # session's age is compared against `self.clock()` in
         # `_check_max_duration`, and two different time bases there would make
         # the elapsed time meaningless.
-        self.session = Session(id=session_id, started_at=self.clock())
+        self.session = Session(
+            id=session_id, mode=self.app.mode, app_id=self.app.app_id, started_at=self.clock()
+        )
         self.metrics = SessionMetrics(
             session_id=session_id,
             mode=self.session.mode,
+            app_id=self.app.app_id,
             clock=self.clock,
             log_transcripts=self.cfg.logging.log_transcripts,
         )
         self.scheduler = Scheduler(
             self.session,
-            self._polish,
-            lambda raw: basic_clean(raw, self.vocab.replace),
+            self._polish if self.style.use_llm else _no_llm,
+            (
+                (lambda raw: basic_clean(raw, self.vocab.replace))
+                if self.style.sentence
+                else (lambda raw: minimal_clean(raw, self.vocab.replace))
+            ),
             self.cfg.chunking,
             timeout_ms=self.cfg.llm.timeout_ms,
             on_change=self._render,
@@ -389,7 +416,9 @@ class Daemon:
             self.metrics.error("llm: deadline")
         visible = session.visible_chunks()
         self.last_raw = " ".join(c.raw for c in visible)
-        final = stitch([(c.raw, c.text) for c in visible])
+        final = finish(
+            stitch([(c.raw, c.text) for c in visible], sentence=self.style.sentence), self.style
+        )
         self._render()
         if not final:
             # Only fillers ("um, uh"): cleaning left nothing, and injecting an
@@ -400,7 +429,9 @@ class Daemon:
         self.metrics.text = final
 
         self.machine.handle(Event.CHUNKS_RESOLVED)
-        result = await asyncio.to_thread(self.inject, final, self.cfg.inject, is_terminal=False)
+        result = await asyncio.to_thread(
+            self.inject, final, self.cfg.inject, is_terminal=self.app.is_terminal
+        )
         self.metrics.mark("inject")
         self.metrics.backend = result.backend
         if not result.ok:

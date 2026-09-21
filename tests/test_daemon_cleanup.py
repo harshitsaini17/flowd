@@ -253,3 +253,59 @@ async def test_the_health_loop_survives_a_failing_probe() -> None:
     assert cleanup.health_checks == 1
     assert not task.done()
     task.cancel()
+
+
+def make_in(
+    app: str, mode: str, is_terminal: bool, text: str, cleanup: Any
+) -> tuple[Daemon, list[tuple[str, bool]]]:
+    from flowd.context import AppContext
+
+    sent: list[tuple[str, bool]] = []
+    calls: list[int] = []
+
+    def inject(out: str, inject_cfg: Inject, *, is_terminal: bool = False) -> InjectResult:
+        sent.append((out, is_terminal))
+        return InjectResult(ok=True, backend="fake")
+
+    def context(cfg: Config) -> AppContext:
+        calls.append(1)
+        return AppContext(app, mode, is_terminal)
+
+    d = Daemon(
+        cfg=Config(),
+        stt=FakeSttEngine([[Committed(text)]]),
+        capture=FakeCapture(),
+        overlay=FakeOverlay(),
+        injector=inject,
+        clock=Clock(),
+        write_metrics=False,
+        cleanup=cleanup,
+        context=context,
+    )
+    d._context_calls = calls  # type: ignore[attr-defined]
+    return d, sent
+
+
+async def test_a_terminal_session_skips_the_llm_and_pastes_as_a_terminal() -> None:
+    cleanup = FakeCleanup()
+    d, sent = make_in("kitty", "code", True, "um git status dash dash short", cleanup)
+    await dictate(d)
+    assert cleanup.calls == []
+    assert sent == [("git status dash dash short", True)]
+    assert d.last_record["mode"] == "code"
+    assert d.last_record["app_id"] == "kitty"
+    assert "fallbacks" not in d.last_record["counts"]
+
+
+async def test_a_chat_session_drops_the_final_period() -> None:
+    d, sent = make_in("org.telegram.desktop", "chat", False, LONG_RAW, FakeCleanup())
+    await dictate(d)
+    assert sent == [(LONG_CLEAN.removesuffix("."), False)]
+
+
+async def test_the_app_is_read_once_at_start() -> None:
+    """spec 9.4: the mode stays as chosen at start even if focus moves."""
+    d, _ = make_in("thunderbird", "email", False, LONG_RAW, FakeCleanup())
+    await dictate(d)
+    assert d._context_calls == [1]  # type: ignore[attr-defined]
+    assert d.last_record["mode"] == "email"
