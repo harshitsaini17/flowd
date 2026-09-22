@@ -501,3 +501,111 @@ def test_empty_text_injects_nothing() -> None:
     result = inject_text("", Inject(), backends=[ClipboardBackend(runner=rec.run)])
     assert result.ok is True
     assert rec.calls == []
+
+
+# --- Phase 5: logged fall-through reasons (spec 12 phase 5, 9.4) -------------
+
+
+def test_an_unavailable_backend_logs_why_it_was_skipped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Absent:
+        name = "ydotool"
+
+        def available(self) -> bool:
+            return False
+
+        def unavailable_reason(self) -> str:
+            return "ydotoold is not running"
+
+        def inject(self, text: str, *, is_terminal: bool) -> None:
+            raise AssertionError("must not be called")
+
+    with caplog.at_level("INFO", logger="flowd.inject"):
+        result = inject_text("hi", Inject(order=("ydotool",)), backends=[Absent()])
+    assert result.error == "ydotool: ydotoold is not running"
+    assert "ydotool" in caplog.text
+    assert "ydotoold is not running" in caplog.text
+
+
+def test_typing_backends_name_the_missing_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("flowd.inject.typing_backends.have", lambda tool: False)
+    assert WtypeBackend().unavailable_reason() == "wtype is not installed"
+    assert XdotoolBackend().unavailable_reason() == "xdotool is not installed"
+
+
+def test_wtype_needs_a_wayland_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("flowd.inject.typing_backends.have", lambda tool: True)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    assert WtypeBackend().available() is False
+    assert WtypeBackend().unavailable_reason() == "not a Wayland session"
+
+
+def test_ydotool_needs_the_ydotoold_socket(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """spec 9.4: ydotool without ydotoold is a fall-through, not a failed paste."""
+    monkeypatch.setattr("flowd.inject.typing_backends.have", lambda tool: True)
+    monkeypatch.setenv("YDOTOOL_SOCKET", str(tmp_path / "missing.sock"))
+    backend = YdotoolBackend()
+    assert backend.available() is False
+    assert "ydotoold" in (backend.unavailable_reason() or "")
+
+    sock = tmp_path / "live.sock"
+    sock.touch()
+    monkeypatch.setenv("YDOTOOL_SOCKET", str(sock))
+    assert backend.available() is True
+    assert backend.unavailable_reason() is None
+
+
+def test_ydotool_finds_the_default_socket_in_the_runtime_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setattr("flowd.inject.typing_backends.have", lambda tool: True)
+    monkeypatch.delenv("YDOTOOL_SOCKET", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    (tmp_path / ".ydotool_socket").touch()
+    assert YdotoolBackend().available() is True
+
+
+def test_clipboard_names_the_missing_tools() -> None:
+    backend = wayland_clipboard(Recorder(), have=lambda tool: tool == "wl-copy")
+    assert backend.unavailable_reason() == "missing wl-paste, wtype"
+
+
+def _order_recorder() -> tuple[list[str], list[Any]]:
+    used: list[str] = []
+
+    class Stub:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def available(self) -> bool:
+            return True
+
+        def inject(self, text: str, *, is_terminal: bool) -> None:
+            used.append(self.name)
+
+    return used, [Stub("clipboard"), Stub("xdotool")]
+
+
+def test_non_ascii_text_prefers_the_clipboard_on_x11(monkeypatch: pytest.MonkeyPatch) -> None:
+    """spec 9.4: `xdotool type` mangles Unicode, so X11 pastes it instead."""
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    used, pool = _order_recorder()
+    inject_text("café", Inject(order=("xdotool", "clipboard")), backends=pool)
+    assert used == ["clipboard"]
+
+
+def test_ascii_text_keeps_the_configured_order_on_x11(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    used, pool = _order_recorder()
+    inject_text("cafe", Inject(order=("xdotool", "clipboard")), backends=pool)
+    assert used == ["xdotool"]
+
+
+def test_non_ascii_text_keeps_the_configured_order_on_wayland(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    used, pool = _order_recorder()
+    inject_text("café", Inject(order=("xdotool", "clipboard")), backends=pool)
+    assert used == ["xdotool"]

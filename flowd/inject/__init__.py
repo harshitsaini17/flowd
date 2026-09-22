@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 
 from flowd.config import Inject
@@ -51,14 +52,15 @@ def inject_text(
 
     pool = {b.name: b for b in (backends if backends is not None else default_backends(cfg))}
     errors: list[str] = []
-    for name in cfg.order:
+    for name in _attempt_order(text, cfg.order):
         backend = pool.get(name)
         if backend is None:
             log.debug("no injector named %s, skipping", name)
             continue
         if not backend.available():
-            log.debug("injector %s unavailable, skipping", name)
-            errors.append(f"{name}: unavailable")
+            reason = _reason(backend)
+            log.info("injector %s unavailable (%s), trying the next one", name, reason)
+            errors.append(f"{name}: {reason}")
             continue
         try:
             backend.inject(text, is_terminal=is_terminal)
@@ -68,3 +70,22 @@ def inject_text(
             continue
         return InjectResult(ok=True, backend=name)
     return InjectResult(ok=False, error="; ".join(errors) or "no backend configured")
+
+
+def _reason(backend: Backend) -> str:
+    # Optional on the protocol: a backend without it still falls through, unexplained.
+    explain = getattr(backend, "unavailable_reason", None)
+    return (explain() if callable(explain) else None) or "unavailable"
+
+
+def _attempt_order(text: str, order: Sequence[str]) -> list[str]:
+    """cfg.order, except that X11 pastes non-ASCII text before typing it.
+
+    spec 9.4: `xdotool type` mangles Unicode on X11, so the clipboard goes first
+    there. Wayland's typing tools handle it, and ASCII keeps the user's order.
+    """
+    names = list(order)
+    if text.isascii() or os.environ.get("WAYLAND_DISPLAY") or "clipboard" not in names:
+        return names
+    names.remove("clipboard")
+    return ["clipboard", *names]

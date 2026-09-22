@@ -80,7 +80,12 @@ class ClipboardBackend:
         # happen; missing the read tool would leave us unable to see what we
         # are about to destroy or to put it back. Declining the turn costs
         # nothing — a typing backend still delivers the text.
-        return all(self._have(tool) for tool in self._required_tools())
+        return self.unavailable_reason() is None
+
+    def unavailable_reason(self) -> str | None:
+        """The tools this session type needs that are not installed, or None."""
+        missing = [tool for tool in self._required_tools() if not self._have(tool)]
+        return f"missing {', '.join(missing)}" if missing else None
 
     def _required_tools(self) -> tuple[str, ...]:
         """Every command `inject` will run for this session type.
