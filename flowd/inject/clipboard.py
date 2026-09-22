@@ -10,6 +10,7 @@ from subprocess import CalledProcessError
 
 from flowd.inject.base import Runner, run
 from flowd.inject.base import have as _tool_exists
+from flowd.inject.typing_backends import YdotoolBackend
 
 log = logging.getLogger(__name__)
 
@@ -34,13 +35,29 @@ _SELECTION_METADATA = frozenset(
     }
 )
 
+#: Formats that browsers list next to copied text to record where it came from.
+#: They carry no payload of their own, so they must not make an ordinary text
+#: copy look like non-text data (seen from Brave on this machine).
+_BOOKKEEPING_PREFIXES = ("chromium/x-",)
+
+#: Linux input event codes for Ctrl+Shift+V (KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_V).
+_TERMINAL_PASTE_KEYS = ("29", "42", "47")
+
+
+def _ydotool_ready() -> bool:
+    return YdotoolBackend().available()
+
 
 def _is_wayland() -> bool:
     return bool(os.environ.get("WAYLAND_DISPLAY"))
 
 
 def _is_text_format(offered: str) -> bool:
-    return offered.startswith(_TEXT_MIME_PREFIX) or offered in _TEXT_ATOMS
+    return (
+        offered.startswith(_TEXT_MIME_PREFIX)
+        or offered in _TEXT_ATOMS
+        or offered.startswith(_BOOKKEEPING_PREFIXES)
+    )
 
 
 class ClipboardBackend:
@@ -61,12 +78,14 @@ class ClipboardBackend:
         *,
         wayland: bool | None = None,
         have: Callable[[str], bool] = _tool_exists,
+        ydotool: Callable[[], bool] = _ydotool_ready,
     ) -> None:
         self._run = runner
         self._sleep = sleep
         self._restore_delay_s = restore_delay_ms / 1000.0
         self._wayland = _is_wayland() if wayland is None else wayland
         self._have = have
+        self._ydotool = ydotool
 
     def available(self) -> bool:
         # Checked per session type, not "either tool": reporting available and
@@ -112,6 +131,14 @@ class ClipboardBackend:
         if not self._wayland:
             self._run(["xdotool", "key", "--clearmodifiers", keys])
             return
+        if is_terminal:
+            # wtype's virtual keyboard loses Shift in kitty: Ctrl+Shift+V from
+            # wtype pastes nothing and exits 0 (checked live, kitty 0.48). Kernel
+            # events from ydotool arrive with the modifier intact.
+            presses = [f"{code}:1" for code in _TERMINAL_PASTE_KEYS]
+            releases = [f"{code}:0" for code in reversed(_TERMINAL_PASTE_KEYS)]
+            self._run(["ydotool", "key", *presses, *releases])
+            return
         *mods, key = keys.split("+")
         argv = ["wtype"]
         for mod in mods:
@@ -128,6 +155,10 @@ class ClipboardBackend:
         self._run(copy, input=payload, capture=False)
 
     def inject(self, text: str, *, is_terminal: bool) -> None:
+        if self._wayland and is_terminal and not self._ydotool():
+            # Checked before the clipboard is touched: no paste key would work,
+            # so the turn goes to a typing backend with the clipboard intact.
+            raise RuntimeError("terminal paste on Wayland needs ydotool with ydotoold running")
         list_types, paste, copy = self._tools()
 
         # Which exception comes back decides everything here, because "the

@@ -94,6 +94,7 @@ def clipboard_writes(rec: Recorder, *, wayland: bool) -> list[bytes | None]:
 
 
 def wayland_clipboard(rec: Recorder, **kw: Any) -> ClipboardBackend:
+    kw.setdefault("ydotool", lambda: True)
     return ClipboardBackend(runner=rec.run, sleep=lambda _s: None, wayland=True, **kw)
 
 
@@ -355,10 +356,64 @@ def test_reading_the_clipboard_still_captures_stdout() -> None:
 
 def test_terminal_uses_ctrl_shift_v() -> None:
     rec = Recorder()
+    x11_clipboard(rec).inject("hi", is_terminal=True)
+    keys = [c for c in rec.calls if c[0] == "xdotool"]
+    assert keys == [["xdotool", "key", "--clearmodifiers", "ctrl+shift+v"]]
+
+
+def test_wayland_terminal_paste_goes_through_ydotool() -> None:
+    """kitty ignores Shift from wtype's virtual keyboard, so wtype's Ctrl+Shift+V
+    is a silent no-op there (checked live, kitty 0.48). Kernel events from
+    ydotool arrive with the modifier intact."""
+    rec = Recorder()
     wayland_clipboard(rec).inject("hi", is_terminal=True)
-    keys = [c for c in rec.calls if c[0] in ("wtype", "xdotool")]
-    assert keys, "no paste keystroke was sent"
-    assert any("shift" in " ".join(c).lower() for c in keys)
+    keys = [c for c in rec.calls if c[0] in ("wtype", "ydotool")]
+    # KEY_LEFTCTRL 29, KEY_LEFTSHIFT 42, KEY_V 47: press in order, release reversed.
+    assert keys == [["ydotool", "key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]]
+
+
+def test_wayland_terminal_without_ydotool_leaves_the_clipboard_alone() -> None:
+    """Without a working paste key the text must reach a typing backend, and the
+    clipboard must not be touched on the way."""
+    rec = Recorder()
+    backend = wayland_clipboard(rec, ydotool=lambda: False)
+    with pytest.raises(RuntimeError, match="ydotool"):
+        backend.inject("hi", is_terminal=True)
+    assert rec.calls == []
+
+
+def test_wayland_terminal_without_ydotool_falls_through_to_typing() -> None:
+    rec = Recorder()
+    typed = Recorder()
+    result = inject_text(
+        "hi",
+        Inject(order=("clipboard", "wtype")),
+        backends=[wayland_clipboard(rec, ydotool=lambda: False), _AlwaysWtype(typed)],
+        is_terminal=True,
+    )
+    assert result.backend == "wtype"
+    assert typed.calls == [["wtype", "--", "hi"]]
+
+
+class _AlwaysWtype(WtypeBackend):
+    def __init__(self, rec: Recorder) -> None:
+        super().__init__(runner=rec.run)
+
+    def available(self) -> bool:
+        return True
+
+
+def test_a_browser_copy_is_recognised_as_text() -> None:
+    """Captured from this machine after copying text in Brave: Chromium lists
+    its own bookkeeping entries next to the text."""
+    types = (
+        b"text/plain\ntext/plain;charset=utf-8\nUTF8_STRING\n"
+        b"chromium/x-internal-source-rfh-token\ntext/plain;charset=utf-8\n"
+        b"TEXT\nSTRING\nchromium/x-source-url\n"
+    )
+    rec = Recorder(types=types)
+    wayland_clipboard(rec).inject("hi", is_terminal=False)
+    assert clipboard_writes(rec, wayland=True) == [b"hi", b"previous clipboard"]
 
 
 def test_non_terminal_paste_has_no_shift() -> None:
