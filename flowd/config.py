@@ -228,6 +228,8 @@ _POSITIVE_FLOAT = {"max_tokens_factor", "len_ratio_min", "len_ratio_max", "len_r
 #: or every dictation would leave it as plain HTTP.
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 _VALID_HOTKEY_MODES = ("toggle", "ptt")
+#: The styles flowd/modes.py defines (ADR 0009).
+_VALID_APP_MODES = ("default", "code", "chat", "email")
 _VALID_LOG_LEVELS = ("debug", "info", "warning", "error")
 
 
@@ -295,7 +297,13 @@ def load_config(path: Path | None = None) -> Config:
         if not isinstance(value, dict):
             raise ValueError(f"[{key}]: expected a table")
         if key == "modes":
-            kwargs["modes"] = tuple(sorted((str(k), str(v)) for k, v in value.items()))
+            # Merged over the defaults, so one added app keeps the built-in table.
+            merged = {k.casefold(): (k, v) for k, v in defaults.modes}
+            for k, v in value.items():
+                if v not in _VALID_APP_MODES:
+                    raise ValueError(f"[modes] {k}: {v!r} is not one of {_VALID_APP_MODES}")
+                merged[str(k).casefold()] = (str(k), str(v))
+            kwargs["modes"] = tuple(sorted(merged.values()))
             continue
         kwargs[key] = _build(type(getattr(defaults, key)), value, key)
 

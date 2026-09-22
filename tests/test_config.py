@@ -118,3 +118,19 @@ def test_default_modes_cover_common_chat_mail_and_editor_apps() -> None:
     assert cfg.mode_for("discord") == "chat"
     assert cfg.mode_for("thunderbird") == "email"
     assert cfg.mode_for("dev.zed.Zed") == "code"
+
+
+def test_user_modes_extend_the_defaults_instead_of_replacing_them(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[modes]\n"Kiro" = "code"\n"slack" = "default"\n')
+    cfg = load_config(path)
+    assert cfg.mode_for("kiro") == "code"
+    assert cfg.mode_for("Slack") == "default", "a user entry overrides the default"
+    assert cfg.mode_for("discord") == "chat", "defaults the user did not name survive"
+
+
+def test_an_unknown_mode_name_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[modes]\n"kiro" = "shouty"\n')
+    with pytest.raises(ValueError, match="shouty"):
+        load_config(path)

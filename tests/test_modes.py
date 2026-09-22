@@ -56,3 +56,10 @@ def test_chat_mode_drops_only_a_final_period(text: str, expected: str) -> None:
 def test_default_and_email_leave_the_text_alone() -> None:
     for mode in ("default", "email"):
         assert finish("Hello there.", style_for(mode)) == "Hello there."
+
+
+def test_config_accepts_exactly_the_modes_that_have_a_style() -> None:
+    from flowd.config import _VALID_APP_MODES
+    from flowd.modes import _STYLES
+
+    assert set(_VALID_APP_MODES) == set(_STYLES)

@@ -21,7 +21,7 @@ flowd is under active development. What works today:
 | Per-session latency metrics (`flowctl stats`) | **works** |
 | LLM cleanup of filler words, punctuation and casing | **works** — one pass at release |
 | Personal vocabulary (`vocab.toml`: recognizer terms, replacements) | **works** |
-| Per-application modes | **not yet** — phase 5 |
+| Per-application modes (code, chat, email) and terminal paste | **works** — ADR 0009 |
 
 When you stop dictating, a small local language model
 ([`flowd-llm`](systemd/flowd-llm.service), ADR 0006) removes fillers, applies
@@ -242,6 +242,10 @@ model = "small-streaming-en"    # or medium-streaming-en, tiny-streaming-en (ADR
 [inject]
 order = ["clipboard", "wtype", "ydotool", "xdotool"]
 
+[modes]                # app id → mode; ids match case-insensitively
+"kiro" = "code"
+"firefox" = "default"
+
 [overlay]
 enabled = true
 ```
@@ -249,6 +253,21 @@ enabled = true
 `flowctl reload` applies a changed config without restarting. A config that
 fails validation is rejected and the running one is kept, so a typo cannot take
 dictation down mid-session.
+
+### Per-application modes
+
+flowd reads the focused window's app id when dictation starts
+(`hyprctl activewindow`, `swaymsg -t get_tree` or `xdotool`) and picks a mode:
+
+- **code**: no LLM. Fillers are removed, and everything else is pasted as you
+  said it. Terminals get this mode by default, and always paste with
+  Ctrl+Shift+V.
+- **chat**: normal cleanup without the final period.
+- **email** and **default**: normal cleanup.
+
+The built-in table covers common editors, chat apps and mail clients. Add your
+own under `[modes]`. Browsers report one id for every site, so a web app takes
+the browser's mode.
 
 ### Personal vocabulary
 
@@ -273,9 +292,12 @@ vocabulary kept.
 
 **The text landed nowhere.** It is not lost. `flowctl last` prints the most
 recent transcript, so you can paste it by hand. Then find out which backend
-failed: `journalctl --user -u flowd -n 50`. The usual cause is a missing tool
-for your session type — Wayland needs `wl-clipboard` or `wtype`, X11 needs
-`xclip` or `xdotool`.
+failed: `journalctl --user -u flowd -n 50`. Each skipped backend logs why, for
+example `injector ydotool unavailable (ydotoold is not running ...)`. The usual
+cause is a missing tool for your session type — Wayland needs `wl-clipboard`
+and `wtype`, X11 needs `xclip` and `xdotool`. On X11, text with non-ASCII
+characters is always pasted through the clipboard, because `xdotool type`
+mangles it.
 
 **No microphone.** flowd reports the error and sends a desktop notification
 rather than failing silently. Check `flowctl status`, then that PipeWire is
