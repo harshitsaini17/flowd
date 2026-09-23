@@ -584,6 +584,9 @@ def test_an_unavailable_backend_logs_why_it_was_skipped(
 
 
 def test_typing_backends_name_the_missing_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The session checks come first, so pin a session: CI runners have neither.
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
+    monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr("flowd.inject.typing_backends.have", lambda tool: False)
     assert WtypeBackend().unavailable_reason() == "wtype is not installed"
     assert XdotoolBackend().unavailable_reason() == "xdotool is not installed"
