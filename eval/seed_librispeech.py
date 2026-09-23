@@ -2,12 +2,12 @@
 
     uv run python eval/seed_librispeech.py
 
-Read audiobook speech is not the owner's dictation: it has no fillers, no
+Read audiobook speech is not real dictation: it has no fillers, no
 self-corrections and no technical terms, so it exercises the harness and gives
 a raw WER floor, not spec 11.3's gate. The reference is the corpus transcript
 for both `ref.txt` and `raw.txt`, which is exact for words (WER ignores case
 and punctuation). Files are named `ls-<utterance>` so they never collide with
-the owner's `NNN` recordings.
+personal `NNN` recordings.
 """
 
 from __future__ import annotations

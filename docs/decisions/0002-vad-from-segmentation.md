@@ -1,15 +1,14 @@
 # 0002: VAD from Moonshine segmentation, and dropping `onnxruntime`
 
 Status: accepted
-Phase: 2
 
 ## Context
 
 ADR 0001 settled the question spec 5.2 asks — prefer Moonshine's own
 voice-activity or segmentation support, fall back to Silero otherwise — and
-found segmentation but no queryable detector. This record covers what Task 15
-then had to build on that answer, because the plan's Task 15 brief was written
-before ADR 0001 existed and still prescribes the Silero path it ruled out.
+found segmentation but no queryable detector. This record covers what the VAD
+module builds on that answer, since the original design predates ADR 0001 and
+prescribes the Silero path it ruled out.
 
 Re-confirmed against the installed package rather than taken from ADR 0001:
 
@@ -110,7 +109,7 @@ across these clips.
 1. **Infer speech from the frontier** (this record). No second model, no extra
    dependency, one source of truth about where speech stops. Cost: silence is
    late by up to ~1.3s, and the allowance is machine-dependent.
-2. **Add `silero_vad.onnx` via `onnxruntime`**, as the Task 15 brief prescribes.
+2. **Add `silero_vad.onnx` via `onnxruntime`**, as the original design prescribes.
    Buys a millisecond-accurate silence signal. Costs a second copy of the same
    Silero model Moonshine already embeds, a 22.5 MB wheel, and two disagreeing
    sources of truth — the objection ADR 0001 raised, unchanged.
@@ -128,8 +127,8 @@ must never do is fire *early*, mid-utterance — spec 13.2 forbids typing partia
 text into the target app — which is why the allowance is deliberately generous
 and why the six artifact runs mattered more than the latency.
 
-`onnxruntime` removal was deferred through phases 0 and 1 "to the task that
-writes the VAD code, where the suite can prove it". It is proven here:
+`onnxruntime` removal was deferred until the VAD code existed, so the suite
+could prove it. It is proven here:
 `tests/test_vad.py` imports `flowd.vad`, `flowd.stt` and `flowd.daemon` in fresh
 interpreters and asserts `onnxruntime` is absent from `sys.modules`, and asserts
 it is absent from pyproject's declared dependencies. `moonshine-voice`'s own
@@ -150,11 +149,11 @@ does not install. Installs lose a 22.5 MB wheel.
 - **5.5 (no speech at all).** `SegmentationVad.saw_speech` distinguishes "no
   speech yet" from "lagging", which is what keeps a silent session reporting
   "No speech" instead of injecting an empty string.
-- **Task 15 brief.** Its Silero implementation, its `scripts/fetch_models.sh`
-  addition and its `models.lock` entry do not apply. Its `SileroOnnxVad` class
-  is not written. `load_vad` keeps the brief's signature but raises no
+- **Original VAD design.** Its Silero implementation, its `scripts/fetch_models.sh`
+  addition and its `models.lock` entry do not apply. There is no `SileroOnnxVad`
+  class. `load_vad` keeps the planned signature but raises no
   `FileNotFoundError`: there is no file to miss.
-- **Task 17.** `observe_frontier` is on `SegmentationVad`, not on the
+- **Streaming wiring.** `observe_frontier` is on `SegmentationVad`, not on the
   `VadEngine` protocol. The wiring from Moonshine line events to the frontier
   belongs in `load_engine`, where the real stream exists; `FakeVad` scripts
   speech directly and needs no frontier.
@@ -162,9 +161,9 @@ does not install. Installs lose a 22.5 MB wheel.
 `lag_allowance_ms` is machine-dependent: the lag it absorbs is transcription
 lag, and ADR 0001 measured this machine at ~1.05× realtime with little headroom.
 A slower machine lags more and may need a larger value or a smaller model. That
-is a config change, not a code change, and the phase 2 report should re-measure
-it with the overlay and `llama-server` competing for cores.
+is a config change, not a code change, and it should be re-measured
+with the overlay and `llama-server` competing for cores.
 
-Spec 13.3's escalation triggers do not fire: no new dependency (one is removed),
+Spec 13.3's decision-record triggers do not fire: no new dependency (one is removed),
 no PyTorch, no budget miss — the commit path's budget is driven by
 `LineCompleted`, not by this signal.

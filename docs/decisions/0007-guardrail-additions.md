@@ -1,6 +1,6 @@
-# 0007: Guardrail additions and cleanup-client limits for phase 3
+# 0007: Guardrail additions and cleanup-client limits
 
-**Status:** proposed (needs owner approval: spec 13.2)
+**Status:** proposed
 **Date:** 2026-09-27
 
 ## Context
@@ -58,7 +58,7 @@ Three more gaps turned up while wiring the client:
 
 ## Consequences
 
-- Still open, needs an owner ruling: an invented number ("…on Friday at 5")
+- Still open: an invented number ("…on Friday at 5")
   passes when it stays under check 4's 20%, and a single correction cue
   anywhere in the session loosens check 1's lower bound for all of it.
   Both change spec 7.4 thresholds.
@@ -70,4 +70,5 @@ Three more gaps turned up while wiring the client:
   out ("send it" → "I'll send it"). Sotto did not do this in the screen, and a
   fallback costs polish, not correctness.
 - Long dictations (over roughly 400 tokens, about 300 words) always get
-  `basic_clean` in phase 3. Phase 4's chunking removes this limit.
+  `basic_clean` with single-pass cleanup. Chunked cleanup (ADR 0008) removes
+  this limit.

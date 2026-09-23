@@ -10,7 +10,7 @@ def isolated_xdg(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.M
     """Point every XDG directory flowd resolves at a throwaway tree.
 
     A `Daemon` built without `metrics_path` appends to `state_dir()`. Without
-    this, each test run wrote fake sessions into the owner's real metrics file,
+    this, each test run wrote fake sessions into the user's real metrics file,
     and `flowctl stats` counted them as dictation.
 
     `XDG_RUNTIME_DIR` is left alone: Wayland clients find the compositor's

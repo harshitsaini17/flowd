@@ -76,10 +76,10 @@ class FakeSttEngine:
 
 
 class BatchSttEngine:
-    """Phase 1: buffer the utterance, transcribe once at finalize.
+    """Buffer the utterance, transcribe once at finalize.
 
-    Emits no partials, so phase 1 has no live preview. Task 16 replaces this
-    with the streaming engine behind the same interface.
+    Emits no partials, so there is no live preview. `StreamingSttEngine` is the
+    streaming implementation of the same interface.
     """
 
     def __init__(self, transcribe: Callable[[np.ndarray], str]) -> None:
@@ -295,7 +295,7 @@ def load_engine(
     """Load Moonshine once at daemon start; never reload per session (spec 5.3).
 
     With `vad_cfg` the result streams (`StreamingSttEngine`); without it, it
-    buffers and transcribes once (`BatchSttEngine`, phase 1's behaviour), which
+    buffers and transcribes once (`BatchSttEngine`), which
     is what a caller that only wants a whole-file transcript should ask for.
 
     `model_dir` is accepted for symmetry with the LLM weights but unused:

@@ -147,7 +147,7 @@ async def _replay(cfg: Config, path: Path, fast: bool) -> int:
         return InjectResult(ok=True, backend="replay")
 
     # The real cleanup client: a replay measures release → inject, and the LLM
-    # pass is the largest part of that in phase 3.
+    # pass is the largest part of that.
     daemon = Daemon(
         cfg=replay_config(cfg),
         stt=engine,

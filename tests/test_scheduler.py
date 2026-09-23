@@ -1,4 +1,4 @@
-"""Phase 4: the single-flight chunk scheduler (spec 6.2-6.5)."""
+"""The single-flight chunk scheduler (spec 6.2-6.5)."""
 
 import asyncio
 

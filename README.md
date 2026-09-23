@@ -19,9 +19,10 @@ flowd is under active development. What works today:
 | Live preview overlay while you speak | **works** |
 | Streaming transcription with incremental commits | **works** |
 | Per-session latency metrics (`flowctl stats`) | **works** |
-| LLM cleanup of filler words, punctuation and casing | **works** — one pass at release |
+| LLM cleanup of filler words, punctuation and casing | **works** — chunked, while you speak |
 | Personal vocabulary (`vocab.toml`: recognizer terms, replacements) | **works** |
-| Per-application modes (code, chat, email) and terminal paste | **works** — ADR 0009 |
+| Per-application modes (code, chat, email) and terminal paste | **works** |
+| Hardening, `flowd.service`, optional full-rewrite mode | planned |
 
 When you stop dictating, a small local language model
 ([`flowd-llm`](systemd/flowd-llm.service), ADR 0006) removes fillers, applies
@@ -30,13 +31,9 @@ Its output is checked for invented content before anything is pasted, and when
 the model is slow, down or fails a check, flowd pastes rule-based tidying
 instead. Dictation never waits more than 800 ms on the model.
 
-The full architecture and build specification is [`docs/spec.md`](docs/spec.md);
-decisions that diverge from it are recorded in
-[`docs/decisions/`](docs/decisions/), and each phase has a report in
-[`docs/reports/`](docs/reports/). The smaller judgement calls made while building
-phases 0-2 — the ones too small for a decision record but not obvious from the
-code — are collected in
-[`docs/reports/phase-0-2-rulings.md`](docs/reports/phase-0-2-rulings.md).
+The architecture and design are described in [`docs/spec.md`](docs/spec.md).
+Decisions that diverge from it are recorded in
+[`docs/decisions/`](docs/decisions/).
 
 ## Requirements
 
@@ -406,7 +403,7 @@ The models are separately licensed and are **not** covered by flowd's licence:
   Licence that forbids commercial use. flowd is English-only today, so it stays
   on the permissive path; if you point `stt.model` at a non-English model, that
   licence is yours to honour.
-- **Sotto cleanup LFM2.5-350M** (cleanup, phase 3) — a community fine-tune of
+- **Sotto cleanup LFM2.5-350M** (text cleanup) — a community fine-tune of
   Liquid AI's LFM2.5-350M-Base under the LFM Open License v1.0, which limits
   commercial use by larger companies. See the model card linked in
   [`models.lock`](models.lock) for its terms.

@@ -128,7 +128,7 @@ def test_load_items_pairs_audio_with_references(tmp_path: Path) -> None:
 
 
 def test_fallback_rate_is_per_chunk_when_sessions_are_chunked() -> None:
-    """spec 11.3: chunks rejected ÷ chunks. Phase 4 sends several per session."""
+    """spec 11.3: chunks rejected ÷ chunks. Chunked cleanup sends several per session."""
     results = [
         result("001", counts={"llm_chunks": 10, "fallbacks": 1}, checks={"3": 1}),
         result("002", counts={"llm_chunks": 10}),

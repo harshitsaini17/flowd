@@ -1,7 +1,6 @@
 # 0001: Moonshine STT API — streaming commits and built-in VAD
 
 Status: accepted
-Phase: 0
 
 ## Context
 
@@ -83,7 +82,7 @@ stability heuristic guessing from outside.
 
 ### Q3. Built-in voice activity detection — yes, but only as segmentation
 
-This is the question the owner asked to be settled explicitly. The answer has
+This question had to be settled before any VAD code was written. The answer has
 two halves, and the second half constrains the design.
 
 **It exists.** `libmoonshine.so` embeds Silero VAD as a data symbol and drives
@@ -185,7 +184,7 @@ Two incidental findings worth keeping:
 
 ## Recommendation
 
-**Option 1.** The owner's instruction was to use built-in VAD or segmentation
+**Option 1.** The design calls for built-in VAD or segmentation
 if it exists and fall back to `silero_vad.onnx` only otherwise. It exists, as
 segmentation, so flowd consumes `LineCompleted` and ships no VAD model of its
 own. Option 2's independent silence signal is speculative until a feature
@@ -198,14 +197,14 @@ truth about the same question.
 - **5.3 (commit rule).** The stable-prefix heuristic with a stability window is
   not needed for correctness — `LineCompleted` is authoritative. The committer
   narrows to tracking which committed lines have been seen and holding the
-  provisional tail for display. Task 16 shrinks accordingly.
+  provisional tail for display.
 - **5.2 (VAD).** No `silero_vad.onnx` entry in `models.lock` and no separate
-  VAD model to fetch; the detector is inside `libmoonshine.so`. Task 15's
-  subject changes from "load and run a VAD" to "derive speech state from stream
+  VAD model to fetch; the detector is inside `libmoonshine.so`. The VAD
+  module's job changes from "load and run a VAD" to "derive speech state from stream
   events". The spec's `vad` config block loses its model path.
 - **`onnxruntime` dependency.** Nothing now needs it: Moonshine bundles its own
   runtime, and the separate Silero model is gone. Dropping it removes a 22.5 MB
-  wheel from every install. Deferred to Task 15, where the VAD code is written
+  wheel from every install. Deferred until the VAD code is written
   and the claim can be proven with the suite rather than asserted here.
 - **3 (models).** `models.lock` covers the LLM GGUF and pins Moonshine by
   package version and model architecture; the eight `.ort` files are fetched
@@ -217,5 +216,5 @@ truth about the same question.
 - **README.** Must state that non-English weights carry a non-commercial
   licence, so nobody adds a language without seeing it.
 
-Spec 13.3's escalation trigger — no streaming API *and* no way to emulate
-commits inside the 300 ms budget — does **not** fire. Phase 0 continues.
+Spec 13.3's decision-record trigger — no streaming API *and* no way to emulate
+commits inside the 300 ms budget — does **not** fire.

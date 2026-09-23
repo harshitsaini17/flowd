@@ -1,14 +1,14 @@
-# 0006: Cleanup LLM for phase 3
+# 0006: Cleanup LLM
 
-**Status:** accepted (owner-approved, 2026-09-27)
+**Status:** accepted (2026-09-27)
 **Date:** 2026-09-27
 
 ## Context
 
 Spec 3 fixes the cleanup LLM as LFM2.5-350M QAD Q4_0 and lists LFM2.5-230M QAD
-Q4_0 as the approved fallback. The owner asked for the smallest model that
-fits, and phase 2's known issue 2 leaves almost no memory for `llama-server`.
-The owner's own search surfaced one more candidate: Sotto, a dictation-cleanup
+Q4_0 as the approved fallback. The goal is the smallest model that
+fits, and the STT daemon leaves little of the memory budget for `llama-server`.
+A search surfaced one more candidate: Sotto, a dictation-cleanup
 fine-tune of LFM2.5-350M-Base.
 
 All three were served by `llama-server` 0.4.1-dev (build 10964) on the
@@ -53,7 +53,7 @@ catch. It was also the fastest and the most consistent (118 ms worst case).
 
 ## Decision
 
-Use Sotto cleanup LFM2.5-350M Q4_K_M for phase 3, with the trimmed server
+Use Sotto cleanup LFM2.5-350M Q4_K_M, with the trimmed server
 flags above, and keep spec 6's guardrails as the safety net rather than trusting
 the model. Keep LFM2.5-230M as the fallback only if a prompt is found that makes
 it clean rather than echo or answer.
@@ -67,28 +67,27 @@ it clean rather than echo or answer.
   (194.4 MB) + Sotto (409.5 MB) = 1,028.5 MB against 900 MB. 229.9 MB of
   Sotto's figure is file-backed model mapping the kernel can reclaim; counting
   anonymous memory only, the total is 798.6 MB.
-- **Ruling (owner, 2026-09-27): spec 10.1's 900 MB is measured as anonymous
+- **Decision (2026-09-27): spec 10.1's 900 MB is measured as anonymous
   memory** (`RssAnon` in `/proc/<pid>/status`), summed over flowd, the overlay
   and llama-server. File-backed model mappings are excluded because the kernel
   can drop and re-read them under pressure; they cost disk reads, not RAM that
-  other programs lose. The owner asked for the best speed and accuracy, and this
-  keeps both small streaming STT and Sotto. At 798.6 MB it passes with ~100 MB
-  of headroom. Reports must state RSS alongside, so the reading stays honest.
+  other programs lose. This keeps both small streaming STT and Sotto. At 798.6 MB it passes with ~100 MB
+  of headroom. Measurements must state RSS alongside, so the reading stays honest.
 - **License is unchanged in kind.** Sotto is a derivative of LFM2.5-350M-Base
   and its GGUF keeps the LFM Open License v1.0, the same as the spec default.
   The upstream fine-tune labels itself MIT; the base license governs.
 - **Third-party weights.** Sotto is a community fine-tune, not a Liquid AI
   release. `models.lock` pins its hash, so it cannot change underneath us.
 - **Prompt shape is decided by the model.** Sotto takes a completion prompt, not
-  chat, which settles phase 0's unresolved `<new></new>` question for this
-  model: phase 3's `cleanup.py` calls `/completion`, not `/v1/chat/completions`.
+  chat, which settles the open `<new></new>` question for this
+  model: `cleanup.py` calls `/completion`, not `/v1/chat/completions`.
 - **Applied:** `models.lock` pins Sotto (`6cd4dfed…`, 229,311,200 bytes);
   `scripts/fetch_models.sh`, `systemd/flowd-llm.service` and
   `scripts/smoke_llm.sh` use it with the trimmed flags. The smoke test passes on
   the completion format: "so um i think we should uh probably ship it on
   monday" → "I think we should probably ship it on Monday."
-- **Owners with a phase 0-2 install** need `scripts/fetch_models.sh` and a
+- **Existing installs** need `scripts/fetch_models.sh` and a
   re-copy of `flowd-llm.service`; the old 350M file is no longer pinned and can
   be deleted by hand.
-- **12 cases is a screen, not an eval.** Phase 3's recorded eval run (spec 11)
+- **12 cases is a screen, not an eval.** The recorded eval run (spec 11)
   is what accepts or rejects this choice.

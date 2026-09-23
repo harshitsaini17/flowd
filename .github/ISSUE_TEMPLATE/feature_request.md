@@ -17,11 +17,9 @@ Workarounds are useful signal about how much this costs you.
 ## Have you checked the spec?
 
 [`docs/spec.md`](../../docs/spec.md) describes the full intended system across
-seven build phases, and the README's status table says which are done. A fair
-amount of what looks missing is planned and not yet built — LLM cleanup,
-per-application modes, personal vocabulary. If your request is one of those,
-say so: a "+1 on phase 5" is still useful, and it is a much smaller
-conversation than a new feature.
+a roadmap (spec section 12), and the README's status table says what is done.
+If your request is already on the roadmap, say so: a "+1" on a planned item is
+still useful, and it is a much smaller conversation than a new feature.
 
 ## Anything else
 

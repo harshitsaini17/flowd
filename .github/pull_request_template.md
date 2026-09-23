@@ -13,7 +13,7 @@ in the pull request.
 
 - [ ] `uv run pytest -q`
 - [ ] `uv run ruff check .` and `uv run ruff format --check .`
-- [ ] `uv run mypy flowd flowctl`
+- [ ] `uv run mypy flowd flowctl eval`
 
 For a bug fix: which test fails without the fix?
 
@@ -27,4 +27,4 @@ and what you saw.
 - [ ] No audio, transcripts, metrics, model weights or personal vocabulary added
 - [ ] A decision record in `docs/decisions/` if this changes a default, a model,
       the architecture, or anything `docs/spec.md` states as a rule
-- [ ] Commit messages follow `phase<N>(component): summary`
+- [ ] Commit messages follow Conventional Commits (`type(scope): summary`)

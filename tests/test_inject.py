@@ -107,7 +107,7 @@ TypingBackend = type[WtypeBackend] | type[YdotoolBackend] | type[XdotoolBackend]
 DANGEROUS = "text; rm -rf ~ && echo $(whoami) `id` | tee /tmp/x\nsecond line"
 
 
-# --- Review Focus 3: dictated text must never reach a shell ------------------
+# --- Dictated text must never reach a shell ---------------------------------
 
 
 @pytest.mark.parametrize("wayland", [True, False])
@@ -558,7 +558,7 @@ def test_empty_text_injects_nothing() -> None:
     assert rec.calls == []
 
 
-# --- Phase 5: logged fall-through reasons (spec 12 phase 5, 9.4) -------------
+# --- Logged fall-through reasons (spec 9.4) ---------------------------------
 
 
 def test_an_unavailable_backend_logs_why_it_was_skipped(

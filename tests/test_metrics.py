@@ -20,7 +20,7 @@ def test_the_first_mark_is_measured_not_assumed_to_be_zero() -> None:
     Taking the first mark as the origin reported that stage as 0.0 ms however
     long the microphone actually took to open, so the stage with the tightest
     budget in the spec was the one stage whose budget could never be checked —
-    and phase 1's acceptance criterion is that every stage is timed.
+    and every stage is meant to be timed.
     """
     clock = iter([50.0, 50.4])
     m = SessionMetrics(session_id="s1", mode="default", clock=lambda: next(clock))

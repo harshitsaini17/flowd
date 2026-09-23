@@ -1,10 +1,8 @@
-# flowd: Local Dictation Tool — Architecture & Build Spec
-
-Sep 25, 2026 · @Rutics
+# flowd: architecture and design
 
 ## 1. Overview and goals
 
-flowd is a local, offline, Wispr Flow-style dictation tool for Arch Linux. You press a hotkey and speak. A live preview shows raw words immediately, and a small LLM polishes them chunk by chunk. On release, the cleaned text is pasted into whatever text box has focus.
+flowd is a local, offline, streaming dictation tool for Arch Linux. You press a hotkey and speak. A live preview shows raw words immediately, and a small LLM polishes them chunk by chunk. On release, the cleaned text is pasted into whatever text box has focus.
 
 ### Goals (v1)
 
@@ -47,7 +45,7 @@ The target is a CPU-only Arch Linux desktop on PipeWire with a systemd user sess
 
 ### System packages
 
-The agent must confirm each name with `pacman -Ss` or the AUR before writing install docs. Do not assume.
+Package names are for Arch Linux; confirm them with `pacman -Ss` or the AUR for your distribution.
 
 | Purpose | Packages |
 | --- | --- |
@@ -68,9 +66,9 @@ The agent must confirm each name with `pacman -Ss` or the AUR before writing ins
 | Release → text injected | p50 ≤ 600 ms, p95 ≤ 1,000 ms |
 | Daemon cold start (models loaded) | ≤ 5 s; happens once per login |
 
-### Open question
+### Compositor support
 
-- Which compositor does the owner use: Hyprland, Sway, KDE, GNOME or X11? Build and test that backend first. The others must still compile and be selectable in config.
+- Hyprland is the primary target. Sway, other wlroots compositors and X11 are supported through the same backends and are selectable in config.
 
 ## 3. Model selection
 
@@ -190,7 +188,7 @@ class Session:
 
 ## 5. Component specifications
 
-Each component sits behind a small interface so backends can be swapped and tested with fakes. Where an upstream API is uncertain, the agent must read the installed library's docs or source and must not guess.
+Each component sits behind a small interface so backends can be swapped and tested with fakes. Where an upstream API is uncertain, read the installed library's docs or source rather than guessing.
 
 ### 5.1 Audio capture (`audio.py`)
 
@@ -530,7 +528,6 @@ flowd/
 ├── systemd/                  # flowd.service, flowd-llm.service
 ├── scripts/                  # fetch_models.sh, bench.sh
 ├── docs/decisions/           # numbered decision records (ADRs)
-├── docs/reports/             # phase handoff reports (section 14)
 ├── tests/                    # unit + integration
 └── eval/                     # data/, run_eval.py, results/
 ```
@@ -542,7 +539,7 @@ flowd/
 
 ## 9. Edge cases and failure handling
 
-Every row below needs either an automated test or a logged manual check before phase 6 is accepted. The governing rule: **never lose the user's words, never block the desktop, and never type text the user didn't say.**
+Every row below needs either an automated test or a logged manual check before the 1.0 release. The governing rule: **never lose the user's words, never block the desktop, and never type text the user didn't say.**
 
 ### 9.1 Session and input
 
@@ -605,7 +602,7 @@ Every row below needs either an automated test or a logged manual check before p
 
 ## 10. Performance budgets, logging and observability
 
-Measure every stage of every session from phase 1 onward. Budgets are pass/fail gates, and numbers in reports must come from these logs, not estimates.
+Measure every stage of every session . Budgets are pass/fail gates, and reported numbers must come from these logs, not estimates.
 
 ### 10.1 Stage budgets
 
@@ -659,7 +656,7 @@ Fast unit tests guard the logic. A WAV-driven integration test runs the real pip
 
 ### 11.3 Personal eval set (`eval/`)
 
-- 50–100 recordings of the owner's real dictation, stored as `eval/data/NNN.wav` plus `NNN.ref.txt` (the ideal cleaned text) and optionally `NNN.raw.txt` (the verbatim transcript).
+- 50–100 recordings of real dictation, stored as `eval/data/NNN.wav` plus `NNN.ref.txt` (the ideal cleaned text) and optionally `NNN.raw.txt` (the verbatim transcript).
 - Cover these categories, at least 10 recordings each: short (< 10 words), long (60–120 s), self-corrections, technical vocabulary, and a noisy room.
 - `eval/run_eval.py` replays every file and writes `eval/results/<date>-<git sha>.json`.
 
@@ -674,37 +671,36 @@ Fast unit tests guard the logic. A WAV-driven integration test runs the real pip
 
 ### 11.4 Regression rule
 
-Any change to prompts, thresholds, chunking parameters or models requires a before-and-after eval run, with both result files referenced in the phase report.
+Any change to prompts, thresholds, chunking parameters or models requires a before-and-after eval run, with both result files referenced in the pull request.
 
-## 12. Build phases and acceptance criteria
+## 12. Roadmap and acceptance criteria
 
-Build in seven phases, strictly in order. A phase is done only when every acceptance criterion passes and its handoff report (section 14) is written in `docs/reports/`.
+flowd is built in seven milestones, in order. A milestone is done when every acceptance criterion passes.
 
 | Phase | Deliverable | Acceptance criteria |
 | --- | --- | --- |
 | 0. Setup | Repo skeleton, `pyproject.toml`, `fetch_models.sh`, `models.lock`, `flowd-llm.service` | Both models download and hash-verify. `llama-server` answers a cleanup prompt. Moonshine transcribes a sample WAV from the command line. Versions and API notes are recorded in `docs/decisions/0001-stt-api.md`. |
-| 1. Baseline | Daemon, control socket, `flowctl`, state machine, audio capture, non-streaming Moonshine, clipboard injector for the owner's session type, metrics log | Toggle dictation pastes raw text into a terminal, a browser text field and a code editor. Every stage is timed in `metrics.jsonl`. Cancel injects nothing. Unit tests for the state machine pass. |
+| 1. Baseline | Daemon, control socket, `flowctl`, state machine, audio capture, non-streaming Moonshine, clipboard injector for the primary session type, metrics log | Toggle dictation pastes raw text into a terminal, a browser text field and a code editor. Every stage is timed in `metrics.jsonl`. Cancel injects nothing. Unit tests for the state machine pass. |
 | 2. Streaming and preview | VAD, streaming STT, committer, overlay | First partial ≤ 300 ms after speech onset. The overlay never takes focus: paste still lands in the original app. Committer unit tests pass. |
 | 3. Cleanup (single pass) | `cleanup.py`, prompts, guardrails, `basic_clean`, joiner. One LLM pass over the whole text at release. | First eval run recorded. Fallback rate ≤ 10%. Zero accepted invented-content cases. `llama-server` down means dictation still works via fallback. |
 | 4. Chunk pipelining | Scheduler: single-flight, coalescing, merges, release flush | Scheduler and merge unit tests pass. On 60 s dictations, release → inject p50 ≤ 600 ms and p95 ≤ 1,000 ms. The eval shows cleaned WER no worse than phase 3 by more than 1 pt. |
 | 5. Context and polish | `context.py`, modes, `vocab.toml` and reload, all injector backends, terminal paste | Mode switches correctly in at least 3 apps. Vocab replacement works after `flowctl reload` without a restart. Each backend works where supported, or falls through with a logged reason. |
 | 6. Hardening | Every edge case in section 9, `flowd.service`, README (install, hotkeys per compositor, `ydotool` setup, troubleshooting), optional full-rewrite mode | Every section 9 row has a passing test or a logged manual check. Idle RAM ≤ 900 MB and idle CPU < 1%. A 24 h idle soak shows no leaks or restarts. |
 
-**Checkpoints for review:** after phases 0, 2, 4 and 6, stop and hand the report to the owner before continuing.
 
-## 13. Rules for the coding agent
+## 13. Engineering rules
 
-The agent implements this spec as written, verifies instead of assuming, and stops to escalate instead of improvising on anything that changes architecture, models, defaults or privacy.
+These rules apply to every change. Anything that alters the architecture, models, defaults or privacy guarantees goes through a decision record first.
 
 ### 13.1 Always
 
-1. Work phase by phase (section 12). Don't start a phase until the previous one's criteria pass and its report exists.
+1. Finish milestones in order (section 12).
 2. **Verify, don't guess.** For `moonshine-voice`, `llama-server` endpoints, `sounddevice`, `gtk4-layer-shell` and every CLI tool, read the installed version's docs, `--help` or source before using an API. Record versions and the calls used in `docs/decisions/`.
 3. Keep components behind their interfaces (section 5). Backends must be swappable and testable with fakes.
 4. Put every tunable in `config.toml` with the section 8 defaults. No magic numbers in code.
 5. Write unit tests alongside the code they test. Keep `pytest` green at every commit.
 6. Report real measured numbers from `metrics.jsonl` and `eval/results/`, never estimates.
-7. Commit in small steps with messages that name the phase and component, e.g. `phase2(committer): stable-prefix rule`.
+7. Commit in small steps using Conventional Commits, e.g. `feat(committer): stable-prefix rule`.
 
 ### 13.2 Never
 
@@ -715,11 +711,11 @@ The agent implements this spec as written, verifies instead of assuming, and sto
 - Swap models, change default thresholds, or restructure the architecture without an approved decision record.
 - Silence a failing check, test or guardrail to make a gate pass.
 
-### 13.3 Stop and escalate when
+### 13.3 Write a decision record when
 
 | Trigger | Example |
 | --- | --- |
-| The spec conflicts with reality | `moonshine-voice` has no streaming API, or the overlay can't avoid taking focus on the owner's compositor |
+| The spec conflicts with reality | `moonshine-voice` has no streaming API, or the overlay can't avoid taking focus on a supported compositor |
 | A budget is missed by > 25% after the section 10.4 steps | Release → inject p50 of 900 ms |
 | Fallback rate > 15%, or any invented content accepted in the eval | Guardrails pass an output containing a new name |
 | A new dependency over 50 MB, or any new system service | Wanting PyTorch for VAD |
@@ -727,15 +723,14 @@ The agent implements this spec as written, verifies instead of assuming, and sto
 | Two reasonable designs, and the choice is hard to reverse | IPC format, overlay toolkit |
 | The same failure after 3 fix attempts | Paste lands in the wrong window intermittently |
 
-### 13.4 How to escalate
+### 13.4 Decision record template
 
-Write `docs/decisions/NNNN-<topic>.md` with these parts, then stop and wait for the owner:
+Write `docs/decisions/NNNN-<topic>.md` with these parts, and land it before the change it describes:
 
 ```markdown
 # NNNN: <decision needed>
 
 Status: proposed
-Phase: <n>
 
 ## Context
 What happened, with evidence (logs, metrics, versions, commands run).
@@ -751,37 +746,9 @@ What happened, with evidence (logs, metrics, versions, commands run).
 Sections and defaults that would change.
 ```
 
-## 14. Review checklist and handoff report
+## 14. Release checklist
 
-At each checkpoint the agent writes a report in the template below. The owner brings that report, plus any decision records and failing logs, for review against this checklist.
-
-### 14.1 Handoff report template (`docs/reports/phase-N.md`)
-
-```markdown
-# Phase N report
-
-## Summary
-What was built, in 3–5 bullets.
-
-## Acceptance criteria
-| Criterion (from section 12) | Result | Evidence (test name, metrics file, manual check) |
-
-## Measurements
-- Machine: CPU model, cores, RAM, compositor/session type
-- Versions: moonshine-voice, llama.cpp build, Python
-- Latency p50/p95 per stage (from `flowctl stats`, N sessions)
-- Eval: file name, cleaned WER, fallback rate, clip rate
-- Idle RSS and CPU
-
-## Deviations from spec
-Each one: what, why, and decision record link (or "none").
-
-## Known issues and open questions
-
-## Next phase plan
-```
-
-### 14.2 Review checklist
+Run through this list before tagging a release.
 
 **Architecture conformance**
 
@@ -793,7 +760,7 @@ Each one: what, why, and decision record link (or "none").
 
 **Speed**
 
-- [ ] Section 10.1 budgets are met with real `metrics.jsonl` data from the owner's machine.
+- [ ] Section 10.1 budgets are met with real `metrics.jsonl` data from a reference machine.
 - [ ] Prompt caching hits (server timings show only the new tokens processed).
 - [ ] Idle CPU < 1% and idle RSS ≤ 900 MB.
 
@@ -821,14 +788,7 @@ Each one: what, why, and decision record link (or "none").
 
 - [ ] `pytest` is green; the scheduler and committer have deterministic tests with fakes.
 - [ ] External APIs used are recorded with versions in `docs/decisions/`.
-- [ ] The README covers install, hotkeys for the owner's compositor, and troubleshooting.
-
-### 14.3 What to bring for a review
-
-1. The phase report.
-2. Any new decision records.
-3. `flowctl stats` output and the latest `eval/results/*.json`.
-4. For bugs: the steps to reproduce, `journalctl --user -u flowd -u flowd-llm` for that time window, and the matching `metrics.jsonl` lines (with `log_transcripts` on only if you're comfortable sharing the text).
+- [ ] The README covers install, hotkeys per compositor, and troubleshooting.
 
 ## Sources
 

@@ -48,7 +48,7 @@ def test_replay_disables_hotkey_debounce() -> None:
 
     Debounce exists to swallow a hotkey double-press (spec 9.1). Left at its
     200 ms default it swallows the replay's own `stop`, so the run finalises
-    nothing and prints an empty TEXT line — the phase 1 acceptance check would
+    nothing and prints an empty TEXT line — a replay-based check would
     pass silently while transcribing nothing.
     """
     cfg = Config(hotkey=Hotkey(debounce_ms=200))
@@ -205,7 +205,7 @@ def test_reported_version_matches_the_package_metadata() -> None:
 
 def test_replay_writes_no_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # A replay is a probe, not dictation. Written to metrics.jsonl it reads as
-    # a real session in `flowctl stats`, and an owner looking for their own
+    # a real session in `flowctl stats`, and a user looking for their own
     # timings finds the harness's instead.
     engine = FakeSttEngine([[Committed("hello there")]])
     monkeypatch.setattr(main, "load_engine", lambda *a, **kw: engine)

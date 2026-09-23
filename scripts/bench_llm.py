@@ -11,7 +11,7 @@ buffers, repacked weights) and file-backed pages (the model mapping, which the
 kernel can reclaim), and every output, so a person can judge faithfulness by
 eye. Keep models on disk, not tmpfs: a model on `/tmp` is counted as shared
 memory instead of file pages. This is a screening tool for choosing a
-model, not the phase 3 eval: it has no scoring and no guardrails.
+model, not the eval harness: it has no scoring and no guardrails.
 
 Stdlib only, like `flowctl`, so it runs on the system interpreter.
 """

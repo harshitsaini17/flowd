@@ -1,4 +1,4 @@
-"""Phase 5: per-app modes as pipeline styles (spec 7.3, ADR 0009)."""
+"""Per-app modes as pipeline styles (spec 7.3, ADR 0009)."""
 
 import pytest
 

@@ -1,6 +1,6 @@
 # 0005: Default to Moonshine Small Streaming
 
-**Status:** accepted (owner-approved, 2026-09-26)
+**Status:** accepted (2026-09-26)
 **Date:** 2026-09-26
 
 ## Context
@@ -8,7 +8,7 @@
 spec 3 fixes the STT model as Moonshine Medium Streaming and allows a
 substitution only through an approved decision record. This is that record.
 
-The owner's first real use was "working superb but ... too much slow". Measured
+In daily use medium was accurate but too slow to keep up. Measured
 through the real `--replay` path, paced in real time, on the reference machine
 (Ryzen 5 5600H, 6 cores / 12 threads):
 
@@ -74,8 +74,8 @@ downloader, as ADR 0001 describes.
   written and this record is the deviation from it.
 - Small is 136 MB on disk against medium's 257 MB. Re-measured 2026-09-27:
   the daemon is 242.9 MB idle and 424.6 MB after dictating, against medium's
-  711.4 MB (phase 2 report, "Measurements").
-- Owners on slower machines who still see lag can drop to tiny with one line of
+  711.4 MB.
+- Users on slower machines who still see lag can drop to tiny with one line of
   config, at the accuracy cost shown above.
 - Not re-measured with small: spec 10.1's release-to-commit percentiles. The
-  phase 2 report's figures are medium's.
+  published figures are medium's.

@@ -72,7 +72,7 @@ def test_config_is_immutable() -> None:
 
 
 def test_default_stt_model_is_small_streaming() -> None:
-    # Measured on the owner's 5600H over 80 LibriSpeech test-clean clips:
+    # Measured on a Ryzen 5 5600H over 80 LibriSpeech test-clean clips:
     # small scored 3.71% WER against medium's 4.50% and decodes faster, so the
     # overlay keeps up with continuous speech. See ADR 0005.
     assert Stt().model == "small-streaming-en"

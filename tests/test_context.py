@@ -1,4 +1,4 @@
-"""Phase 5: focused-app detection and mode mapping (spec 5.6)."""
+"""Focused-app detection and mode mapping (spec 5.6)."""
 
 import json
 import subprocess

@@ -1,4 +1,4 @@
-"""Phase 3: the cleanup pass inside a dictation (spec 5.5, 7.4, 9.3)."""
+"""The cleanup pass inside a dictation (spec 5.5, 7.4, 9.3)."""
 
 import asyncio
 from typing import Any
@@ -195,7 +195,7 @@ async def test_a_cancel_during_the_llm_injects_nothing() -> None:
 
 
 async def test_a_dead_server_still_dictates() -> None:
-    """Phase 3 acceptance: llama-server down means dictation works via fallback."""
+    """llama-server down means dictation works via fallback."""
 
     def refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused")

@@ -158,7 +158,7 @@ async def test_cancel_resets_the_engine_so_nothing_leaks_into_the_next_session()
 
 
 async def test_silent_session_injects_nothing() -> None:
-    """Review Focus 4: hotkey pressed and released with no speech."""
+    """Hotkey pressed and released with no speech."""
     injected: list[str] = []
     d = daemon(FakeSttEngine([]), injected=injected)
     await d.handle({"cmd": "start"})
@@ -890,7 +890,7 @@ async def test_startup_with_broken_vocab_still_dictates(tmp_path: Path) -> None:
 async def test_a_vocab_edit_applies_to_the_next_dictation_without_a_restart(
     tmp_path: Path,
 ) -> None:
-    """Phase 5 acceptance: replacement works after `flowctl reload`, same daemon."""
+    """Replacement works after `flowctl reload`, same daemon."""
     vocab = tmp_path / "vocab.toml"
     vocab.write_text("")
     injected: list[str] = []

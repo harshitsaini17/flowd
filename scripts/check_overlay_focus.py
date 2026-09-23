@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The phase 2 gate: the overlay previews without ever taking keyboard focus.
+"""Manual check: the overlay previews without ever taking keyboard focus.
 
 Run this on a `zwlr_layer_shell_v1` compositor, with a window focused:
 

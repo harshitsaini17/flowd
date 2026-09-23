@@ -1,6 +1,6 @@
 # 0009: Modes are pipeline styles, not prompts
 
-Status: **proposed**. Needs the owner's approval.
+Status: proposed
 
 ## Context
 
@@ -19,6 +19,6 @@ Spec 7.3 describes modes as instructions to the cleanup LLM ("code: keep symbols
 
 ## Consequences
 
-- Email and default read the same. A real "formal" register would need a model that takes instructions, and that belongs to the full-rewrite mode (phase 6).
+- Email and default read the same. A real "formal" register would need a model that takes instructions, and that belongs to the optional full-rewrite mode (spec 6.6).
 - Code mode is faster, with no model round trip, but a spoken "open paren" stays as words. Symbol dictation would be a separate feature.
 - Browsers report one id for every site, so Gmail in a browser gets default mode.

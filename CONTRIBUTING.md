@@ -30,7 +30,7 @@ Run what CI runs:
 uv run pytest -q
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy flowd flowctl
+uv run mypy flowd flowctl eval
 ```
 
 CI runs these on Python 3.11 and on the latest release. `mypy` is in strict
@@ -40,15 +40,15 @@ keypress.
 
 ## Commits
 
+[Conventional Commits](https://www.conventionalcommits.org/):
+
 ```
-phase<N>(component): summary in the imperative
+<type>(<scope>): summary in the imperative
 ```
 
-For example `phase1(inject): clipboard and typing backends with argv-only
-subprocesses`. `<N>` is the build phase from
-[`docs/spec.md`](docs/spec.md) section 12; the component is the module or
-subsystem. Work that belongs to no phase — tooling, dependency pins, repository
-chores — uses `chore:` or `docs:`.
+For example `feat(inject): clipboard and typing backends with argv-only
+subprocesses`. `<type>` is one of `feat`, `fix`, `perf`, `refactor`, `test`,
+`docs`, `ci` or `chore`; the scope is the module or subsystem.
 
 Write the body for someone reading `git log` in a year with no memory of the
 conversation. If you changed something because the obvious approach did not
@@ -61,7 +61,7 @@ Commit at logical units, not at the end. Do not commit a red suite.
 ## What the spec is for
 
 [`docs/spec.md`](docs/spec.md) is authoritative. It fixes the architecture, the
-stage budgets, the config defaults and the phase order, and code that disagrees
+stage budgets, the config defaults and the roadmap, and code that disagrees
 with it is wrong until the spec changes.
 
 The spec is also a document written before the code existed, so parts of it are

@@ -88,7 +88,7 @@ class Daemon:
         self.vocab_file = vocab_file or vocab_path()
         self.vocab = vocab or Vocab()
         self.metrics_path = metrics_path
-        # None runs every session through `basic_clean` alone, as phase 2 did.
+        # None runs every session through `basic_clean` alone.
         self.cleanup = cleanup
         # Reads the focused app at session start (spec 5.6). None, as in tests
         # and `--replay`, means every session is `default` and not a terminal.
@@ -376,7 +376,7 @@ class Daemon:
         self.capture.stop()
         # Same worker and same lock as `feed`: `finalize` runs the model over
         # whatever audio is still undecoded (anywhere from ~10 ms to ~850 ms on
-        # the owner's Ryzen 5 5600H, growing with backlog and CPU contention)
+        # a Ryzen 5 5600H, growing with backlog and CPU contention)
         # and touches the same stream, so it waits for any decode still in
         # flight rather than entering beside it.
         async with self._stt_lock:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 0 acceptance criterion: prove llama-server can clean up dictated speech.
+# Smoke test: prove llama-server can clean up dictated speech.
 #
 # Starts a throwaway llama-server on a non-default port, sends one cleanup
 # prompt, prints the result, and stops the server on exit.
@@ -46,8 +46,8 @@ echo "==> Sending a cleanup prompt"
 # Sotto is a base-model fine-tune, not a chat model: it takes the `### Input:` /
 # `### Output:` completion format from its model card, at temperature 0 with a
 # 1.05 repeat penalty, through `/completion` rather than the chat endpoint
-# (ADR 0006). Phase 0's `<new></new>` finding was on the general 350M chat
-# model; whether spec 6's merge shape works on Sotto is a phase 4 question.
+# (ADR 0006). The `<new></new>` finding was on the general 350M chat model,
+# not on Sotto.
 curl -fsS "http://127.0.0.1:$PORT/completion" \
   -H 'Content-Type: application/json' \
   -d '{

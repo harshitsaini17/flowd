@@ -185,8 +185,8 @@ def check(
 def has_correction_cue(raw: str, cues: Iterable[str]) -> bool:
     """Whether `raw` contains a self-correction cue anywhere (spec 6.4's list).
 
-    Anywhere rather than at the start, as spec 6.4 has it for chunks: phase 3
-    cleans the whole session in one pass, so a correction is mid-text.
+    Anywhere rather than at the start, as spec 6.4 has it for chunks: single-pass
+    cleanup covers the whole session at once, so a correction is mid-text.
     """
     padded = f" {' '.join(tokens(raw))} "
     return any(f" {' '.join(tokens(cue))} " in padded for cue in cues)

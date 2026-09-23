@@ -1,17 +1,14 @@
 # 0003: The overlay needs `LD_PRELOAD`, and silently does not without it
 
 Status: accepted
-Phase: 2
 
 ## Context
 
 spec 5.8 makes one property non-negotiable: the overlay must never take
 keyboard focus. Everything the user dictates goes to the focused window, so an
 overlay that steals focus swallows the dictation it was supposed to preview —
-worse than shipping no overlay at all. The user's amendment to the phase 0-2
-design asked specifically whether `LD_PRELOAD` of the layer-shell library is
-required, and Task 18's plan assumed the preload path merely "exists" and might
-be optional.
+worse than shipping no overlay at all. The open question was whether
+`LD_PRELOAD` of the layer-shell library is required, or merely an option.
 
 It is required. And the failure mode when it is missing is the dangerous one.
 

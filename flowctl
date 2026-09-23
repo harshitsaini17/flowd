@@ -24,7 +24,7 @@ COMMANDS = ("start", "stop", "toggle", "cancel", "status", "last", "stats", "rel
 USAGE = f"usage: flowctl {{{'|'.join(COMMANDS)}}} [--rewrite]"
 #: How long to wait for the daemon's reply. A `stop` answers only after STT
 #: finalize (up to ~850 ms), the cleanup pass (capped at `final_timeout_ms`,
-#: 800 ms) and injection; phase 2's 2 s left no margin once the LLM joined, and
+#: 800 ms) and injection; the earlier 2 s left no margin once the LLM joined, and
 #: a timeout here reports an error for a dictation that actually succeeded.
 REPLY_TIMEOUT_S = 5.0
 

@@ -15,9 +15,8 @@ TEXT: It was the best of times, it was the worst of times. ...
 STAGES: {'mic_open_ms': 0.0, 'first_partial_ms': 2043.2, ...}
 ```
 
-spec 13.3 makes a miss of this size an escalation trigger, and the Task 17
-brief requires spec 10.4's optimisation order to be worked through before any
-model change. This record is the result of doing that.
+spec 13.3 makes a miss of this size a decision-record trigger, and spec 10.4's
+optimisation order has to be worked through before any model change. This record is the result of doing that.
 
 That first run also took 16 s of wall clock for 12 s of audio, which turned out
 to be a defect in `--replay`'s pacer rather than anything about the engine: each
@@ -30,8 +29,8 @@ run also showed STT finalize at 13 ms, but that one reading was not
 representative, and an earlier version of this record called spec 10.1's
 300 ms release-to-commit budget "met with room to spare" on the strength of it.
 Finalize decodes whatever audio is still behind when the key is released, so it
-ranges from ~10 ms to ~850 ms on this machine depending on backlog and load; the
-phase 2 report's idle sweep puts it at p50 287 ms, p95 806 ms.
+ranges from ~10 ms to ~850 ms on this machine depending on backlog and load; an
+idle sweep puts it at p50 287 ms, p95 806 ms.
 
 Two corrections to the headline number first, because both were needed before
 the miss could be sized honestly:
@@ -118,16 +117,15 @@ model trades accuracy for CPU headroom flowd does not currently need.
 
 ## Decision
 
-**Option 1 for phase 2.** The streaming engine keeps `medium-streaming-en` and
-the honest number goes in the phase 2 report: first partial lands ~800-1100 ms
+**Option 1 for now.** The streaming engine keeps `medium-streaming-en` and
+the honest number is documented: first partial lands ~800-1100 ms
 after speech onset, against a 300 ms budget written before the engine was
 chosen.
 
 Option 3 is the identified remedy and is deliberately **not** taken as a side
-effect of Task 17. Adding a shadow decoder changes the pipeline's shape, and
-spec 13.3 exists so that a miss this size reaches the owner as a decision
-rather than being absorbed by an implementation. It is on the table at the
-phase 2 checkpoint with its cost already measured.
+effect of the streaming work. Adding a shadow decoder changes the pipeline's
+shape, so it gets its own decision rather than being absorbed by an
+implementation. Its cost is already measured above.
 
 ## Impact on spec
 
@@ -135,15 +133,15 @@ phase 2 checkpoint with its cost already measured.
   achievable with Moonshine streaming and no model choice changes that. The
   measured floor is ~600-800 ms to any line and ~800-1100 ms to renderable
   text. The budget needs revising to the engine's reality, or the engine needs
-  option 3, which is the checkpoint's call.
+  option 3.
 - **10.2 (session metrics).** `first_partial_ms` is session-relative and so is
   not the stage 10.1 defines. Reading it as the budget overstates the miss by
   however long the user paused before speaking. Either the metric should be
   re-based on the first line's `start_time`, or 10.1 should say plainly that
   the logged figure includes lead-in silence.
 - **5.2 / overlay.** The ~0.8 s of blank overlay is now a known property, not a
-  bug to chase. The overlay wants a visible listening state for that window
-  (Task 18/19), which is what keeps the floor from reading as a hang.
+  bug to chase. The overlay wants a visible listening state for that window,
+  which is what keeps the floor from reading as a hang.
 - **10.4 (optimisation order).** Steps 1-2 are LLM-side; ONNX Runtime thread
   counts are not exposed by `moonshine-voice`, which ships its own runtime
   inside `libmoonshine.so`, and measurement 1 shows compute is not the

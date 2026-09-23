@@ -95,7 +95,7 @@ def summarise(results: Sequence[FileResult]) -> dict[str, Any]:
     """The run's metrics, in spec 11.3's table order."""
     tried = [r for r in results if r.llm_tried]
     fallbacks = [r for r in tried if r.fell_back]
-    # Phase 3 records carry no `llm_chunks`: one request per session.
+    # Single-pass records carry no `llm_chunks`: one request per session.
     chunks = sum(r.record.get("counts", {}).get("llm_chunks", 1) for r in tried)
     rejected = sum(r.record.get("counts", {}).get("fallbacks", 0) for r in tried)
     checks: dict[str, int] = {}

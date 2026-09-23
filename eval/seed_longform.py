@@ -2,11 +2,11 @@
 
     uv run python eval/seed_longform.py [--count 6] [--seconds 60]
 
-Spec 12's phase 4 gate measures release → inject on 60 s dictations, which the
+Spec 12's chunked-cleanup criterion measures release → inject on 60 s dictations, which the
 single LibriSpeech utterances (2-20 s) do not reach. Each file here is one
 speaker's consecutive utterances joined with 0.6 s of silence, so the committer
 sees pauses where a person dictating would take them. Named `lf-<speaker>` so
-they never collide with the owner's recordings. Needs `ffmpeg`.
+they never collide with personal recordings. Needs `ffmpeg`.
 """
 
 from __future__ import annotations
