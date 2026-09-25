@@ -116,7 +116,7 @@ class Daemon:
                 self._discard()
                 return {"ok": True, "cancelled": True}
             case Action.RELEASE_MIC:
-                self._discard()
+                self._discard(reason="fatal error")
                 return {"ok": False, "error": "fatal error; microphone released"}
             case _:
                 return {"ok": True}
@@ -182,6 +182,12 @@ class Daemon:
 
     async def _finalize(self) -> dict[str, Any]:
         assert self.session is not None and self.metrics is not None
+        # The release instant, marked before any finalize work begins. Two of
+        # spec 10.1's budgets are deltas from here rather than from the hotkey —
+        # "release → last chunk committed" and the end-to-end "release → text
+        # injected" — and every other mark is relative to the start of the
+        # session, so without this one neither delta can be computed at all.
+        self.metrics.mark("released")
         self.capture.stop()
         for event in self.stt.finalize():
             self._on_stt_event(event)
@@ -217,15 +223,26 @@ class Daemon:
         self._end_session(text=final, reason=None)
         return {"ok": True, "text": final, "backend": result.backend}
 
-    def _discard(self) -> None:
+    def _discard(self, reason: str = "cancelled") -> None:
         try:
             self.capture.stop()
         except Exception as exc:
             log.warning("error closing microphone: %s", exc)
+        if self.metrics is not None:
+            # spec 10.2 asks for one line per session, and an abandoned session
+            # is still a session: how often dictation gets cancelled is the
+            # signal that a hotkey is misfiring or a microphone is opening too
+            # slowly, and dropping the record leaves `flowctl stats` reporting a
+            # clean history of a tool nobody can use. An empty `text` keeps
+            # whatever `flowctl last` already held (spec 5.7): cancelling this
+            # session does not erase the previous one.
+            self._end_session(text="", reason=reason)
+            return
+        # No metrics to write: the microphone never opened, and `_begin` has
+        # already reported and cleared that failure.
         if self.overlay is not None:
             self.overlay.hide()
         self.session = None
-        self.metrics = None
 
     def _end_session(self, text: str, reason: str | None) -> None:
         assert self.metrics is not None
