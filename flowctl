@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""flowd control client.
+
+Deliberately stdlib-only, importing nothing from the flowd package: it runs on
+every hotkey press and must finish in under 50 ms (spec 5.9). Importing flowd
+would load numpy and the ONNX runtime and blow that budget by an order of
+magnitude, so the few lines of socket code below, and `socket_path`, are
+duplicated from `flowd.control` and `flowd.config` on purpose.
+
+`tests/test_flowctl.py` imports both this file and `flowd.config` and asserts
+the two path computations agree, which is what keeps the copy honest.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import sys
+
+APP = "flowd"
+SOCKET_NAME = "flowd.sock"
+COMMANDS = ("start", "stop", "toggle", "cancel", "status", "last", "stats", "reload")
+USAGE = f"usage: flowctl {{{'|'.join(COMMANDS)}}} [--rewrite]"
+
+
+def socket_path() -> str:
+    """Where the daemon listens. Mirrors `flowd.config.runtime_dir`.
+
+    The two branches differ in one way that matters: `$XDG_RUNTIME_DIR` is
+    shared between applications, so the socket goes in a `flowd/` subdirectory,
+    while the `/tmp` fallback is already per-application and per-user and takes
+    the socket directly. Appending the app name in both branches would dial
+    `/tmp/flowd-<uid>/flowd/flowd.sock` while the daemon listens one level up.
+    """
+    override = os.environ.get("FLOWD_SOCKET")
+    if override:
+        return override
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        return os.path.join(runtime, APP, SOCKET_NAME)
+    # XDG_RUNTIME_DIR is absent under some systemd units; degrade to /tmp.
+    return os.path.join(f"/tmp/{APP}-{os.getuid()}", SOCKET_NAME)
+
+
+def main(argv: list[str]) -> int:
+    args = argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        print(USAGE)
+        return 0
+    if not args:
+        # Usage errors go to stderr: stdout is what callers pipe as data.
+        print(USAGE, file=sys.stderr)
+        return 2
+    cmd = args[0]
+    if cmd not in COMMANDS:
+        print(f"flowctl: unknown command {cmd!r}\n{USAGE}", file=sys.stderr)
+        return 2
+
+    request: dict[str, object] = {"cmd": cmd}
+    if "--rewrite" in args[1:]:
+        request["rewrite"] = True
+
+    path = socket_path()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(2.0)
+            sock.connect(path)
+            sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
+            chunks: list[bytes] = []
+            while not (chunks and chunks[-1].endswith(b"\n")):
+                data = sock.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+    except (FileNotFoundError, ConnectionRefusedError):
+        print(f"flowctl: flowd is not running (no socket at {path})", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"flowctl: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        reply = json.loads(b"".join(chunks).decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        print("flowctl: malformed reply from daemon", file=sys.stderr)
+        return 1
+    if not isinstance(reply, dict):
+        print("flowctl: malformed reply from daemon (expected an object)", file=sys.stderr)
+        return 1
+
+    # `last` and `stats` are meant for piping, so print their payload bare.
+    if cmd == "last" and "text" in reply:
+        print(reply["text"])
+    elif cmd == "stats" and "stats" in reply:
+        print(json.dumps(reply["stats"], indent=2))
+    else:
+        print(json.dumps(reply))
+    return 0 if reply.get("ok", False) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

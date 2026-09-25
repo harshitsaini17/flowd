@@ -20,5 +20,8 @@ jobs:
       - run: uv pip install -e '.[dev]'
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy flowd
+      # `flowctl` is named explicitly: it has no .py extension, so mypy's
+      # directory walk never reaches it, and it is the one file that runs on
+      # every hotkey press.
+      - run: uv run mypy flowd flowctl
       - run: uv run pytest -q
