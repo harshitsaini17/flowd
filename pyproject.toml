@@ -50,8 +50,10 @@ warn_unreachable = true
 exclude = "^overlay/"
 
 [[tool.mypy.overrides]]
-# sounddevice ships no py.typed marker, so it has no types to check against.
-module = ["sounddevice"]
+# Neither ships a py.typed marker, so neither has types to check against.
+# moonshine_voice reaches its ONNX runtime through ctypes, so there is nothing
+# for mypy to infer from even in principle.
+module = ["sounddevice", "moonshine_voice"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
