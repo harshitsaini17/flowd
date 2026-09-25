@@ -121,6 +121,30 @@ async def test_cancel_injects_nothing() -> None:
     assert injected == []
 
 
+async def test_cancel_resets_the_engine_so_nothing_leaks_into_the_next_session() -> None:
+    """spec 9.4: the daemon holds one engine for its whole life (spec 5.3), so a
+    cancelled session that left state behind carries on into the next one.
+
+    The second `stop` still reports a finished session, which is what separates
+    a cleared engine from a daemon that merely stopped recording.
+    """
+    injected: list[str] = []
+    d = daemon(
+        FakeSttEngine([[Committed("cancelled words")], [Committed("next session")]]),
+        capture=FakeCapture([np.zeros(1600, dtype=np.float32) for _ in range(4)]),
+        injected=injected,
+    )
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "cancel"})
+
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    reply = await d.handle({"cmd": "stop"})
+    assert injected == []
+    assert reply == {"ok": True, "reason": "no speech"}
+
+
 async def test_silent_session_injects_nothing() -> None:
     """Review Focus 4: hotkey pressed and released with no speech."""
     injected: list[str] = []

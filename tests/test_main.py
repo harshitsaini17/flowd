@@ -109,6 +109,52 @@ def test_realtime_replay_paces_playback() -> None:
     assert time.monotonic() - started >= 0.05
 
 
+class FakeTime:
+    """A clock the test drives, where sleeping and working both move it.
+
+    Real time here would make the test both slow and flaky; what matters is the
+    schedule the pacer computes, which a fake clock shows exactly.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+    def work(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_realtime_replay_keeps_an_absolute_schedule() -> None:
+    """A microphone delivers blocks on its own schedule, not the consumer's.
+
+    Moonshine decodes in bursts: most blocks cost almost nothing and every few
+    hundred ms one costs more than a block is long. If each deadline is measured
+    from the end of the previous wait, that overrun is added to the clip instead
+    of caught up on the cheap blocks that follow, and a 12 s clip takes 16 s.
+    Every latency `--replay` reports is then inflated by however slow the
+    machine was, which defeats the point of pacing it at all.
+
+    Here 800 ms of audio carries 500 ms of bursty compute, so a pacer holding an
+    absolute schedule delivers the last block at 800 ms.
+    """
+    t = FakeTime()
+    pcm = np.zeros(12800, dtype=np.float32)  # 800 ms at 16 kHz, eight blocks
+    capture = _ReplayCapture(
+        pcm, block=1600, sample_rate=16000, realtime=True, clock=t.clock, sleep=t.sleep
+    )
+    capture.start()
+    for burst in (0.25, 0.0, 0.0, 0.0, 0.25, 0.0, 0.0, 0.0):
+        capture.read()
+        t.work(burst)
+    assert capture.exhausted
+    assert t.now == pytest.approx(0.8, abs=1e-9)
+
+
 def test_load_wav_rejects_a_rate_mismatch(tmp_path: Path) -> None:
     """A 48 kHz clip resampled by nobody would transcribe as gibberish."""
     from flowd.audio import load_wav

@@ -132,12 +132,18 @@ class SegmentationVad:
         self._tracker.reset()
 
 
-def load_vad(cfg: Vad, model_dir: Path, block_ms: int = 100) -> VadEngine:
+def load_vad(cfg: Vad, model_dir: Path, block_ms: int = 100) -> SegmentationVad:
     """Build the VAD engine chosen in ADR 0001 and recorded in ADR 0002.
 
     `model_dir` is accepted for symmetry with the other loaders and unused:
     the detector ships inside `libmoonshine.so`, so there is no file to find
     and nothing for `scripts/fetch_models.sh` to fetch or `models.lock` to pin.
+
+    The return type is the concrete engine rather than `VadEngine`, because
+    since ADR 0002 it is the only thing this can return and its caller needs
+    more than the protocol: `observe_frontier` is what feeds it the speech
+    signal, and the protocol deliberately does not carry it (a VAD that reads
+    its own audio would have no use for it).
     """
     log.debug("VAD: Moonshine segmentation, lag allowance %d ms", cfg.lag_allowance_ms)
     return SegmentationVad(block_ms=block_ms, lag_allowance_ms=cfg.lag_allowance_ms)

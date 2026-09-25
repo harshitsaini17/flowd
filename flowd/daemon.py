@@ -228,6 +228,10 @@ class Daemon:
             self.capture.stop()
         except Exception as exc:
             log.warning("error closing microphone: %s", exc)
+        # The engine outlives the session (spec 5.3 loads the model once), so an
+        # abandoned session's audio and half-formed transcript have to be thrown
+        # away explicitly or the next dictation starts inside this one.
+        self.stt.reset()
         if self.metrics is not None:
             # spec 10.2 asks for one line per session, and an abandoned session
             # is still a session: how often dictation gets cancelled is the
