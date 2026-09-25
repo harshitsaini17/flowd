@@ -1,0 +1,20 @@
+[Unit]
+Description=flowd dictation daemon
+Documentation=https://github.com/harshitsaini17/flowd
+Wants=flowd-llm.service pipewire.service
+After=flowd-llm.service pipewire.service graphical-session.target
+
+[Service]
+Type=simple
+# Point this at the virtualenv you installed flowd into. The path below is a
+# suggestion, not a guess about where you cloned the repository.
+ExecStart=%h/.local/share/flowd/.venv/bin/flowd
+Restart=on-failure
+RestartSec=2
+# The daemon needs the compositor's environment to inject text and show the
+# overlay. A user service started before login inherits none of it, so import it
+# once per session before starting flowd:
+#   systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP
+
+[Install]
+WantedBy=default.target
