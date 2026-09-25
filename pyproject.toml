@@ -38,12 +38,21 @@ extend-exclude = ["*.md"]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
-python_version = "3.11"
+# Deliberately no `python_version`: mypy then targets the interpreter it runs
+# under, which is what each CI matrix entry installed its dependencies for.
+# Pinning it to 3.11 made mypy parse the 3.12-only `type` statements in the
+# stubs of a numpy that only installs on 3.12+. Ruff's target-version keeps
+# our own source 3.11-compatible.
 strict = true
 warn_unreachable = true
 # The overlay runs on the system interpreter with pacman's PyGObject and is
 # deliberately outside the venv, so its imports are not resolvable here.
 exclude = "^overlay/"
+
+[[tool.mypy.overrides]]
+# sounddevice ships no py.typed marker, so it has no types to check against.
+module = ["sounddevice"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
