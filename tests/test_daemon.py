@@ -531,6 +531,42 @@ async def test_reload_applies_a_good_config(tmp_path: Path) -> None:
     assert d.cfg.vad.commit_silence_ms == 500
 
 
+async def test_reload_applies_a_new_debounce_to_the_live_state_machine(tmp_path: Path) -> None:
+    """`flowctl reload` must change behaviour, not just the config object.
+
+    `debounce_ms` is in the validated reloadable set, so a reload accepts it and
+    reports `ok` — but `Machine` takes it at construction and keeps its own
+    copy, so the window never moved. A user whose hotkey bounces raises the
+    value, is told it worked, and finds nothing has changed; the only way out is
+    a restart, which spec 8 says reload exists to avoid.
+
+    Asserted through behaviour rather than by reading the value back, because
+    the value was never the broken part: `d.cfg` was right all along.
+
+    The window is raised rather than lowered, which is both the direction a
+    user with a bouncing hotkey actually goes and the only one this clock can
+    show: `Clock` advances a second per call, so any window shorter than that
+    is already inert, and zero fails validation.
+    """
+    path = tmp_path / "config.toml"
+    path.write_text("[hotkey]\ndebounce_ms = 60000\n")
+    d = daemon(FakeSttEngine([[Committed("done")]]), clock=Clock())
+    d.config_file = path
+
+    # Under the default 200 ms window, presses a second apart are two distinct
+    # commands: the second one stops the session it started.
+    assert (await d.handle({"cmd": "toggle"}))["ok"] is True
+    assert (await d.handle({"cmd": "toggle"}))["ok"] is True
+    assert (await d.handle({"cmd": "status"}))["state"] == "idle"
+
+    assert (await d.handle({"cmd": "reload"}))["ok"] is True
+
+    # A minute-wide window swallows presses this clock can never outrun, so the
+    # press that just worked is now read as a bounce and ignored.
+    assert (await d.handle({"cmd": "toggle"}))["ok"] is False
+    assert (await d.handle({"cmd": "status"}))["state"] == "idle"
+
+
 async def test_mic_open_is_timed() -> None:
     d = daemon(FakeSttEngine([[Committed("hi there friend")]]))
     await d.handle({"cmd": "start"})

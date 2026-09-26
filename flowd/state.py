@@ -76,6 +76,15 @@ class Machine:
     def state(self) -> State:
         return self._state
 
+    def set_debounce_ms(self, debounce_ms: int) -> None:
+        """Change the debounce window in place (spec 8: `flowctl reload`).
+
+        A setter rather than a fresh `Machine`, because replacing the object
+        would reset `_state` to IDLE: a reload during dictation would drop the
+        session and leave the microphone open with nothing attached.
+        """
+        self._debounce_s = debounce_ms / 1000.0
+
     def handle(self, event: Event) -> Action | None:
         """Apply an event. Returns the side effect to perform, or None to ignore."""
         if event in _USER_COMMANDS:
