@@ -1,0 +1,64 @@
+[project]
+name = "flowd"
+version = "0.1.0"
+description = "Local, offline, streaming dictation for Linux with LLM cleanup"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "sounddevice>=0.5.0",
+    "numpy>=1.26",
+    # No `onnxruntime`: Moonshine links its own ONNX runtime into
+    # `libmoonshine.so` and imports neither `onnx` nor `onnxruntime`, and with
+    # the separate Silero VAD model gone (ADR 0002) nothing else wanted it.
+    # `tests/test_vad.py` proves it stays gone.
+    "moonshine-voice>=0.1.5",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+flowd = "flowd.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["flowd"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Ruff formats fenced Python blocks inside Markdown. Every .md here is prose
+# documentation (spec, design docs, ADRs, plans) whose code blocks are
+# illustrative and often deliberately partial, so they are not source to format.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+# Deliberately no `python_version`: mypy then targets the interpreter it runs
+# under, which is what each CI matrix entry installed its dependencies for.
+# Pinning it to 3.11 made mypy parse the 3.12-only `type` statements in the
+# stubs of a numpy that only installs on 3.12+. Ruff's target-version keeps
+# our own source 3.11-compatible.
+strict = true
+warn_unreachable = true
+# The overlay runs on the system interpreter with pacman's PyGObject and is
+# deliberately outside the venv, so its imports are not resolvable here.
+exclude = "^overlay/"
+
+[[tool.mypy.overrides]]
+# Neither ships a py.typed marker, so neither has types to check against.
+# moonshine_voice reaches its ONNX runtime through ctypes, so there is nothing
+# for mypy to infer from even in principle.
+module = ["sounddevice", "moonshine_voice"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

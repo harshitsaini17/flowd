@@ -1,0 +1,27 @@
+[Unit]
+Description=flowd cleanup LLM (llama-server, LFM2.5-350M)
+Documentation=https://github.com/harshitsaini17/flowd
+
+[Service]
+Type=simple
+# `%h/.local/share` is the XDG default, not a lookup: systemd has no specifier
+# for XDG_DATA_HOME, and `Environment=` does not do shell-style defaulting. If
+# you have moved XDG_DATA_HOME, `scripts/fetch_models.sh` honours it and this
+# line does not, so edit the path to match or llama-server will not find the
+# model. Everything inside flowd itself resolves the directory properly.
+Environment=FLOWD_MODEL=%h/.local/share/flowd/models/LFM2.5-350M-QAD-Q4_0.gguf
+# `-t` is physical cores minus two (spec 4), leaving one core for STT and one
+# for the rest of the desktop; 4 suits a 6-core machine. systemd cannot count
+# cores, so this is a value to set, not a default that adapts:
+#
+#   lscpu -p=Core | grep -v '^#' | sort -u | wc -l
+#
+# Too high is the mistake that matters — llama-server then competes with the
+# Moonshine decode for the same cores, and dictation latency is what suffers.
+ExecStart=/usr/bin/llama-server -m ${FLOWD_MODEL} -c 2048 --jinja \
+          --host 127.0.0.1 --port 8177 -t 4
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
