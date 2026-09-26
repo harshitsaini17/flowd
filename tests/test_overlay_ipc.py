@@ -75,6 +75,18 @@ def counting_overlay(
     return OverlayProcess(cfg or OverlayCfg(), spawn=spawn), spawns
 
 
+def spawn_argv(proc: FakeProc, cfg: OverlayCfg | None = None) -> list[str]:
+    """The argv `OverlayProcess` would spawn the child with."""
+    captured: list[list[str]] = []
+
+    def spawn(argv: list[str], **_k: Any) -> FakeProc:
+        captured.append(list(argv))
+        return proc
+
+    OverlayProcess(cfg or OverlayCfg(), spawn=spawn).show()
+    return captured[0]
+
+
 def messages(proc: FakeProc) -> list[dict[str, Any]]:
     return [json.loads(line) for line in proc.written.decode().splitlines() if line]
 
@@ -84,6 +96,25 @@ def test_show_spawns_and_sends_show() -> None:
     o = overlay(proc)
     o.show()
     assert messages(proc) == [{"type": "show"}]
+
+
+def test_overlay_config_reaches_the_child() -> None:
+    """`max_lines` and `fade_ms` must cross the process boundary.
+
+    Both are documented in spec 8's config file and validated by `flowd.config`,
+    but the child kept its own hardcoded copies, so a user who set either was
+    told nothing and got the default — the same silent kind of failure as a
+    reload that reports success and changes nothing.
+
+    They travel on argv rather than in the protocol because the child needs them
+    before the first message can arrive: `max_lines` is applied while the labels
+    are built, which happens before GTK opens a window.
+    """
+    argv = spawn_argv(FakeProc(), OverlayCfg(max_lines=7, fade_ms=250))
+    assert "--max-lines" in argv, f"max_lines never reached the child: {argv}"
+    assert argv[argv.index("--max-lines") + 1] == "7"
+    assert "--fade-ms" in argv, f"fade_ms never reached the child: {argv}"
+    assert argv[argv.index("--fade-ms") + 1] == "250"
 
 
 def test_nothing_is_spawned_until_the_first_message() -> None:

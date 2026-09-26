@@ -21,6 +21,7 @@ than no preview at all and this process disables itself rather than risk it
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -137,7 +138,8 @@ def _init_layer_shell(window: Gtk.Window) -> bool:
 
 
 class Overlay:
-    def __init__(self) -> None:
+    def __init__(self, max_lines: int = MAX_LINES, fade_ms: int = FADE_MS) -> None:
+        self._fade_ms = fade_ms
         self.window = Gtk.Window()
         self.window.set_decorated(False)
         self.window.set_default_size(680, -1)
@@ -152,7 +154,7 @@ class Overlay:
             ("live", "flowd-live"),
         ):
             label = Gtk.Label(label="", wrap=True, xalign=0.0)
-            label.set_lines(MAX_LINES)
+            label.set_lines(max_lines)
             label.set_ellipsize(Pango.EllipsizeMode.END)
             label.add_css_class(css)
             label.set_visible(False)
@@ -200,7 +202,7 @@ class Overlay:
     def fade(self) -> None:
         """Hide shortly after injection (spec 5.8)."""
         self._cancel_fade()
-        self._fade_source = GLib.timeout_add(FADE_MS, self._on_fade)
+        self._fade_source = GLib.timeout_add(self._fade_ms, self._on_fade)
 
     def _on_fade(self) -> bool:
         self.window.set_visible(False)
@@ -260,8 +262,32 @@ def _reader(overlay: Overlay, app: Gtk.Application) -> None:
     GLib.idle_add(app.quit)
 
 
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Read the `[overlay]` settings the daemon passes on argv (spec 8).
+
+    On argv rather than in the stdin protocol because both values are needed
+    before the first message can arrive: `max_lines` is applied while the labels
+    are built, which happens before the window exists.
+
+    Unknown flags are ignored rather than fatal, for the same reason `_apply`
+    ignores unknown message types: a newer daemon passing a flag this overlay
+    does not know would otherwise exit 2 on every spawn, and the user would lose
+    the preview entirely over a version skew.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--max-lines", type=int, default=MAX_LINES)
+    parser.add_argument("--fade-ms", type=int, default=FADE_MS)
+    args, extra = parser.parse_known_args(argv)
+    if extra:
+        log.warning("ignoring unrecognised arguments: %s", " ".join(extra))
+    return args
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="overlay: %(message)s", stream=sys.stderr)
+    # Parsed before the re-exec so a bad argument fails here rather than in a
+    # second process. `ensure_preload` forwards argv, so the values survive it.
+    args = parse_args(sys.argv[1:])
     ensure_preload()  # may replace this process; nothing below runs if it does
 
     # NON_UNIQUE: a stale overlay holding the bus name would otherwise swallow
@@ -270,7 +296,7 @@ def main() -> int:
     app = Gtk.Application(application_id="dev.flowd.Overlay", flags=Gio.ApplicationFlags.NON_UNIQUE)
 
     def on_activate(_app: Gtk.Application) -> None:
-        overlay = Overlay()
+        overlay = Overlay(max_lines=args.max_lines, fade_ms=args.fade_ms)
         app.add_window(overlay.window)
         threading.Thread(target=_reader, args=(overlay, app), daemon=True).start()
 

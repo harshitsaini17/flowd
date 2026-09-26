@@ -134,7 +134,18 @@ class OverlayProcess:
             return False
         try:
             self._proc = self._spawn(
-                [self._python, str(self._script)],
+                [
+                    self._python,
+                    str(self._script),
+                    # On argv rather than in the protocol: the child applies
+                    # `max_lines` while building its labels, before it can have
+                    # read a message. The overlay defaults to the same values,
+                    # so a hand-launched one still behaves (ADR 0003).
+                    "--max-lines",
+                    str(self._cfg.max_lines),
+                    "--fade-ms",
+                    str(self._cfg.fade_ms),
+                ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=sys.stderr,
