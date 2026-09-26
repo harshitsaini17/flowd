@@ -41,10 +41,24 @@ class Action(StrEnum):
     RELEASE_MIC = "release_mic"
 
 
-#: Events a user can trigger by keypress, and so subject to debounce (spec 9.1).
-#: `cancel` is deliberately absent: it is the safety valve that stops a runaway
-#: session, so it must never be swallowed.
-_DEBOUNCED = frozenset({Event.START, Event.STOP, Event.TOGGLE})
+#: Events a user can trigger by keypress. Spec 4 measures the debounce window
+#: from "the previous command", whatever kind it was, so every one of these
+#: records when it arrived — see `_SUPPRESSIBLE` for which can be swallowed.
+_USER_COMMANDS = frozenset({Event.START, Event.STOP, Event.TOGGLE, Event.CANCEL})
+
+#: The events debounce may actually discard: spec 4 names exactly one, "a
+#: `start` within 200 ms of the previous command", and `toggle` because a
+#: repeated press of one key is the bounce that rule exists for.
+#:
+#: `stop` and `cancel` are deliberately absent, and for the same reason: both
+#: end something the user started, and swallowing either strands the session
+#: with the microphone open. In `ptt` mode the compositor sends `start` on press
+#: and `stop` on release, so any tap shorter than `debounce_ms` delivers both
+#: inside the window — two halves of one gesture rather than a repeat of one.
+#: Discarding that release leaves RECORDING live until `max_session_s` (five
+#: minutes by default), with the user's next `start` debounced too, and the only
+#: sign being a microphone that never closed.
+_SUPPRESSIBLE = frozenset({Event.START, Event.TOGGLE})
 
 
 class Machine:
@@ -64,11 +78,15 @@ class Machine:
 
     def handle(self, event: Event) -> Action | None:
         """Apply an event. Returns the side effect to perform, or None to ignore."""
-        if event in _DEBOUNCED:
+        if event in _USER_COMMANDS:
             now = self._clock()
-            if self._last_command is not None and now - self._last_command < self._debounce_s:
+            recent = self._last_command is not None and now - self._last_command < self._debounce_s
+            if recent and event in _SUPPRESSIBLE:
                 log.debug("debounced %s", event)
                 return None
+            # Recorded even for an event that cannot be suppressed: the window
+            # runs from the previous command of any kind, so a `stop` that gets
+            # through still arms it against the `start` that follows.
             self._last_command = now
 
         # "Any | fatal error | IDLE" (spec 4): checked before the table so it

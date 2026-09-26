@@ -220,12 +220,33 @@ async def test_start_while_recording_is_ignored() -> None:
 
 
 async def test_debounce_still_applies_through_the_daemon() -> None:
-    """spec 9.1: a hotkey double-press must not end the session it just began."""
+    """spec 9.1: a hotkey double-press must not end the session it just began.
+
+    Two presses of the same toggle key, which is what a bounce delivers. The
+    earlier version of this test used `start` then `stop` — a press/release
+    pair, not a double press — and so asserted that a push-to-talk tap leaves
+    the microphone open. It passed for the wrong reason.
+    """
     d = daemon(FakeSttEngine([[Committed("keep recording")]]), clock=FrozenClock())
-    assert (await d.handle({"cmd": "start"}))["ok"] is True
-    reply = await d.handle({"cmd": "stop"})
+    assert (await d.handle({"cmd": "toggle"}))["ok"] is True
+    reply = await d.handle({"cmd": "toggle"})
     assert reply["ok"] is False
     assert (await d.handle({"cmd": "status"}))["state"] == "recording"
+
+
+async def test_a_quick_push_to_talk_tap_finalizes_through_the_daemon() -> None:
+    """The release of a tap shorter than `debounce_ms` must still be honoured.
+
+    `FrozenClock` puts both commands at the same instant, the worst case for a
+    `ptt` binding. Asserted at the daemon rather than only on the state machine
+    because this is the layer the README's `bindr`/`--release` bindings reach,
+    and a mic left open here is the user-visible failure.
+    """
+    d = daemon(FakeSttEngine([[Committed("a quick word")]]), clock=FrozenClock())
+    assert (await d.handle({"cmd": "start"}))["ok"] is True
+    reply = await d.handle({"cmd": "stop"})
+    assert reply["ok"] is True, "release swallowed by debounce; microphone left open"
+    assert (await d.handle({"cmd": "status"}))["state"] != "recording"
 
 
 async def test_status_reports_state() -> None:
