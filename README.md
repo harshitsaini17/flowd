@@ -31,7 +31,10 @@ when that lands.
 The full architecture and build specification is [`docs/spec.md`](docs/spec.md);
 decisions that diverge from it are recorded in
 [`docs/decisions/`](docs/decisions/), and each phase has a report in
-[`docs/reports/`](docs/reports/).
+[`docs/reports/`](docs/reports/). The smaller judgement calls made while building
+phases 0-2 — the ones too small for a decision record but not obvious from the
+code — are collected in
+[`docs/reports/phase-0-2-rulings.md`](docs/reports/phase-0-2-rulings.md).
 
 ## Requirements
 
