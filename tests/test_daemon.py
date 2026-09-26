@@ -167,6 +167,62 @@ async def test_silent_session_injects_nothing() -> None:
     assert injected == []
 
 
+async def test_the_no_speech_message_stays_up_long_enough_to_read() -> None:
+    """spec 9.1: "overlay shows 'No speech' for 1 s".
+
+    The message was rendered and then torn down in the same synchronous breath —
+    `_show_status` followed by an `_end_session` that hides at once — so a user
+    whose microphone was muted saw one frame at best and had no idea why nothing
+    was typed. That is the case where feedback matters most.
+
+    Asserted as `fade` rather than a duration because the 1 s linger is the
+    overlay child's (`FADE_MS`), which keeps the daemon out of the business of
+    sleeping to time a window.
+    """
+    d = daemon(FakeSttEngine([]))
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    await d.handle({"cmd": "start"})
+    await d.handle({"cmd": "stop"})
+    assert overlay.messages[-1]["live"] == "No speech", "the message was never rendered"
+    assert overlay.calls[-1] == "fade", "torn down in the same tick; nothing to read"
+
+
+async def test_max_duration_notes_the_limit_on_the_overlay() -> None:
+    """spec 4's table: max duration is "Same as stop; overlay shows 'time limit'",
+    and spec 9.1 repeats it as "overlay notes the limit".
+
+    Nothing said so. An auto-stop looked identical to the user's own stop, so
+    someone whose five minutes ran out could not tell why their dictation ended.
+    The note rides the final frame, which fades, so it is shown beside the text
+    that was injected rather than instead of it.
+    """
+    cfg = Config(hotkey=Hotkey(debounce_ms=0))
+    clock = Clock(step=0.0)
+    d = daemon(FakeSttEngine([[Committed("ran out of time")]]), cfg=cfg, clock=clock)
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    clock.now += cfg.audio.max_session_s + 1
+    await d._check_max_duration()
+    assert any("time limit" in m.get("live", "") for m in overlay.messages), (
+        "auto-stop is indistinguishable from the user's own stop"
+    )
+
+
+async def test_an_ordinary_stop_does_not_claim_a_time_limit() -> None:
+    """The companion to the test above: the note must be specific to auto-stop,
+    or it says nothing. Without this, rendering it unconditionally would pass."""
+    d = daemon(FakeSttEngine([[Committed("plenty of time")]]))
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    assert not any("time limit" in m.get("live", "") for m in overlay.messages)
+
+
 async def test_silent_session_reports_no_speech() -> None:
     d = daemon(FakeSttEngine([]))
     await d.handle({"cmd": "start"})
