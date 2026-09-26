@@ -149,7 +149,7 @@ async def _replay(cfg: Config, path: Path, fast: bool) -> int:
         stt=engine,
         capture=capture,
         injector=no_inject,
-        metrics_path=None,
+        write_metrics=False,
     )
     await daemon.handle({"cmd": "start"})
     while not capture.exhausted:

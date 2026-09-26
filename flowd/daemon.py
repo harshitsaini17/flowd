@@ -60,6 +60,7 @@ class Daemon:
         metrics_path: Path | None = None,
         clock: Callable[[], float] = time.monotonic,
         config_file: Path | None = None,
+        write_metrics: bool = True,
     ) -> None:
         self.cfg = cfg
         self.stt = stt
@@ -69,6 +70,9 @@ class Daemon:
         self.clock = clock
         self.config_file = config_file or config_path()
         self.metrics_path = metrics_path
+        # False for `--replay`: a probe run is not dictation, and written to the
+        # log it would show up in `flowctl stats` as one.
+        self.write_metrics = write_metrics
         self.machine = Machine(debounce_ms=cfg.hotkey.debounce_ms, clock=clock)
         self.session: Session | None = None
         self.metrics: SessionMetrics | None = None
@@ -391,7 +395,7 @@ class Daemon:
         path = self.metrics_path or (state_dir() / "metrics.jsonl")
         # With no explicit path, write only into a state directory that already
         # exists, so importing the daemon never creates one as a side effect.
-        if self.metrics_path is not None or path.parent.exists():
+        if self.write_metrics and (self.metrics_path is not None or path.parent.exists()):
             try:
                 write_record(self.last_record, path)
             except OSError as exc:
