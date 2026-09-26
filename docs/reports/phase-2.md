@@ -283,13 +283,18 @@ Each has an accepted decision record.
    dictation — and `--replay` deliberately writes no metrics. The figures above
    come from the replay sweep instead. Real percentiles need the owner dictating,
    which is the checkpoint.
-7. **CI has never run.** `.github/workflows/ci.yml` triggers on pushes to `main`
-   and on pull requests; all of phases 0–2 lives on `worktree-phase-0-2`, well
-   ahead of `main`, with the PR still to open. The matrix (Python 3.11 and 3.x)
-   will first execute on that PR, and this report is written before that evidence
-   exists. Locally the suite is green on 3.12 only — 3.11 is untested here, so if
-   anything breaks it will be a version incompatibility that must be fixed rather
-   than a floor to raise (spec 13.2).
+7. **CI now runs, and is green on both legs** — run 36215389148 on commit
+   `3e03f7f`, Python 3.11 and the 3.14.7 that `3.x` resolves to. This item
+   previously said CI had never executed and named 3.11 as the leg at risk.
+   Both halves turned out wrong. 3.11 passed on the first PR run; the leg that
+   failed was `3.x`, and not for a version incompatibility: `3.x` is
+   `setup-python` syntax that `uv` cannot parse ("No interpreter found for
+   executable name `3.x`"), so that leg never selected an interpreter at all and
+   tested nothing. Fixed in `354e218` by resolving the version through
+   `setup-python` and handing `uv` the exact interpreter path it produced — the
+   comment there records why `uv --python 3` is not a substitute, since it
+   prefers uv's own managed build and would quietly test whatever was cached.
+   Spec 13.2's floor is untouched.
 8. **The three-application injection check remains the owner's**, as it was in
    phase 1. It needs a person speaking into a microphone and watching where the
    text lands.
