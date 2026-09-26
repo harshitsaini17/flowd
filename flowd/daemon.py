@@ -22,6 +22,7 @@ from flowd.session import Session
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
 from flowd.textclean import basic_clean
+from flowd.vocab import Vocab, load_vocab, vocab_path
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,8 @@ class Daemon:
         clock: Callable[[], float] = time.monotonic,
         config_file: Path | None = None,
         write_metrics: bool = True,
+        vocab: Vocab | None = None,
+        vocab_file: Path | None = None,
     ) -> None:
         self.cfg = cfg
         self.stt = stt
@@ -69,6 +72,8 @@ class Daemon:
         self.inject = injector
         self.clock = clock
         self.config_file = config_file or config_path()
+        self.vocab_file = vocab_file or vocab_path()
+        self.vocab = vocab or Vocab()
         self.metrics_path = metrics_path
         # False for `--replay`: a probe run is not dictation, and written to the
         # log it would show up in `flowctl stats` as one.
@@ -101,6 +106,13 @@ class Daemon:
             new_cfg, error = reload_config(self.cfg, self.config_file)
             if error is not None:
                 return {"ok": False, "error": error}
+            # Both files are checked before either is applied, so a bad vocab
+            # leaves the old config and the old vocabulary in place together.
+            try:
+                new_vocab = load_vocab(self.vocab_file)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            await self.apply_vocab(new_vocab)
             self.cfg = new_cfg
             # The state machine holds its own copy of the window, taken at
             # construction, so assigning `self.cfg` alone would report success
@@ -257,6 +269,36 @@ class Daemon:
             live=self.session.live_partial if live is None else live,
         )
 
+    async def load_startup_vocab(self) -> None:
+        """Apply vocab.toml before the first session.
+
+        A broken file is logged, not fatal: vocabulary is a refinement, and a
+        typo in it should not stop dictation from starting. `flowctl reload`
+        reports the same error once the user goes to fix it.
+        """
+        try:
+            vocab = load_vocab(self.vocab_file)
+        except ValueError as exc:
+            log.warning("%s; starting without a vocabulary", exc)
+            return
+        await self.apply_vocab(vocab)
+        if vocab.terms or vocab.replace:
+            log.info("vocab: %d term(s), %d replacement(s)", len(vocab.terms), len(vocab.replace))
+
+    async def apply_vocab(self, vocab: Vocab) -> None:
+        """Adopt a vocabulary: replacements for cleanup, terms for the recognizer.
+
+        Engines without keyterm support (the fakes, the batch engine) keep only
+        the replacements. The engine call takes the STT lock because it reaches
+        the same transcriber a decode in flight is using.
+        """
+        self.vocab = vocab
+        set_keyterms = getattr(self.stt, "set_keyterms", None)
+        if set_keyterms is None:
+            return
+        async with self._stt_lock:
+            await asyncio.to_thread(set_keyterms, vocab.terms)
+
     async def _finalize(self, note: str | None = None) -> dict[str, Any]:
         """Flush, clean, join and inject. `note` is a status line for the final
         frame — the auto-stop reason, which the user needs beside their text.
@@ -307,7 +349,7 @@ class Daemon:
             self._end_session(text="", reason="no speech", linger=True)
             return {"ok": True, "reason": "no speech"}
 
-        cleaned = [basic_clean(part) for part in raw_parts]
+        cleaned = [basic_clean(part, self.vocab.replace) for part in raw_parts]
         final = join_chunks(cleaned)
         self.metrics.count("words", len(final.split()))
         self.metrics.text = final
@@ -432,6 +474,7 @@ class Daemon:
     async def run(self, socket_path: Path) -> None:
         from flowd.control import serve
 
+        await self.load_startup_vocab()
         server = await serve(socket_path, self.handle)
         log.info("flowd listening on %s", socket_path)
         block_s = self.cfg.audio.block_ms / 1000.0

@@ -20,7 +20,8 @@ flowd is under active development. What works today:
 | Streaming transcription with incremental commits | **works** |
 | Per-session latency metrics (`flowctl stats`) | **works** |
 | LLM cleanup of filler words, punctuation and casing | **not yet** — phase 3 |
-| Per-application modes, personal vocabulary | **not yet** — phase 5 |
+| Personal vocabulary (`vocab.toml`: recognizer terms, replacements) | **works** |
+| Per-application modes | **not yet** — phase 5 |
 
 Transcripts currently get rule-based tidying only: sentence casing, spacing
 around punctuation, a terminal full stop. The local language model that removes
@@ -247,6 +248,25 @@ enabled = true
 `flowctl reload` applies a changed config without restarting. A config that
 fails validation is rejected and the running one is kept, so a typo cannot take
 dictation down mid-session.
+
+### Personal vocabulary
+
+Acronyms and product names are where speech recognition slips: "LLM" comes out
+as "allyl m". List the spellings you want in `~/.config/flowd/vocab.toml`
+(start from [`vocab.toml.example`](vocab.toml.example)):
+
+```toml
+terms = ["LLM", "STT", "Hyprland"]
+
+[replace]
+"stair-tier" = "STT"
+```
+
+`terms` bias the recognizer towards those spellings. `[replace]` fixes a
+mishearing the model keeps making anyway; check `flowctl last` to see what it
+actually wrote, and only add phrases you would never mean literally. Both apply
+on `flowctl reload`, and a broken file is rejected there with the old
+vocabulary kept.
 
 ## Troubleshooting
 

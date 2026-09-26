@@ -2,13 +2,19 @@
 # Reload without restarting: flowctl reload
 
 [terms]
-# Canonical spellings, passed to the LLM as <vocab> (phase 3+).
+# Canonical spellings. They bias the speech recognizer towards these exact
+# forms, which is what gets acronyms written as letters, and will also reach
+# the LLM as <vocab> once it exists (phase 3). A plain list works too:
+#   terms = ["LLM", "STT", "Hyprland"]
+# Terms cannot contain commas.
 Hyprland = "Hyprland"
 PipeWire = "PipeWire"
 flowd = "flowd"
 
 [replace]
-# Fuzzy STT fixes, applied deterministically in basic_clean.
+# Fixes for a mishearing the recognizer keeps making, applied in basic_clean.
+# Matched case-insensitively anywhere in the text, so only add phrases you
+# would never mean literally.
 "hyper land" = "Hyprland"
 "pipe wire" = "PipeWire"
 "flow d" = "flowd"

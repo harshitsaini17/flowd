@@ -360,6 +360,28 @@ re-checked against the code at this commit and all six are still open.
   about from the compositor's event sequence rather than from a mode flag in the
   code. Found while checking a reviewer's note, not filed by a reviewer.
 
+## After the checkpoint: owner feedback
+
+The owner's first real use raised two problems. Both were fixed on this branch
+before phase 3, and both are recorded here because they move things the phase
+plan put later.
+
+- **"Too slow."** Medium spent ~0.8× realtime of CPU on continuous speech, with
+  per-update decodes growing past 1.5 s on long utterances. [ADR
+  0005](../decisions/0005-small-streaming-default.md) makes Small Streaming the
+  default: 3.71% WER against medium's 4.50% over 80 test-clean clips, and
+  cheaper to run. The owner's next session was 95 s long and reached the
+  target window 407 ms after release.
+- **Acronyms.** "LLM" and "STT" came out as "allyl m" and "stair-tier". Spec
+  7.6's `vocab.toml` is pulled forward from phase 5: `[replace]` applies in
+  `basic_clean` as specified, and `[terms]`, which the spec only routes to the
+  LLM, also bias the recognizer through Moonshine keyterms, since there is no
+  LLM stage yet. On the owner's own recording, terms alone fixed "LLM" on every
+  model; "STT" needed a replacement on small. Both reload with `flowctl
+  reload`. Phase 5's criterion for this ("vocab replacement works after
+  `flowctl reload` without a restart") is met early; modes and the other
+  phase 5 items are not.
+
 ## Next phase plan
 
 Phase 3 is LLM cleanup: `cleanup.py`, the prompts, the guardrails, `basic_clean`

@@ -349,3 +349,26 @@ def test_the_stream_is_built_lazily_so_loading_opens_nothing() -> None:
     assert made == []
     e.feed(BLOCK)
     assert len(made) == 1
+
+
+# --- keyterms (vocab.toml [terms]) ---------------------------------------------
+
+
+def test_set_keyterms_is_forwarded_to_the_transcriber() -> None:
+    sent: list[list[str]] = []
+    e = StreamingSttEngine(
+        new_stream=lambda: FakeStream(script=[]),
+        vad=SegmentationVad(block_ms=100, lag_allowance_ms=300),
+        committer=Committer(max_uncommitted_words=25, commit_silence_ms=350),
+        set_keyterms=lambda terms: sent.append(list(terms)),
+    )
+    e.set_keyterms(("LLM", "STT"))
+    e.set_keyterms(())
+    # An empty list is how Moonshine turns biasing off, so it must reach it
+    # rather than be skipped: removing every term from vocab.toml has to work.
+    assert sent == [["LLM", "STT"], []]
+
+
+def test_set_keyterms_without_a_transcriber_hook_is_a_no_op() -> None:
+    e, _ = engine([])
+    e.set_keyterms(("LLM",))
