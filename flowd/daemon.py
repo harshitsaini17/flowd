@@ -74,6 +74,13 @@ class Daemon:
         self.metrics: SessionMetrics | None = None
         self.last_text: str = ""
         self.last_record: dict[str, Any] = {}
+        # Moonshine runs off the loop (spec 4 gives STT its own worker), and
+        # there is one stream per session, so the three calls that touch it —
+        # `feed`, `finalize` and `reset` — must not overlap. Without this, a
+        # `cancel` arriving mid-decode resets the stream underneath the worker
+        # still reading it. Held only around those calls, so `status`, `last`
+        # and `stats` continue to answer while the model runs.
+        self._stt_lock = asyncio.Lock()
 
     # --- command handling -------------------------------------------------
 
@@ -114,10 +121,10 @@ class Daemon:
             case Action.FLUSH_AND_FINALIZE:
                 return await self._finalize()
             case Action.DISCARD:
-                self._discard()
+                await self._discard()
                 return {"ok": True, "cancelled": True}
             case Action.RELEASE_MIC:
-                self._discard(reason="fatal error")
+                await self._discard(reason="fatal error")
                 return {"ok": False, "error": "fatal error; microphone released"}
             case _:
                 return {"ok": True}
@@ -151,13 +158,39 @@ class Daemon:
             self.overlay.show()
         return {"ok": True, "session": session_id}
 
+    def _recording(self) -> bool:
+        """Whether there is a live session actively taking audio.
+
+        A method rather than the condition written twice in `pump`: it is checked
+        once before the lock and again after, and a type checker narrowing
+        `self.session` at the first check treats the second as dead code. It is
+        not — awaiting the lock is exactly where a `cancel` lands.
+        """
+        return self.session is not None and self.machine.state is State.RECORDING
+
     async def pump(self) -> None:
         """Move one block of audio through STT. Called by the run loop and tests."""
-        if self.session is None or self.machine.state is not State.RECORDING:
+        if not self._recording():
             return
         pcm = self.capture.read()
-        for event in self.stt.feed(pcm):
-            self._on_stt_event(event)
+        async with self._stt_lock:
+            # `cancel` may have landed while we waited for the lock, in which
+            # case the session it belonged to is gone and its audio is not ours
+            # to decode.
+            if not self._recording():
+                return
+            # Off the loop: one `feed` call is 0.2 ms at the median on this
+            # machine but 553 ms at p95 and 1.6 s at worst, because most calls
+            # only buffer and every eighth or so runs the model. Inline, those
+            # are windows in which the control socket cannot be answered and
+            # `flowctl cancel` — the valve that stops a runaway session — waits
+            # behind the decoder, against spec 5.9's 50 ms budget.
+            events = await asyncio.to_thread(self.stt.feed, pcm)
+            # Dispatched under the lock as well, so a `cancel` cannot discard
+            # the session between the decode returning and its events being
+            # applied to it.
+            for event in events:
+                self._on_stt_event(event)
         if self.capture.pending_seconds() > 2.0:
             log.warning("STT is behind real time: %.1f s queued", self.capture.pending_seconds())
 
@@ -202,7 +235,13 @@ class Daemon:
         # session, so without this one neither delta can be computed at all.
         self.metrics.mark("released")
         self.capture.stop()
-        for event in self.stt.finalize():
+        # Same worker and same lock as `feed`: `finalize` runs the model over
+        # whatever audio is left (246 ms on this machine) and touches the same
+        # stream, so it waits for any decode still in flight rather than
+        # entering beside it.
+        async with self._stt_lock:
+            events = await asyncio.to_thread(self.stt.finalize)
+        for event in events:
             self._on_stt_event(event)
         self.metrics.mark("finalized")
 
@@ -236,7 +275,7 @@ class Daemon:
         self._end_session(text=final, reason=None)
         return {"ok": True, "text": final, "backend": result.backend}
 
-    def _discard(self, reason: str = "cancelled") -> None:
+    async def _discard(self, reason: str = "cancelled") -> None:
         try:
             self.capture.stop()
         except Exception as exc:
@@ -244,7 +283,15 @@ class Daemon:
         # The engine outlives the session (spec 5.3 loads the model once), so an
         # abandoned session's audio and half-formed transcript have to be thrown
         # away explicitly or the next dictation starts inside this one.
-        self.stt.reset()
+        #
+        # Under the lock, and so possibly waiting for an in-flight decode: one
+        # Moonshine stream cannot be reset while a worker is still reading it.
+        # The wait is bounded by a single `feed` call and costs this cancel up to
+        # ~1.6 s at worst, which is the price of not corrupting the stream. The
+        # microphone is already closed above, so the user has stopped being
+        # recorded either way — which is what `cancel` is urgent about.
+        async with self._stt_lock:
+            self.stt.reset()
         if self.metrics is not None:
             # spec 10.2 asks for one line per session, and an abandoned session
             # is still a session: how often dictation gets cancelled is the
