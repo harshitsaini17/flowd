@@ -313,6 +313,51 @@ Each has an accepted decision record.
    before building an eval on it** — that has not been tested, and if it does not,
    the eval needs a determinism fix before it needs accuracy targets.
 
+### Deferred review findings
+
+Findings from the two code reviews that were graded Minor and deliberately not
+fixed, kept here because they are the ones an owner would otherwise only find by
+hitting them. They are numbered as the reviewers filed them, so they match the
+`Final: minor (deferred)` lines in
+[`phase-0-2-rulings.md`](phase-0-2-rulings.md)'s sibling ledger; the gaps in the
+sequence are findings that were fixed or promoted instead. All six were
+re-checked against the code at this commit and all six are still open.
+
+- **#5 — a corrupt `models.lock` raises instead of explaining.**
+  `verify_models` (`flowd/models.py:95`) parses the lock with
+  `json.loads(...)["models"]` and no guard, so a truncated or hand-edited file
+  reaches `_verify_or_exit` as a `JSONDecodeError` or `KeyError` traceback rather
+  than spec 3's "clear error". The message it should route through —
+  "refusing to start; run scripts/fetch_models.sh" — is already on the line
+  below. `build_lock` gained this tolerance in the second review round; that is a
+  different function with a different caller and does not cover this path.
+- **#6 — `FLOWD_SOCKET` moves the client but not the daemon.** It is read at
+  `flowctl:36` and has no counterpart in `flowd.config.runtime_dir()`, so setting
+  it points `flowctl` at a socket the daemon never creates and the two stop
+  seeing each other. Either honour it on both sides or name it test-only in the
+  docstring.
+- **#7 — the `/tmp` runtime fallback is pre-creatable.**
+  `flowd/config.py:43` degrades to `/tmp/flowd-<uid>` when `XDG_RUNTIME_DIR` is
+  unset, and another local user can create that directory first and own it, or
+  squat the socket path. The socket's own mode is 0o600 and pinned by a test, and
+  the fallback is unreachable under a normal user session, which is why this is
+  Minor rather than higher.
+- **#8 — `Chunk.t_committed` uses a different clock from the rest of the
+  session.** It defaults to `time.monotonic` (`flowd/session.py:22`) while
+  `Session.started_at` takes the injected clock — the same two-time-bases
+  mismatch a Task 19 ruling fixed for `started_at`. Harmless today because
+  nothing reads it; phase 3's `t_resolved − t_committed` budget will.
+- **#10 — `metrics.jsonl` has no rotation** and `flowctl stats` reads the whole
+  file to take the last 50 lines (`flowd/metrics.py:90`). Forward-looking hygiene
+  only at 449 sessions, but it grows without bound.
+- **#11 — `Session.mode` is hardcoded and `hotkey.mode` has no consumer.**
+  `flowd/session.py:43` writes the literal `"default"` on every metrics line, so
+  spec 10.2's `mode` field cannot distinguish a `ptt` session from a `toggle`
+  one. `cfg.hotkey.mode` is validated against `("toggle", "ptt")` and then read
+  nowhere, which is why the second review round's debounce fix had to be reasoned
+  about from the compositor's event sequence rather than from a mode flag in the
+  code. Found while checking a reviewer's note, not filed by a reviewer.
+
 ## Next phase plan
 
 Phase 3 is LLM cleanup: `cleanup.py`, the prompts, the guardrails, `basic_clean`
