@@ -235,7 +235,7 @@ device = "default"
 max_session_s = 300
 
 [stt]
-model = "medium-streaming-en"   # or small-streaming-en, tiny-streaming-en
+model = "small-streaming-en"    # or medium-streaming-en, tiny-streaming-en (ADR 0005)
 
 [inject]
 order = ["clipboard", "wtype", "ydotool", "xdotool"]
