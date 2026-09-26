@@ -98,6 +98,22 @@ Three hard rules:
   measured against one, and a test that races `time.monotonic` will fail on
   someone else's slower runner.
 
+One property resists all of that: whether the overlay takes keyboard focus. Only
+a compositor can answer it, and the answer is what stands between a preview and
+a window that swallows the dictation (spec 5.8,
+[ADR 0003](docs/decisions/0003-overlay-focus.md)). It lives in
+`scripts/check_overlay_focus.py` instead — run by hand on a layer-shell
+compositor, with a window focused, when you touch the overlay:
+
+```bash
+uv run python scripts/check_overlay_focus.py
+```
+
+Add to it rather than trusting the unit suite there. `tests/test_overlay_ipc.py`
+proves the daemon writes well-formed protocol and
+`tests/test_overlay_process.py` proves the child parses it, and both pass
+whether or not the window behaves.
+
 Name tests for the behaviour they pin, not the function they call:
 `test_silent_session_returns_to_idle`, not `test_finalize_2`. When a test exists
 because of a specific defect, say so in its docstring — several here do, and it

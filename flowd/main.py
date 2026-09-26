@@ -190,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from flowd.control import AlreadyRunning
     from flowd.daemon import Daemon
+    from flowd.overlay_ipc import OverlayProcess
 
     engine = load_engine(
         cfg.stt,
@@ -200,7 +201,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     capture = AudioCapture(cfg.audio)
     state_dir().mkdir(parents=True, exist_ok=True)
-    daemon = Daemon(cfg=cfg, stt=engine, capture=capture)
+    # Nothing is spawned here: the overlay starts on the first preview and dies
+    # with the daemon, so a user who never presses the hotkey never pays for a
+    # GTK process. `--replay` deliberately gets none — it exists to measure
+    # latency, and a window competing for cores would skew what it reports.
+    overlay = OverlayProcess(cfg.overlay)
+    daemon = Daemon(cfg=cfg, stt=engine, capture=capture, overlay=overlay)
     try:
         asyncio.run(daemon.run(runtime_dir() / "flowd.sock"))
     except AlreadyRunning as exc:
