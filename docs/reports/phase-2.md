@@ -278,11 +278,13 @@ Each has an accepted decision record.
 
 **Known and recorded, no decision needed:**
 
-6. **`flowctl stats` is not a usable latency source yet.** All 449 sessions in
-   `metrics.jsonl` have `words = 0` — they are test and probe traffic, not
-   dictation — and `--replay` deliberately writes no metrics. The figures above
-   come from the replay sweep instead. Real percentiles need the owner dictating,
-   which is the checkpoint.
+6. **`flowctl stats` is not a usable latency source yet.** The owner's
+   `metrics.jsonl` held only test and probe traffic, no dictation. Two leaks put
+   it there, both now fixed: the test suite wrote to the real XDG state
+   directory, and `--replay` wrote a session per run despite being meant not
+   to. The figures above come from the replay sweep instead. Real percentiles
+   need the owner dictating after truncating the old file, which is the
+   checkpoint.
 7. **CI now runs, and is green on both legs** — run 36215389148 on commit
    `3e03f7f`, Python 3.11 and the 3.14.7 that `3.x` resolves to. This item
    previously said CI had never executed and named 3.11 as the leg at risk.

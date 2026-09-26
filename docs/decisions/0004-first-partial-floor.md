@@ -26,8 +26,12 @@ burst longer than one block was added to the clip instead of caught up on the
 cheap blocks after it. Fixed in this task, the same clip now releases at
 12,335 ms — real time — and `first_partial_ms` reads 2,021.8 ms, unchanged,
 confirming the floor below is the model's and not the harness's. The corrected
-run also shows STT finalize at **13 ms** against spec 10.1's 300 ms
-release-to-commit budget, which is met with room to spare.
+run also showed STT finalize at 13 ms, but that one reading was not
+representative, and an earlier version of this record called spec 10.1's
+300 ms release-to-commit budget "met with room to spare" on the strength of it.
+Finalize decodes whatever audio is still behind when the key is released, so it
+ranges from ~10 ms to ~850 ms on this machine depending on backlog and load; the
+phase 2 report's idle sweep puts it at p50 287 ms, p95 806 ms.
 
 Two corrections to the headline number first, because both were needed before
 the miss could be sized honestly:
