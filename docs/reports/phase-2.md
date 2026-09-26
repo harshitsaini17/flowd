@@ -4,7 +4,8 @@
 
 - Streaming STT replaces batch: Moonshine's native `create_stream` feeds the
   committer, and `LineCompleted` is the authoritative commit signal (ADR 0001).
-  Release → text injected fell from phase 1's ~2,680 ms to a 513 ms p50.
+  Release → text injected fell from phase 1's ~2,680 ms to a 288 ms p50 on an
+  idle machine (513 ms under the load the first sweep ran at).
 - The VAD needs no model. Speech is inferred from the gap between audio fed and
   the transcript frontier, because the segmenter inside `libmoonshine.so` already
   made that judgement (ADR 0002). One dependency was removed rather than added.
@@ -66,8 +67,9 @@ Arch Linux, Hyprland on Wayland, `/dev/nvme0n1p8` at 93% full.
 | PortAudio / wl-clipboard / wtype / xdotool | 19.7.0 / 2.3.0 / 0.4 / 4.20260303.1 |
 
 **Latency, 12 LibriSpeech clips (86.9 s of speech) through `--replay` in real
-time.** Every reading carries the load average that produced it, for the reason
-in the next paragraph.
+time, first sweep.** Taken while a training job of the owner's was running; the
+idle re-measurement is below. Every reading carries the load average that
+produced it, for the reason in the next paragraph.
 
 | Stage | p50 | p95 | Range | Budget (spec 10.1) | Verdict |
 |---|---|---|---|---|---|
@@ -76,9 +78,9 @@ in the next paragraph.
 | Release → text injected | 513 ms | 957 ms | 12–957 | p50 ≤ 600 ms, p95 ≤ 1,000 ms | **Pass** |
 | Injection itself (`finalized` → `inject`) | 1.8 ms | — | 1.1–6.4 | — | — |
 
-**The release → committed figure is measuring the machine, not the code, and
-should be re-taken on an idle one.** A training job of the owner's ran throughout,
-taking the load average from 0.97 to 14.0 across the sweep. Re-running a single
+**The release → committed figure was measuring the machine, not the code.** A
+training job of the owner's ran throughout, taking the load average from 0.97 to
+14.0 across the sweep. Re-running a single
 clip three times gave 935 ms, 11 ms and 723 ms for byte-identical audio — the
 spread is not a property of the clips. The mechanism is direct: this stage is the
 tail of audio not yet transcribed when the speaker releases, so it grows with
@@ -86,14 +88,43 @@ transcription lag, and lag grows with contention. The quieter early sweep
 (load 0.97 rising) gave a 449 ms p50 with the same shape. Treat 509 ms as an
 upper bound taken under load, not as the machine's figure.
 
+**Re-measured on an idle machine** — same 12 clips, same harness, load 0.10 and
+98.5% idle at the start, no training job:
+
+| Stage | p50 | p95 | Range | Budget (spec 10.1) | Verdict |
+|---|---|---|---|---|---|
+| Release → last chunk committed | 287 ms | 806 ms | 7–806 | ≤ 300 ms | **p50 passes, p95 does not** |
+| Release → text injected | 288 ms | 806 ms | 7–806 | p50 ≤ 600 ms, p95 ≤ 1,000 ms | **Pass** |
+| First partial (session-relative) | 1,454 ms | 1,512 ms | 901–1,512 | — | see note |
+
+Release → committed halves, from 509 ms to 287 ms, which confirms the mechanism
+above: the stage is transcription lag, and lag is contention. **Whether that
+counts as meeting the budget depends on a reading of spec 10.1.** Its row is
+written `≤ 300 ms` with no qualifier, while the two rows around it carry
+explicit ones (`p50 ≤ 400 ms`, and `p50 ≤ 600 ms, p95 ≤ 1,000 ms`). Taking the
+unqualified form at its word, the p95 governs and 806 ms misses by 2.7×; taking
+it as a median like its siblings, 287 ms passes. This report does not decide
+that — see known issue 5.
+
+The load column in this sweep still climbs, 0.14 to 10.2. That is flowd's own
+onnxruntime thread pool rather than a competing job, so unlike the first sweep
+it is the system under test and not noise in it. First partial is quoted
+session-relative here because that is what `metrics.jsonl` records; it is not
+comparable to the 1,384 ms onset-relative figure above, which subtracts each
+clip's own room tone.
+
 Two things are load-independent and can be trusted. First-partial latency barely
-moved (820–1,531 ms across loads 1.4 to 14.0), which is what makes ADR 0004's
-warm-up floor a structural finding rather than a contention artifact. And the
-end-to-end budget passes with room to spare even at load 14.
+moved — 820–1,531 ms across loads 1.4 to 14.0, and 901–1,512 ms on the idle
+machine — which is what makes ADR 0004's warm-up floor a structural finding
+rather than a contention artifact. And the end-to-end budget passes with room to
+spare at both ends of that range.
 
 **Accuracy, raw streaming output against LibriSpeech's own reference:** 6.3% WER
-(14 word edits over 221 reference words), before any LLM cleanup. Phase 2 has no
-accuracy criterion — the eval is phase 3's — but a latency number is worthless if
+(14 word edits over 221 reference words), before any LLM cleanup. The idle
+re-measurement of the same 12 clips gave 5.9% (13 edits), and an intermediate
+sweep 7.2% — see known issue 9 on why identical audio does not give an identical
+transcript here. Phase 2 has no accuracy criterion — the eval is phase 3's — but
+a latency number is worthless if
 the text is wrong. Per-clip WER ranges from 0.0% on five clips to 37.5% on a
 3.3 s fragment (`"'Stuff it into you,' his belly counseled him.` against
 `STUFF IT INTO YOU HIS BELLY COUNSELLED HIM`). All three of that clip's edits are
@@ -207,18 +238,51 @@ Each has an accepted decision record.
 4. **`lag_allowance_ms` under contention.** 900 ms is right on an idle machine and
    short of the 1,412–2,024 ms peak lag at load 12. Raising it delays commits;
    leaving it risks committing mid-phrase on a busy machine.
+5. **Which reading of the release → committed budget governs, and therefore
+   whether it escalates.** Spec 10.1 writes this row `≤ 300 ms` with no
+   qualifier, where the row above it says `p50 ≤ 400 ms` and the row below says
+   `p50 ≤ 600 ms, p95 ≤ 1,000 ms`. On an idle machine p50 is 287 ms (passes) and
+   p95 is 806 ms (2.7× over). The two readings disagree about whether phase 2
+   met this criterion, so the owner's reading decides it.
+
+   **It does not escalate under spec 13.3 yet either way**, and the reason is
+   worth recording. That row triggers on "a budget missed by > 25% *after the
+   section 10.4 steps*", and step 1 — "ONNX Runtime intra-op threads set
+   explicitly" — has never been performed: nothing in flowd configures ORT
+   threading. Before escalating, someone has to try it. What was found about how
+   far it can be tried:
+
+   - Inference does not run through the venv's `onnxruntime` at all. It runs
+     inside `libmoonshine.so`, which links its own vendored
+     `libonnxruntime-13ab8084.so.1`, so a Python `SessionOptions` never reaches
+     the session that matters. Any thread setting has to go through the library.
+   - The library does expose one lever: an exported
+     `ort_maybe_force_single_thread(const OrtApi*, OrtSessionOptions*)` that
+     reads the environment variable `MOONSHINE_ORT_SINGLE_THREAD` and mutates
+     the session options. That is a real, reachable ORT thread setting — but it
+     only forces *one* thread, which on a 6-core machine is the wrong direction
+     for a latency budget. Worth measuring rather than assuming (thread-sync
+     overhead can dominate on models this small), and it is a one-line
+     experiment, but it is not a thread *count*.
+   - No intra-op or inter-op thread-count key appears anywhere in the library's
+     strings. `Transcriber(options=...)` is documented as taking "advanced C API
+     options", and the option keys visible in the binary are session-level ones
+     (`session.load_model_format`, `session.use_env_allocators`,
+     `session.disable_prepacking`) rather than threading. A thread count may
+     simply not be reachable without rebuilding the library.
+
+   So the honest status is: step 1 is untried, partly reachable, and possibly
+   not fully reachable. Phase 3 should try the env variable and record the
+   result, and if a thread count turns out to be unreachable, that is itself a
+   spec-versus-reality finding for 13.3's first row rather than a budget one.
 
 **Known and recorded, no decision needed:**
 
-5. **`flowctl stats` is not a usable latency source yet.** All 449 sessions in
+6. **`flowctl stats` is not a usable latency source yet.** All 449 sessions in
    `metrics.jsonl` have `words = 0` — they are test and probe traffic, not
    dictation — and `--replay` deliberately writes no metrics. The figures above
    come from the replay sweep instead. Real percentiles need the owner dictating,
    which is the checkpoint.
-6. **`released_ms` → `finalized_ms` needs re-measuring on an idle machine.** The
-   509 ms p50 above was taken at load averages up to 14 and varies 11–955 ms on
-   identical audio. The early quieter sweep gave 449 ms. Either way it is over the
-   300 ms budget, but by how much is currently unknown.
 7. **CI has never run.** `.github/workflows/ci.yml` triggers on pushes to `main`
    and on pull requests; all of phases 0–2 lives on `worktree-phase-0-2`, well
    ahead of `main`, with the PR still to open. The matrix (Python 3.11 and 3.x)
@@ -229,6 +293,20 @@ Each has an accepted decision record.
 8. **The three-application injection check remains the owner's**, as it was in
    phase 1. It needs a person speaking into a microphone and watching where the
    text lands.
+9. **Identical audio does not give an identical transcript, which constrains how
+   phase 3 can measure accuracy.** The same 12 clips scored 6.3%, 7.2% and 5.9%
+   WER across three sweeps. This is not model nondeterminism: `--replay` feeds
+   audio in real time by default, so where a commit boundary falls depends on how
+   far transcription has lagged at that instant, and lag depends on machine load.
+   Different boundaries mean a differently segmented transcript, and the segments
+   are what `basic_clean` and the joiner see.
+
+   The consequence for phase 3 is concrete: a real-time replay cannot be the
+   basis of a reproducible WER number, and phase 3's eval set needs `--fast`
+   (which bypasses the pacing) or an explicitly fixed chunking. **Phase 3 should
+   confirm that `--fast` actually produces byte-identical transcripts across runs
+   before building an eval on it** — that has not been tested, and if it does not,
+   the eval needs a determinism fix before it needs accuracy targets.
 
 ## Next phase plan
 
