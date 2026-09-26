@@ -163,7 +163,7 @@ one did not.
 daemon between sessions is a socket `accept` and a 200 ms sleep.
 
 **`lag_allowance_ms` re-measured with the overlay competing for cores, which
-[ADR 0002](../decisions/0002-vad-segmentation.md) asked this report to do.** The
+[ADR 0002](../decisions/0002-vad-from-segmentation.md) asked this report to do.** The
 quantity is the peak gap between audio fed and transcript frontier *during*
 speech; anything above the allowance commits mid-phrase, and spec 13.2 forbids
 typing partial text into the target app.
@@ -199,7 +199,7 @@ Each has an accepted decision record.
 - **STT API and the commit signal** — [ADR 0001](../decisions/0001-stt-api.md).
   `moonshine-voice` exposes native streaming through `create_stream`, and
   `LineCompleted` is authoritative rather than a heuristic over partials.
-- **No VAD model** — [ADR 0002](../decisions/0002-vad-segmentation.md). Spec 5.2
+- **No VAD model** — [ADR 0002](../decisions/0002-vad-from-segmentation.md). Spec 5.2
   called for `silero_vad.onnx` via `onnxruntime`; the segmenter inside
   `libmoonshine.so` already does the work, so nothing was added to
   `models.lock`. `[vad]` gains `lag_allowance_ms` (900); `threshold` is kept and
