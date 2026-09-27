@@ -36,6 +36,9 @@ log = logging.getLogger(__name__)
 
 Injector = Callable[..., InjectResult]
 
+#: spec 6.6: the full-rewrite pass takes the whole joined text, ≤ 300 words.
+REWRITE_MAX_WORDS = 300
+
 
 class Capture(Protocol):
     def start(self) -> None: ...
@@ -171,14 +174,16 @@ class Daemon:
         action = self.machine.handle(event)
         if action is None:
             return {"ok": False, "error": f"ignored in state {self.machine.state}"}
-        return await self._perform(action)
+        # `--rewrite` is a modifier on whichever command ends the session
+        # (spec 6.6), so a toggle bound to a second hotkey works as well.
+        return await self._perform(action, rewrite=bool(request.get("rewrite")))
 
-    async def _perform(self, action: Action) -> dict[str, Any]:
+    async def _perform(self, action: Action, rewrite: bool = False) -> dict[str, Any]:
         match action:
             case Action.OPEN_MIC:
                 return self._begin()
             case Action.FLUSH_AND_FINALIZE:
-                return await self._finalize()
+                return await self._finalize(rewrite=rewrite)
             case Action.DISCARD:
                 await self._discard()
                 return {"ok": True, "cancelled": True}
@@ -385,7 +390,7 @@ class Daemon:
         async with self._stt_lock:
             await asyncio.to_thread(set_keyterms, vocab.terms)
 
-    async def _finalize(self, note: str | None = None) -> dict[str, Any]:
+    async def _finalize(self, note: str | None = None, rewrite: bool = False) -> dict[str, Any]:
         """Flush, clean, join and inject. `note` is a status line for the final
         frame — the auto-stop reason, which the user needs beside their text.
 
@@ -451,6 +456,11 @@ class Daemon:
             # Only fillers ("um, uh"): cleaning left nothing, and injecting an
             # empty string would still paste over the user's selection.
             return self._no_speech()
+        rewrite_status: str | None = None
+        if rewrite:
+            final, rewrite_status = await self._rewrite(final)
+            if scheduler.cancelled or self.session is not session:
+                return {"ok": False, "reason": "cancelled"}
         assert self.metrics is not None
         self.metrics.count("words", len(final.split()))
         self.metrics.text = final
@@ -474,7 +484,43 @@ class Daemon:
             # Not awaited: `notify-send` can take its full 2 s timeout, and the
             # `stop` reply that `flowctl` is waiting on must not wait for it.
             self._notify_later("flowd: cleanup LLM is down; using basic cleanup")
-        return {"ok": True, "text": final, "backend": result.backend}
+        reply: dict[str, Any] = {"ok": True, "text": final, "backend": result.backend}
+        if rewrite_status is not None:
+            reply["rewrite"] = rewrite_status
+        return reply
+
+    async def _rewrite(self, joined: str) -> tuple[str, str]:
+        """spec 6.6: one more LLM pass over the whole joined text.
+
+        Returns the text to inject and what happened: `accepted`, `rejected`
+        (a guardrail failed), `failed` (no answer) or `skipped` (no LLM for
+        this mode, or over `REWRITE_MAX_WORDS`). Anything but `accepted`
+        injects the joined text unchanged.
+        """
+        metrics = self.metrics
+        assert metrics is not None
+        if (
+            self.cleanup is None
+            or not self.style.use_llm
+            or len(joined.split()) > REWRITE_MAX_WORDS
+        ):
+            return joined, "skipped"
+        # The recording-time budget, not `final_timeout_ms`: the user asked for
+        # this pass and its latency grows with length, which is why it is
+        # opt-in (spec 6.6).
+        result = await self.cleanup.clean(joined, self.cfg.llm.timeout_ms)
+        metrics.count("llm_chunks")
+        if result.text is None:
+            metrics.error(f"rewrite: {result.error}")
+            return joined, "failed"
+        failed = guardrails.check(joined, result.text, self.cfg.guardrails, terms=self.vocab.terms)
+        if failed is not None:
+            log.info("rewrite failed guardrail check %d; keeping the joined text", failed)
+            metrics.fail(failed)
+            metrics.count("rewrite_rejected")
+            return joined, "rejected"
+        metrics.count("rewrite_accepted")
+        return finish(result.text, self.style), "accepted"
 
     def _no_speech(self) -> dict[str, Any]:
         """spec 9.1: no speech at all means inject nothing."""
