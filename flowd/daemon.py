@@ -24,6 +24,7 @@ from flowd.inject.base import InjectResult
 from flowd.joiner import stitch
 from flowd.metrics import SessionMetrics, read_records, summarise, write_record
 from flowd.modes import Style, finish, style_for
+from flowd.recordings import SessionRecorder
 from flowd.scheduler import Scheduler
 from flowd.session import Session
 from flowd.state import Action, Event, Machine, State
@@ -126,6 +127,8 @@ class Daemon:
         self._background: set[asyncio.Future[None]] = set()
         # spec 9.1: armed at each session start, checked on every pump.
         self.sleep = SleepDetector()
+        # Opt-in audio capture for testing (`[logging] recordings_dir`).
+        self.recorder: SessionRecorder | None = None
 
     # --- command handling -------------------------------------------------
 
@@ -243,6 +246,10 @@ class Daemon:
             return {"ok": False, "error": str(exc)}
         self.metrics.mark("mic_open")
         self.sleep.arm()
+        where = self.cfg.logging.recordings_dir
+        self.recorder = (
+            SessionRecorder(Path(where).expanduser(), self.cfg.audio.sample_rate) if where else None
+        )
         if self.overlay is not None:
             self.overlay.show()
         return {"ok": True, "session": session_id}
@@ -269,6 +276,8 @@ class Daemon:
                 await self._discard(reason="suspended")
             return
         pcm = self.capture.read()
+        if self.recorder is not None:
+            self.recorder.add(pcm)
         # Read before feeding what is left, so the last audio the device
         # delivered still reaches the transcript.
         lost = getattr(self.capture, "failed", None)
@@ -476,6 +485,9 @@ class Daemon:
             self.metrics.error(f"inject: {result.error}")
 
         self.machine.handle(Event.INJECT_DONE)
+        if self.recorder is not None:
+            self.recorder.save(session.id, self.last_raw, final)
+            self.recorder = None
         self._end_session(text=final, reason=None)
         if self.cleanup is not None and self.cleanup.down:
             # spec 9.3: once per session, and only after the text is in: the
@@ -525,6 +537,7 @@ class Daemon:
     def _no_speech(self) -> dict[str, Any]:
         """spec 9.1: no speech at all means inject nothing."""
         self._show_status("No speech")
+        self.recorder = None
         # Still walk the machine back to IDLE. The chunks resolved, to
         # nothing, and there is nothing to inject; returning straight from
         # FINALIZING would strand it there and every later hotkey press
@@ -619,6 +632,11 @@ class Daemon:
         # it to its successor would clear `self.session` with the microphone
         # open — the next `stop` would then find nothing to inject.
         discarding = self.session
+        # Before the lock wait below: `_begin` for a newer session may replace
+        # the recorder meanwhile, and that one must survive this discard.
+        if self.recorder is not None:
+            self.recorder.discard()
+            self.recorder = None
         if self.scheduler is not None and self.scheduler.session is discarding:
             # Stop polishing for a session nobody will read, and wake a
             # `flush` waiting on it so the cancel is not held up by the LLM.

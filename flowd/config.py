@@ -156,6 +156,9 @@ class Overlay:
 class Logging:
     level: str = "info"
     log_transcripts: bool = False  # never true by default (spec 13.2)
+    #: Save each finished session's audio and transcripts here, for testing
+    #: the recognizer on your own voice. Empty (the default) saves nothing.
+    recordings_dir: str = ""
 
 
 @dataclass(frozen=True, slots=True)
