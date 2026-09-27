@@ -71,5 +71,7 @@ here in the same commit.
 
 `scripts/idle_check.py` measures idle anonymous memory and CPU across the
 daemon, the overlay and `llama-server`. Manual, 2026-09-27, 60 s idle:
-455 MB anon (budget 900), 0.33 % CPU (budget 1 %). The 24 h soak is
+455 MB anon (budget 900), 0.33 % CPU (budget 1 %). That was before ADR 0011
+added Parakeet; the budget is now 1,600 MB, and the daemon alone measured
+about 1,140 MB anon idle with both models loaded (2026-09-28). The 24 h soak is
 `scripts/idle_check.py --soak 24`; record its result here when it finishes.

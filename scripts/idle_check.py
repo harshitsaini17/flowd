@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-RAM_BUDGET_MB = 900.0
+RAM_BUDGET_MB = 1600.0  # ADR 0011
 CPU_BUDGET_PCT = 1.0
 #: How each process is recognised: its executable's name, then a script
 #: argument. Matching on argv[0] keeps out shells and editors whose command

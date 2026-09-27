@@ -76,10 +76,10 @@ uv pip install -e .
 scripts/fetch_models.sh
 ```
 
-`fetch_models.sh` downloads the cleanup language model, verifies it against the
-SHA-256 pinned in [`models.lock`](models.lock), and warms the speech model
-cache. It never upgrades a model behind your back: if a checksum does not match,
-it stops and tells you. About 480 MB in total.
+`fetch_models.sh` downloads the cleanup language model and the Parakeet speech
+model, verifies them against the SHA-256 pinned in [`models.lock`](models.lock),
+and warms the Moonshine model cache. It never upgrades a model behind your back:
+if a checksum does not match, it stops and tells you. About 1.1 GB in total.
 
 flowd refuses to start if a pinned model fails verification. Run
 `scripts/fetch_models.sh` again to repair it.
@@ -265,6 +265,7 @@ max_session_s = 300
 
 [stt]
 model = "small-streaming-en"    # or medium-streaming-en, tiny-streaming-en (ADR 0005)
+final_model = "parakeet-tdt-0.6b-v2-int8"  # commits the text; "" lets Moonshine commit (ADR 0011)
 
 [inject]
 order = ["clipboard", "wtype", "ydotool", "xdotool"]
@@ -357,7 +358,7 @@ code:
 |---|---|---|
 | 2 | A model file does not match `models.lock` | Run `scripts/fetch_models.sh`. flowd refuses to run a model it cannot identify, and systemd does not retry this one. |
 | 3 | The config file is invalid | The reason is on the line above, e.g. `flowd: invalid config: block_ms ...`. Fix `~/.config/flowd/config.toml`. |
-| 4 | The speech model failed to load | Usually a missing or partial download: run `scripts/fetch_models.sh`. |
+| 4 | A speech model failed to load | Usually a missing or partial download: run `scripts/fetch_models.sh`. To run on Moonshine alone, set `[stt] final_model = ""`. |
 
 After fixing it, `systemctl --user reset-failed flowd` lets systemd try again
 if it had given up.
@@ -373,7 +374,7 @@ may be somewhere else, so pasting them would be a guess.
 
 **Measuring idle cost.** `scripts/idle_check.py` samples memory and CPU of the
 daemon, the overlay and `llama-server` for a minute and checks them against the
-budget (900 MB anonymous memory, 1 % CPU). `scripts/idle_check.py --soak 24`
+budget (1,600 MB anonymous memory, 1 % CPU; ADR 0011). `scripts/idle_check.py --soak 24`
 samples every 30 minutes for a day and flags memory growth or a restarted
 process.
 
@@ -457,6 +458,9 @@ The models are separately licensed and are **not** covered by flowd's licence:
   Licence that forbids commercial use. flowd is English-only today, so it stays
   on the permissive path; if you point `stt.model` at a non-English model, that
   licence is yours to honour.
+- **Parakeet TDT 0.6B v2** (committed transcript) — NVIDIA's model, converted
+  to int8 ONNX by the sherpa-onnx project, under CC-BY-4.0: attribution is
+  required. It runs through `sherpa-onnx`, which is Apache-2.0.
 - **Sotto cleanup LFM2.5-350M** (text cleanup) — a community fine-tune of
   Liquid AI's LFM2.5-350M-Base under the LFM Open License v1.0, which limits
   commercial use by larger companies. See the model card linked in
