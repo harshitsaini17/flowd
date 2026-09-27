@@ -279,3 +279,31 @@ async def test_cancel_during_flush_returns_at_once() -> None:
     await flushing
     assert loop.time() - started < 0.2
     assert sched.abandoned == 0
+
+
+async def test_a_correction_cue_in_the_first_chunk_is_cleaned_without_a_merge() -> None:
+    """spec 9.3: nothing earlier to correct, so the chunk is cleaned as it is."""
+    polish = FakePolish()
+    sched, session = make(polish)
+    sched.on_committed("actually i think we should ship it")
+    await settle()
+    assert polish.calls[0]["merged"] is False
+    assert [c.state for c in session.chunks] == ["DONE"]
+
+
+async def test_a_result_for_a_chunk_merged_away_is_discarded() -> None:
+    """spec 9.3: a stale result after a merge is dropped silently.
+
+    A merge bumps the version of the chunk it supersedes; the answer to the
+    request sent before that must not land on it.
+    """
+    polish = FakePolish(hold=True)
+    sched, session = make(polish)
+    sched.on_committed("move the meeting to three")
+    await settle()
+    first = session.chunks[0]
+    first.version += 1  # what a merge does to a chunk it supersedes
+    polish.release()
+    await settle()
+    assert first.polished is None
+    assert first.state == "INFLIGHT"
