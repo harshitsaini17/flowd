@@ -122,3 +122,17 @@ def test_a_missing_file_is_refused(tmp_path: Path) -> None:
     models.mkdir()
     with pytest.raises(ValueError, match=r"a\.bin"):
         build_lock(models, SOURCES, lock_path=tmp_path / "models.lock")
+
+
+def test_a_file_in_a_model_directory_is_pinned_by_its_relative_path(tmp_path: Path) -> None:
+    """Parakeet is four files in one directory (ADR 0011)."""
+    models = tmp_path / "models"
+    (models / "parakeet").mkdir(parents=True)
+    (models / "parakeet" / "tokens.txt").write_bytes(b"tok")
+    lock_path = tmp_path / "models.lock"
+    doc = build_lock(
+        models, {"parakeet/tokens.txt": ("https://example.invalid/t", "CC-BY-4.0")}, lock_path
+    )
+    lock_path.write_text(json.dumps(doc))
+    assert doc["models"][0]["name"] == "parakeet/tokens.txt"
+    assert verify_models(lock_path, models) == []

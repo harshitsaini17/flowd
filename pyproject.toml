@@ -13,6 +13,9 @@ dependencies = [
     # the separate Silero VAD model gone (ADR 0002) nothing else wanted it.
     # `tests/test_vad.py` proves it stays gone.
     "moonshine-voice>=0.1.5",
+    # Runs Parakeet, the model whose text is committed (ADR 0011). It bundles
+    # its own libonnxruntime.so and imports no `onnxruntime` package.
+    "sherpa-onnx==1.13.8",
     "httpx>=0.27",
 ]
 
@@ -56,7 +59,7 @@ exclude = "^overlay/"
 # Neither ships a py.typed marker, so neither has types to check against.
 # moonshine_voice reaches its ONNX runtime through ctypes, so there is nothing
 # for mypy to infer from even in principle.
-module = ["sounddevice", "moonshine_voice"]
+module = ["sounddevice", "moonshine_voice", "sherpa_onnx"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import wave
 from pathlib import Path
 from typing import Any
@@ -213,7 +214,10 @@ def test_replay_writes_no_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     state_dir().mkdir(parents=True)
     clip = write_wav(tmp_path / "clip.wav", np.zeros(1600, dtype=np.float32))
 
-    assert asyncio.run(main._replay(Config(), clip, fast=True)) == 0
+    moonshine_only = dataclasses.replace(
+        Config(), stt=dataclasses.replace(Config().stt, final_model="")
+    )
+    assert asyncio.run(main._replay(moonshine_only, clip, fast=True)) == 0
     assert not (state_dir() / "metrics.jsonl").exists()
 
 
@@ -242,3 +246,39 @@ def test_an_invalid_config_at_startup_exits_with_the_reason(
     monkeypatch.setattr(main, "load_config", invalid)
     assert main.main([]) == main.EXIT_CONFIG
     assert "block_ms" in capsys.readouterr().err
+
+
+# --- the final model (ADR 0011) ----------------------------------------------
+
+
+def test_the_final_model_wraps_the_live_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    from flowd.hybrid import HybridSttEngine
+
+    live = FakeSttEngine([])
+    seen: list[Path] = []
+    monkeypatch.setattr(main, "load_engine", lambda *a, **kw: live)
+    monkeypatch.setattr(main, "load_parakeet", lambda path, rate: seen.append(path) or str)
+    engine = main._load_stt(Config())
+    assert isinstance(engine, HybridSttEngine)
+    assert seen == [main.data_dir() / "models" / "parakeet-tdt-0.6b-v2-int8"]
+
+
+def test_without_a_final_model_moonshine_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    live = FakeSttEngine([])
+    monkeypatch.setattr(main, "load_engine", lambda *a, **kw: live)
+    cfg = dataclasses.replace(Config(), stt=dataclasses.replace(Config().stt, final_model=""))
+    assert main._load_stt(cfg) is live
+
+
+def test_a_final_model_that_fails_to_load_exits_non_zero(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(*args: Any) -> Any:
+        raise RuntimeError("encoder.int8.onnx: Protobuf parsing failed")
+
+    monkeypatch.setattr(main, "_verify_or_exit", lambda cfg: None)
+    monkeypatch.setattr(main, "load_engine", lambda *a, **kw: FakeSttEngine([]))
+    monkeypatch.setattr(main, "load_parakeet", broken)
+    with caplog.at_level("ERROR"):
+        assert main.main([]) == main.EXIT_STT_LOAD
+    assert any("Protobuf parsing failed" in r.getMessage() for r in caplog.records)

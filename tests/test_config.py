@@ -134,3 +134,14 @@ def test_an_unknown_mode_name_is_rejected(tmp_path: Path) -> None:
     path.write_text('[modes]\n"kiro" = "shouty"\n')
     with pytest.raises(ValueError, match="shouty"):
         load_config(path)
+
+
+def test_the_final_model_defaults_to_parakeet() -> None:
+    """ADR 0011: Moonshine previews, Parakeet commits."""
+    assert Config().stt.final_model == "parakeet-tdt-0.6b-v2-int8"
+
+
+def test_an_empty_final_model_is_accepted(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[stt]\nfinal_model = ""\n')
+    assert load_config(path).stt.final_model == ""

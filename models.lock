@@ -1,6 +1,34 @@
 {
   "models": [
     {
+      "name": "parakeet-tdt-0.6b-v2-int8/decoder.int8.onnx",
+      "size_bytes": 7257753,
+      "sha256": "b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e",
+      "url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/1ab9323565ddb038682214b292f588070a538ce2/decoder.int8.onnx",
+      "license": "CC-BY-4.0"
+    },
+    {
+      "name": "parakeet-tdt-0.6b-v2-int8/encoder.int8.onnx",
+      "size_bytes": 652184296,
+      "sha256": "a32b12d17bbbc309d0686fbbcc2987b5e9b8333a7da83fa6b089f0a2acd651ab",
+      "url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/1ab9323565ddb038682214b292f588070a538ce2/encoder.int8.onnx",
+      "license": "CC-BY-4.0"
+    },
+    {
+      "name": "parakeet-tdt-0.6b-v2-int8/joiner.int8.onnx",
+      "size_bytes": 1739080,
+      "sha256": "7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2",
+      "url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/1ab9323565ddb038682214b292f588070a538ce2/joiner.int8.onnx",
+      "license": "CC-BY-4.0"
+    },
+    {
+      "name": "parakeet-tdt-0.6b-v2-int8/tokens.txt",
+      "size_bytes": 9384,
+      "sha256": "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d",
+      "url": "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/1ab9323565ddb038682214b292f588070a538ce2/tokens.txt",
+      "license": "CC-BY-4.0"
+    },
+    {
       "name": "sotto-cleanup-lfm25-350m-q4_k_m.gguf",
       "size_bytes": 229311200,
       "sha256": "6cd4dfed74fa20121a3144866fdc3853a680b764f21f2eaaa83811c396f00f3a",

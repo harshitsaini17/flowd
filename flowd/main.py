@@ -18,6 +18,7 @@ from flowd import __version__
 from flowd.audio import AudioCapture, load_wav
 from flowd.config import Config, data_dir, load_config, runtime_dir, state_dir
 from flowd.context import detect
+from flowd.hybrid import HybridSttEngine, load_parakeet
 from flowd.inject.base import InjectResult
 from flowd.models import verify_models
 from flowd.stt import load_engine
@@ -69,7 +70,7 @@ def _load_stt(cfg: Config) -> Any:
     backs off rather than flowd retrying in-process.
     """
     try:
-        return load_engine(
+        live = load_engine(
             cfg.stt,
             data_dir() / "models",
             cfg.audio.sample_rate,
@@ -80,6 +81,17 @@ def _load_stt(cfg: Config) -> Any:
         log.error("could not load the STT model %r: %s", cfg.stt.model, exc)
         log.error("check the model name in config.toml and your network for the first download")
         return None
+    if not cfg.stt.final_model:
+        return live
+    try:
+        transcribe = load_parakeet(
+            data_dir() / "models" / cfg.stt.final_model, cfg.audio.sample_rate
+        )
+    except Exception as exc:
+        log.error("could not load the final STT model %r: %s", cfg.stt.final_model, exc)
+        log.error('run scripts/fetch_models.sh, or set [stt] final_model = "" to go without')
+        return None
+    return HybridSttEngine(live, transcribe, sample_rate=cfg.audio.sample_rate)
 
 
 class _ReplayCapture:

@@ -88,6 +88,10 @@ class Vad:
 class Stt:
     model: str = "small-streaming-en"  # ADR 0005
     max_uncommitted_words: int = 25
+    #: The offline model whose text is committed, a directory under the models
+    #: dir; `model` then only drives the preview (ADR 0011). Empty commits
+    #: Moonshine's own text, as before.
+    final_model: str = "parakeet-tdt-0.6b-v2-int8"
 
 
 @dataclass(frozen=True, slots=True)
