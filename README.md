@@ -22,7 +22,9 @@ flowd is under active development. What works today:
 | LLM cleanup of filler words, punctuation and casing | **works** — chunked, while you speak |
 | Personal vocabulary (`vocab.toml`: recognizer terms, replacements) | **works** |
 | Per-application modes (code, chat, email) and terminal paste | **works** |
-| Hardening, `flowd.service`, optional full-rewrite mode | planned |
+| Recovery from device loss, suspend and an audio server restart | **works** |
+| `flowd.service` under the graphical session | **works** |
+| Optional full-rewrite pass (`flowctl stop --rewrite`) | **works** |
 
 When you stop dictating, a small local language model
 ([`flowd-llm`](systemd/flowd-llm.service), ADR 0006) removes fillers, applies
@@ -32,6 +34,8 @@ the model is slow, down or fails a check, flowd pastes rule-based tidying
 instead. Dictation never waits more than 800 ms on the model.
 
 The architecture and design are described in [`docs/spec.md`](docs/spec.md).
+How each edge case it lists is covered is in
+[`docs/edge-cases.md`](docs/edge-cases.md).
 Decisions that diverge from it are recorded in
 [`docs/decisions/`](docs/decisions/).
 
@@ -105,15 +109,30 @@ If you have moved `XDG_DATA_HOME`, edit that unit's `FLOWD_MODEL` path too —
 `scripts/fetch_models.sh` follows the variable and the unit file cannot.
 
 ```bash
+systemctl --user daemon-reload
+systemctl --user enable flowd-llm flowd
 systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP
-systemctl --user enable --now flowd-llm flowd
+systemctl --user start flowd-llm flowd
 ```
 
-The `import-environment` step matters. A user service started before you log in
-inherits none of your compositor's environment, and without
-`WAYLAND_DISPLAY`/`DISPLAY` flowd cannot reach the clipboard, cannot type into a
-window, and cannot show the overlay — it will start and then fail at every
-injection. Run it once per login, or add it to your compositor's startup config.
+`flowd.service` belongs to `graphical-session.target`: from now on it starts
+after you log in and stops when you log out, when the display it types into
+goes away. `flowd-llm` starts with it.
+
+flowd needs your compositor's environment. Without `WAYLAND_DISPLAY`/`DISPLAY`
+it cannot reach the clipboard, cannot type into a window, and cannot show the
+overlay — it starts and then fails at every injection. Most compositors import
+these into the user manager at login. If yours does not, add the
+`import-environment` line to its startup config, before anything starts flowd.
+On Hyprland:
+
+```ini
+exec-once = systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP
+```
+
+If flowd fails to start, systemd retries with a short delay, and gives up after
+five failures in two minutes. A model hash mismatch is not retried at all; see
+Troubleshooting.
 
 Check it came up:
 
@@ -183,6 +202,17 @@ works normally; you just do not get the live preview. GNOME under X11 is fine.
 ```
 super + d
     flowctl toggle
+```
+
+**A second hotkey for a full rewrite.** `flowctl stop --rewrite` ends a
+dictation like `stop`, then sends the whole text (up to 300 words) through one
+more pass of the local model, which can fix corrections that span sentences.
+It costs up to `[llm] timeout_ms` more before the text lands, and the result
+must pass the same guardrails or the ordinary text is pasted. Code mode never
+rewrites. Bind it next to your usual key, for example on Hyprland:
+
+```ini
+bind = SUPER SHIFT, D, exec, flowctl stop --rewrite
 ```
 
 `flowctl` is a plain stdlib Python script with no imports beyond the standard
@@ -320,8 +350,32 @@ cleanup is usually a guardrail rejecting the model's output, which is the
 intended behaviour. `~/.local/state/flowd/metrics.jsonl` records each one by
 check number, never with the text.
 
-**A model fails verification.** Run `scripts/fetch_models.sh`. flowd refuses to
-start on a hash mismatch rather than running a model it cannot identify.
+**The service will not start.** `systemctl --user status flowd` shows the exit
+code:
+
+| Exit | Meaning | Fix |
+|---|---|---|
+| 2 | A model file does not match `models.lock` | Run `scripts/fetch_models.sh`. flowd refuses to run a model it cannot identify, and systemd does not retry this one. |
+| 3 | The config file is invalid | The reason is on the line above, e.g. `flowd: invalid config: block_ms ...`. Fix `~/.config/flowd/config.toml`. |
+| 4 | The speech model failed to load | Usually a missing or partial download: run `scripts/fetch_models.sh`. |
+
+After fixing it, `systemctl --user reset-failed flowd` lets systemd try again
+if it had given up.
+
+**The microphone went away mid-dictation.** Unplugging it, or restarting
+PipeWire, ends the dictation early: flowd pastes what it heard so far and
+notifies you. Press the hotkey again to continue; the next dictation reopens
+the device.
+
+**A dictation vanished after sleep.** Suspending the machine mid-dictation
+cancels it, by design. By the time you resume, the words are stale and focus
+may be somewhere else, so pasting them would be a guess.
+
+**Measuring idle cost.** `scripts/idle_check.py` samples memory and CPU of the
+daemon, the overlay and `llama-server` for a minute and checks them against the
+budget (900 MB anonymous memory, 1 % CPU). `scripts/idle_check.py --soak 24`
+samples every 30 minutes for a day and flags memory growth or a restarted
+process.
 
 **Logs, in general.**
 
