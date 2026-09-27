@@ -24,6 +24,11 @@ from flowd.stt import load_engine
 
 log = logging.getLogger(__name__)
 
+#: Distinct exit codes, so `systemctl --user status flowd` says which kind of
+#: failure it is restarting from. 2 is `_verify_or_exit`'s hash mismatch.
+EXIT_CONFIG = 3
+EXIT_STT_LOAD = 4
+
 
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
@@ -55,6 +60,26 @@ def _verify_or_exit(cfg: Config) -> None:
             log.error("model verification: %s", problem)
         log.error("refusing to start; run scripts/fetch_models.sh")
         raise SystemExit(2)
+
+
+def _load_stt(cfg: Config) -> Any:
+    """The streaming engine, or None after logging why it could not load.
+
+    spec 9.2: the caller exits non-zero, and systemd's `Restart=on-failure`
+    backs off rather than flowd retrying in-process.
+    """
+    try:
+        return load_engine(
+            cfg.stt,
+            data_dir() / "models",
+            cfg.audio.sample_rate,
+            vad_cfg=cfg.vad,
+            block_ms=cfg.audio.block_ms,
+        )
+    except Exception as exc:
+        log.error("could not load the STT model %r: %s", cfg.stt.model, exc)
+        log.error("check the model name in config.toml and your network for the first download")
+        return None
 
 
 class _ReplayCapture:
@@ -135,13 +160,9 @@ async def _replay(cfg: Config, path: Path, fast: bool) -> int:
     capture = _ReplayCapture(pcm, block, cfg.audio.sample_rate, realtime=not fast)
     # The capture rate must reach the engine: Moonshine resamples from whatever
     # rate it is told, so a wrong value transcribes as gibberish (ADR 0001).
-    engine = load_engine(
-        cfg.stt,
-        data_dir() / "models",
-        cfg.audio.sample_rate,
-        vad_cfg=cfg.vad,
-        block_ms=cfg.audio.block_ms,
-    )
+    engine = _load_stt(cfg)
+    if engine is None:
+        return EXIT_STT_LOAD
 
     def no_inject(text: str, inject_cfg: Any, **kwargs: Any) -> InjectResult:
         return InjectResult(ok=True, backend="replay")
@@ -192,7 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    cfg = load_config()
+    try:
+        cfg = load_config()
+    except (OSError, ValueError) as exc:
+        # Before logging is set up, and it is the user's file: say which key.
+        print(f"flowd: invalid config: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
     _setup_logging(args.log_level or cfg.logging.level)
     if args.fast and args.replay is None:
         log.warning("--fast has no effect without --replay")
@@ -206,13 +232,9 @@ def main(argv: list[str] | None = None) -> int:
     from flowd.daemon import Daemon
     from flowd.overlay_ipc import OverlayProcess
 
-    engine = load_engine(
-        cfg.stt,
-        data_dir() / "models",
-        cfg.audio.sample_rate,
-        vad_cfg=cfg.vad,
-        block_ms=cfg.audio.block_ms,
-    )
+    engine = _load_stt(cfg)
+    if engine is None:
+        return EXIT_STT_LOAD
     capture = AudioCapture(cfg.audio)
     state_dir().mkdir(parents=True, exist_ok=True)
     # Nothing is spawned here: the overlay starts on the first preview and dies

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
 from flowd.config import Config, Hotkey, Inject
 from flowd.daemon import Daemon
@@ -907,3 +908,86 @@ async def test_a_vocab_edit_applies_to_the_next_dictation_without_a_restart(
     await d.pump()
     await d.handle({"cmd": "toggle"})
     assert injected == ["Open hyper land.", "Open Hyprland."]
+
+
+class LosableCapture(FakeCapture):
+    """A capture whose device can vanish mid-session, like AudioCapture's."""
+
+    failed: str | None = None
+
+
+async def test_a_lost_microphone_injects_the_text_so_far_and_notifies() -> None:
+    """spec 9.2: PipeWire restarted or mic unplugged mid-session.
+
+    Finalize with what was heard, inject it, then tell the user. Losing the
+    words already spoken would break spec 9's first rule.
+    """
+    injected: list[str] = []
+    capture = LosableCapture()
+    d = daemon(FakeSttEngine([[Committed("keep what i said")]]), capture, injected)
+    notes: list[str] = []
+    d._notify = notes.append  # type: ignore[method-assign]
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    capture.failed = "audio stream ended"
+    await d.pump()
+    await asyncio.gather(*d._background)
+    assert injected == ["Keep what I said."]
+    assert (await d.handle({"cmd": "status"}))["state"] == "idle"
+    assert notes and "microphone" in notes[0]
+    assert "audio stream ended" in d.last_record["errors"][0]
+
+
+async def test_a_lost_microphone_with_nothing_heard_injects_nothing() -> None:
+    injected: list[str] = []
+    capture = LosableCapture()
+    d = daemon(FakeSttEngine([]), capture, injected)
+    d._notify = lambda message: None  # type: ignore[method-assign]
+    await d.handle({"cmd": "start"})
+    capture.failed = "audio stream ended"
+    await d.pump()
+    assert injected == []
+    assert (await d.handle({"cmd": "status"}))["state"] == "idle"
+
+
+async def test_stt_falling_behind_warns_with_cpu_load_and_drops_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """spec 9.2: log a warning with CPU load; never drop audio."""
+
+    class BacklogCapture(FakeCapture):
+        def pending_seconds(self) -> float:
+            return 2.5
+
+    capture = BacklogCapture([np.zeros(1600, dtype=np.float32)] * 2)
+    d = daemon(FakeSttEngine([[], []]), capture)
+    await d.handle({"cmd": "start"})
+    with caplog.at_level("WARNING", logger="flowd.daemon"):
+        await d.pump()
+    message = next(r.getMessage() for r in caplog.records if "behind" in r.getMessage())
+    assert "load" in message
+    assert len(capture.blocks) == 1  # read one block, dropped none
+
+
+async def test_a_suspend_mid_session_cancels_it_and_injects_nothing() -> None:
+    """spec 9.1: suspend or resume mid-session cancels the session and logs it.
+
+    The words from before the lid closed are stale by the time it opens, and
+    pasting them into whatever window has focus after resume is the worse
+    failure.
+    """
+    from flowd.suspend import SleepDetector
+
+    clocks = {"mono": 0.0, "boot": 0.0}
+    injected: list[str] = []
+    capture = FakeCapture([np.zeros(1600, dtype=np.float32)] * 2)
+    d = daemon(FakeSttEngine([[Committed("before the lid closed")], []]), capture, injected)
+    d.sleep = SleepDetector(monotonic=lambda: clocks["mono"], boottime=lambda: clocks["boot"])
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    clocks["boot"] += 120
+    await d.pump()
+    assert injected == []
+    assert capture.stopped is True
+    assert (await d.handle({"cmd": "status"}))["state"] == "idle"
+    assert "suspended" in d.last_record["errors"]

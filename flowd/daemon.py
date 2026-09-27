@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import subprocess
 import time
 import uuid
@@ -27,6 +28,7 @@ from flowd.scheduler import Scheduler
 from flowd.session import Session
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
+from flowd.suspend import SleepDetector
 from flowd.textclean import apply_replacements, basic_clean, minimal_clean
 from flowd.vocab import Vocab, load_vocab, vocab_path
 
@@ -119,6 +121,8 @@ class Daemon:
         # Fire-and-forget work (desktop notifications), held so it is not
         # garbage-collected mid-flight and so tests can wait for it.
         self._background: set[asyncio.Future[None]] = set()
+        # spec 9.1: armed at each session start, checked on every pump.
+        self.sleep = SleepDetector()
 
     # --- command handling -------------------------------------------------
 
@@ -233,6 +237,7 @@ class Daemon:
             self._notify(f"flowd: microphone unavailable ({exc})")
             return {"ok": False, "error": str(exc)}
         self.metrics.mark("mic_open")
+        self.sleep.arm()
         if self.overlay is not None:
             self.overlay.show()
         return {"ok": True, "session": session_id}
@@ -251,7 +256,17 @@ class Daemon:
         """Move one block of audio through STT. Called by the run loop and tests."""
         if not self._recording():
             return
+        if self.sleep.slept():
+            # spec 9.1: the words from before a suspend are stale by resume,
+            # and whatever has focus now is not where the user was dictating.
+            log.info("machine suspended mid-session; cancelling it")
+            if self.machine.handle(Event.CANCEL) is Action.DISCARD:
+                await self._discard(reason="suspended")
+            return
         pcm = self.capture.read()
+        # Read before feeding what is left, so the last audio the device
+        # delivered still reaches the transcript.
+        lost = getattr(self.capture, "failed", None)
         # Carried out of the `async with` rather than handled inside it: the
         # fatal path calls `_discard`, which acquires this same lock, so
         # handling it here would deadlock the daemon instead of crashing it —
@@ -282,8 +297,20 @@ class Daemon:
         if failure is not None:
             await self._fail(failure)
             return
-        if self.capture.pending_seconds() > 2.0:
-            log.warning("STT is behind real time: %.1f s queued", self.capture.pending_seconds())
+        if lost is not None:
+            await self._device_lost(str(lost))
+            return
+        backlog = self.capture.pending_seconds()
+        if backlog > 2.0:
+            # spec 9.2: warn with the CPU load, since contention is the usual
+            # cause; the audio stays queued and is decoded late, never dropped.
+            load = os.getloadavg()[0]
+            log.warning(
+                "STT is behind real time: %.1f s queued, load %.2f on %d CPUs",
+                backlog,
+                load,
+                os.cpu_count() or 1,
+            )
 
     def _on_stt_event(self, event: Partial | Committed) -> None:
         assert self.session is not None and self.metrics is not None
@@ -446,11 +473,7 @@ class Daemon:
             #
             # Not awaited: `notify-send` can take its full 2 s timeout, and the
             # `stop` reply that `flowctl` is waiting on must not wait for it.
-            future = asyncio.get_running_loop().run_in_executor(
-                None, self._notify, "flowd: cleanup LLM is down; using basic cleanup"
-            )
-            self._background.add(future)
-            future.add_done_callback(self._background.discard)
+            self._notify_later("flowd: cleanup LLM is down; using basic cleanup")
         return {"ok": True, "text": final, "backend": result.backend}
 
     def _no_speech(self) -> dict[str, Any]:
@@ -506,6 +529,26 @@ class Daemon:
             metrics.count("fallbacks")
             return None
         return result.text
+
+    async def _device_lost(self, reason: str) -> None:
+        """spec 9.2: finalize with the text so far, inject it, then notify.
+
+        After the injection, like the LLM-down note: the user's words matter
+        more than the news, and `notify-send` can take its full 2 s timeout.
+        """
+        log.warning("microphone lost mid-session: %s", reason)
+        if self.machine.handle(Event.DEVICE_LOST) is not Action.FLUSH_AND_FINALIZE:
+            return
+        assert self.metrics is not None
+        self.metrics.error(f"audio: {reason}")
+        await self._finalize(note="microphone lost")
+        self._notify_later(f"flowd: microphone lost ({reason}); kept the text so far")
+
+    def _notify_later(self, message: str) -> None:
+        """A desktop notification that nobody waits for."""
+        future = asyncio.get_running_loop().run_in_executor(None, self._notify, message)
+        self._background.add(future)
+        future.add_done_callback(self._background.discard)
 
     async def _fail(self, exc: Exception) -> None:
         """Route a mid-session engine failure to spec 4's fatal transition.

@@ -1,6 +1,7 @@
 import asyncio
 import wave
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -214,3 +215,30 @@ def test_replay_writes_no_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     assert asyncio.run(main._replay(Config(), clip, fast=True)) == 0
     assert not (state_dir() / "metrics.jsonl").exists()
+
+
+def test_an_stt_model_that_fails_to_load_exits_non_zero_with_a_message(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """spec 9.2: exit non-zero with a clear message; systemd restarts with backoff."""
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("model file is truncated")
+
+    monkeypatch.setattr(main, "_verify_or_exit", lambda cfg: None)
+    monkeypatch.setattr(main, "load_engine", broken)
+    with caplog.at_level("ERROR"):
+        code = main.main([])
+    assert code == main.EXIT_STT_LOAD
+    assert any("model file is truncated" in r.getMessage() for r in caplog.records)
+
+
+def test_an_invalid_config_at_startup_exits_with_the_reason(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def invalid(path: Any = None) -> Any:
+        raise ValueError("[audio] block_ms: must be a positive integer, got 0")
+
+    monkeypatch.setattr(main, "load_config", invalid)
+    assert main.main([]) == main.EXIT_CONFIG
+    assert "block_ms" in capsys.readouterr().err
