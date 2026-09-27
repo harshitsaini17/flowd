@@ -1,8 +1,17 @@
 [Unit]
 Description=flowd dictation daemon
 Documentation=https://github.com/harshitsaini17/flowd
+# flowd types into windows and draws an overlay, so it belongs to the graphical
+# session. Tying it to graphical-session.target starts it after login and stops
+# it at logout, when the display it injects into goes away.
+PartOf=graphical-session.target
+After=graphical-session.target flowd-llm.service pipewire.service
 Wants=flowd-llm.service pipewire.service
-After=flowd-llm.service pipewire.service graphical-session.target
+# spec 9.2: a model that fails to load exits non-zero and is restarted with
+# backoff. Past five failures in two minutes, systemd stops trying until the
+# user runs `systemctl --user reset-failed flowd`.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,10 +20,13 @@ Type=simple
 ExecStart=%h/.local/share/flowd/.venv/bin/flowd
 Restart=on-failure
 RestartSec=2
+# Exit 2 is a model hash mismatch, which a restart cannot fix. Stay stopped so
+# the error stays at the top of `systemctl --user status flowd`.
+RestartPreventExitStatus=2
 # The daemon needs the compositor's environment to inject text and show the
-# overlay. A user service started before login inherits none of it, so import it
-# once per session before starting flowd:
+# overlay. Most compositors import it into the user manager at login. If yours
+# does not, run this once per session before starting flowd:
 #   systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
