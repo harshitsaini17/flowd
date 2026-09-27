@@ -48,6 +48,8 @@ def stitch(pairs: Sequence[tuple[str, str]], *, sentence: bool = True) -> str:
     next chunk's capital is undone when its raw text started in lowercase —
     so "move the meeting. To Friday." comes out "move the meeting to Friday.".
     A "?" or "!" is kept: the LLM heard a question, and that is not a seam.
+    A period in the raw text is a seam too when the next chunk continues in
+    lowercase, since the recognizer puts one at every pause.
 
     `sentence=False` (code mode) only joins with single spaces: a command has
     no sentences to repair.
@@ -57,11 +59,17 @@ def stitch(pairs: Sequence[tuple[str, str]], *, sentence: bool = True) -> str:
     texts = [text.strip() for _, text in pairs]
     for i in range(len(pairs) - 1):
         raw, nxt_raw = pairs[i][0].strip(), pairs[i + 1][0].strip()
-        if not texts[i] or not texts[i + 1] or not raw or raw[-1] in _TERMINALS:
+        if not texts[i] or not texts[i + 1] or not raw:
+            continue
+        # Moonshine ends every line it commits with a period, pauses included,
+        # so a raw "." is a sentence end only when the next chunk starts one.
+        # "?", "!" and ":" are never put there by a pause.
+        continues = nxt_raw[:1].islower()
+        if raw[-1] in _TERMINALS and not (raw[-1] == "." and continues):
             continue
         if texts[i].endswith("."):
             texts[i] = texts[i][:-1]
         first = texts[i + 1]
-        if nxt_raw[:1].islower() and first[:1].isupper() and not _CAPITAL_I_RE.match(first):
+        if continues and first[:1].isupper() and not _CAPITAL_I_RE.match(first):
             texts[i + 1] = first[:1].lower() + first[1:]
     return join_chunks(texts)

@@ -98,3 +98,43 @@ def test_stitch_lowercases_only_when_the_raw_continued_in_lowercase() -> None:
         ("Monday morning", "Monday morning."),
     ]
     assert stitch(pairs) == "We deploy on Monday morning."
+
+
+def test_a_period_the_recognizer_put_at_a_pause_is_repaired_when_the_next_chunk_is_lowercase() -> (
+    None
+):
+    """Moonshine ends each line it commits with a period, even mid-sentence.
+
+    A next chunk that starts in lowercase says the sentence went on, so the
+    period is a seam, whether the text came from the LLM or from the fallback.
+    """
+    from flowd.joiner import stitch
+
+    pairs = [
+        ("When we took our seats at the breakfast.", "When we took our seats at the breakfast."),
+        ("table, it was", "Table, it was."),
+        ("with the feeling of being", "With the feeling of being."),
+        ("no longer looked upon.", "No longer looked upon."),
+        ("as connected in any way with this case.", "As connected in any way with this case."),
+    ]
+    assert stitch(pairs) == (
+        "When we took our seats at the breakfast table, it was with the feeling of"
+        " being no longer looked upon as connected in any way with this case."
+    )
+
+
+def test_a_real_sentence_end_before_a_capitalised_chunk_is_kept() -> None:
+    from flowd.joiner import stitch
+
+    pairs = [
+        ("Ship it on Friday.", "Ship it on Friday."),
+        ("Then tell the team", "Then tell the team."),
+    ]
+    assert stitch(pairs) == "Ship it on Friday. Then tell the team."
+
+
+def test_a_question_at_a_seam_is_kept_even_before_lowercase() -> None:
+    from flowd.joiner import stitch
+
+    pairs = [("can you ship it?", "Can you ship it?"), ("and tell the team", "And tell the team.")]
+    assert stitch(pairs) == "Can you ship it? And tell the team."
