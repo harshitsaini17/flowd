@@ -1,6 +1,7 @@
 """The cleanup pass inside a dictation (spec 5.5, 7.4, 9.3)."""
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -130,6 +131,21 @@ async def test_a_timeout_falls_back_and_says_why() -> None:
     assert injected == [FALLBACK]
     assert d.last_record["errors"] == ["llm: timeout"]
     assert d.last_record["counts"]["fallbacks"] == 1
+
+
+async def test_a_model_that_never_answers_after_release_is_bounded_by_the_final_timeout() -> None:
+    """spec 9.3 "final chunk slow": the release waits `final_timeout_ms`, then
+    pastes the fallback instead of waiting on the model."""
+    injected: list[str] = []
+    cleanup = FakeCleanup()
+    cleanup.gate = asyncio.Event()  # never set: the model hangs
+    cfg = replace(Config(), llm=replace(Llm(), final_timeout_ms=50))
+    d = make(LONG_RAW, cleanup, injected, cfg=cfg)
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    reply = await asyncio.wait_for(d.handle({"cmd": "stop"}), timeout=2)
+    assert reply["ok"] is True
+    assert injected == [FALLBACK]
 
 
 async def test_rejections_never_log_the_text() -> None:
