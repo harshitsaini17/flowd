@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import wave
 from collections.abc import Callable
 from pathlib import Path
@@ -14,6 +15,16 @@ import numpy as np
 from flowd.config import Audio
 
 log = logging.getLogger(__name__)
+
+#: Seconds without a single frame before a stream counts as lost. Blocks arrive
+#: every `block_ms` (100 ms by default), so this is ten missed blocks: long
+#: enough to ride out a busy scheduler, short enough that a dead stream is
+#: noticed before the user finishes their sentence.
+STALL_S = 1.0
+
+#: How long `_release` waits for PortAudio to stop a stream before abandoning it.
+#: A healthy stop takes milliseconds; one on a dead audio server took 8 s.
+RELEASE_WAIT_S = 0.25
 
 
 class RingBuffer:
@@ -101,15 +112,22 @@ class AudioCapture:
         cfg: Audio,
         on_status: Callable[[str], None] | None = None,
         stream_factory: Callable[..., Any] = _open_input_stream,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._cfg = cfg
         self._on_status = on_status
         self._stream_factory = stream_factory
         self._stream: Any = None
         self._recording = False
+        self._clock = clock
         # Set from PortAudio's thread when the stream ends without us asking:
-        # an unplugged device or a PipeWire restart (spec 9.2).
-        self.failed: str | None = None
+        # an unplugged device (spec 9.2). Read through `failed`, which also
+        # reports a stream that has gone silent.
+        self._ended: str | None = None
+        # When the callback last ran. A PipeWire restart leaves the stream
+        # "active" and never calls `finished_callback`; it just stops calling
+        # back, so silence from the callback is the only sign.
+        self._last_frame = 0.0
         # Which stream is current. PortAudio may report a stream finished
         # after `stop()` has returned, so a flag set around our own stop would
         # race; a stale generation is simply one we already closed.
@@ -126,6 +144,7 @@ class AudioCapture:
         """PortAudio thread: copy only (spec 4)."""
         if status and self._on_status is not None:
             self._on_status(str(status))
+        self._last_frame = self._clock()
         frames = indata[:, 0]
         if self._recording:
             self._ring.write(frames)
@@ -136,16 +155,30 @@ class AudioCapture:
         def finished() -> None:
             """PortAudio thread: the stream stopped. Ours to close, or lost?"""
             if generation == self._generation and self._stream is not None:
-                self.failed = "audio stream ended (device unplugged or audio server restarted)"
-                log.warning("%s", self.failed)
+                self._ended = "audio stream ended (device unplugged or audio server restarted)"
+                log.warning("%s", self._ended)
 
         return finished
 
+    @property
+    def failed(self) -> str | None:
+        """Why the stream is lost, or None. Checked by the daemon every pump."""
+        if self._ended is not None:
+            return self._ended
+        if self._recording and self._stream is not None and self._stalled():
+            return f"no audio from the microphone for {STALL_S:.0f} s (audio server restarted?)"
+        return None
+
+    def _stalled(self) -> bool:
+        return self._clock() - self._last_frame > STALL_S
+
     def start(self) -> None:
-        if self.failed is not None and self._stream is not None:
-            # spec 5.1: after device loss, retry opening on the next start.
+        if self._stream is not None and (self._ended is not None or self._stalled()):
+            # spec 5.1: after device loss, retry opening on the next start. An
+            # `always_open` stream can die while idle, so it is checked here too
+            # rather than discovered a second into the next dictation.
             self._release()
-        self.failed = None
+        self._ended = None
         if self._stream is None:
             device = None if self._cfg.device == "default" else self._cfg.device
             self._stream = self._stream_factory(
@@ -158,6 +191,9 @@ class AudioCapture:
                 finished_callback=self._finished_for(self._generation),
             )
             self._stream.start()
+            # The stall clock starts at open: a device that never delivers a
+            # first block is as lost as one that stopped.
+            self._last_frame = self._clock()
             log.info("mic open: %d Hz, %d ms blocks", self._cfg.sample_rate, self._cfg.block_ms)
         # Anything left unread belongs to the previous session; replaying it
         # would inject phantom words into this one.
@@ -181,6 +217,20 @@ class AudioCapture:
         # triggers is recognised as ours rather than as a lost device.
         self._generation += 1
         stream, self._stream = self._stream, None
+        # On a thread, with a bounded wait: this runs on the daemon's event
+        # loop, and PortAudio's stop on a stream whose audio server restarted
+        # blocks for seconds, during which `flowctl` could not be answered. A
+        # stop that overruns is left to finish on its own; the next start
+        # opens a fresh stream, which the restarted server serves normally.
+        closer = threading.Thread(target=self._close_stream, args=(stream,), daemon=True)
+        closer.start()
+        closer.join(RELEASE_WAIT_S)
+        if closer.is_alive():
+            log.warning("audio stream did not stop within %.2f s; abandoning it", RELEASE_WAIT_S)
+        log.info("mic closed")
+
+    @staticmethod
+    def _close_stream(stream: Any) -> None:
         try:
             stream.stop()
             stream.close()
@@ -188,7 +238,6 @@ class AudioCapture:
             # A stream whose device is already gone may refuse to stop; it is
             # released either way, and the next start opens a fresh one.
             log.warning("error closing audio stream: %s", exc)
-        log.info("mic closed")
 
     def read(self) -> np.ndarray:
         return self._ring.read_available()

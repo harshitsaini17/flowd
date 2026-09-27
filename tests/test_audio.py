@@ -1,3 +1,5 @@
+import threading
+import time
 import wave
 from pathlib import Path
 from typing import Any
@@ -5,7 +7,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from flowd.audio import AudioCapture, RingBuffer, load_wav
+from flowd.audio import STALL_S, AudioCapture, RingBuffer, load_wav
 from flowd.config import Audio
 
 
@@ -246,3 +248,95 @@ def test_a_new_session_after_device_loss_opens_a_fresh_stream() -> None:
     cap.start()
     assert len(streams) == 2
     assert cap.failed is None
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def clocked(**overrides: Any) -> tuple[AudioCapture, list[FakeStream], Clock]:
+    streams: list[FakeStream] = []
+    clock = Clock()
+
+    def factory(**kwargs: Any) -> FakeStream:
+        streams.append(FakeStream(**kwargs))
+        return streams[-1]
+
+    return AudioCapture(Audio(**overrides), stream_factory=factory, clock=clock), streams, clock
+
+
+def test_a_stream_that_stops_delivering_marks_the_capture_failed() -> None:
+    """spec 9.2: after a PipeWire restart the stream stays "active" but goes
+    silent, and `finished_callback` never fires. Only the missing frames say so."""
+    cap, streams, clock = clocked()
+    cap.start()
+    streams[0].deliver(np.zeros(1600, dtype=np.float32))
+    clock.now += STALL_S - 0.1
+    assert cap.failed is None
+    clock.now += 0.2
+    assert cap.failed is not None
+
+
+def test_a_stream_that_keeps_delivering_is_not_stalled() -> None:
+    cap, streams, clock = clocked()
+    cap.start()
+    for _ in range(10):
+        clock.now += 0.5
+        streams[0].deliver(np.zeros(1600, dtype=np.float32))
+    assert cap.failed is None
+
+
+def test_an_idle_capture_is_never_stalled() -> None:
+    cap, _streams, clock = clocked(always_open=True)
+    cap.start()
+    cap.stop()
+    clock.now += 60
+    assert cap.failed is None
+
+
+def test_an_always_open_stream_that_went_silent_while_idle_is_reopened() -> None:
+    """Otherwise the first dictation after an audio server restart records
+    nothing for the stall window and then reports the mic lost."""
+    cap, streams, clock = clocked(always_open=True)
+    cap.start()
+    cap.stop()
+    clock.now += 60
+    cap.start()
+    assert len(streams) == 2
+    assert cap.failed is None
+
+
+class HangingStream(FakeStream):
+    """A stream on a dead audio server: `stop()` blocks until released."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.release = threading.Event()
+
+    def stop(self) -> None:
+        self.release.wait(10)
+        super().stop()
+
+
+def test_releasing_a_lost_stream_does_not_wait_for_it() -> None:
+    """PortAudio's stop on a stalled stream took 8 s live; the daemon's event
+    loop calls `stop`, so waiting would freeze `flowctl` for as long."""
+    streams: list[HangingStream] = []
+
+    def factory(**kwargs: Any) -> HangingStream:
+        streams.append(HangingStream(**kwargs))
+        return streams[-1]
+
+    cap = AudioCapture(Audio(), stream_factory=factory)
+    cap.start()
+    streams[0].kwargs["finished_callback"]()
+    began = time.monotonic()
+    cap.stop()
+    assert time.monotonic() - began < 0.5
+    cap.start()
+    assert len(streams) == 2
+    streams[0].release.set()
