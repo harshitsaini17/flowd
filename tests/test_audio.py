@@ -214,3 +214,35 @@ def test_load_wav_rejects_stereo(tmp_path: Path) -> None:
     path = _write_wav(tmp_path / "a.wav", np.zeros(4), 16000, channels=2)
     with pytest.raises(ValueError, match="channels"):
         load_wav(path, 16000)
+
+
+def test_a_stream_that_ends_while_recording_marks_the_capture_failed() -> None:
+    """spec 9.2: an unplugged mic or a PipeWire restart ends the stream under us.
+
+    PortAudio reports that through `finished_callback`, not an exception, so the
+    daemon only learns of it from this flag.
+    """
+    cap, streams = capture()
+    cap.start()
+    assert cap.failed is None
+    streams[0].kwargs["finished_callback"]()
+    assert cap.failed is not None
+
+
+def test_a_stream_closed_by_stop_is_not_a_failure() -> None:
+    cap, streams = capture()
+    cap.start()
+    cap.stop()
+    streams[0].kwargs["finished_callback"]()
+    assert cap.failed is None
+
+
+def test_a_new_session_after_device_loss_opens_a_fresh_stream() -> None:
+    """spec 5.1: retry opening on the next start."""
+    cap, streams = capture(always_open=True)
+    cap.start()
+    streams[0].kwargs["finished_callback"]()
+    cap.stop()
+    cap.start()
+    assert len(streams) == 2
+    assert cap.failed is None

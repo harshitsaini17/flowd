@@ -107,6 +107,13 @@ class AudioCapture:
         self._stream_factory = stream_factory
         self._stream: Any = None
         self._recording = False
+        # Set from PortAudio's thread when the stream ends without us asking:
+        # an unplugged device or a PipeWire restart (spec 9.2).
+        self.failed: str | None = None
+        # Which stream is current. PortAudio may report a stream finished
+        # after `stop()` has returned, so a flag set around our own stop would
+        # race; a stale generation is simply one we already closed.
+        self._generation = 0
         capacity = cfg.sample_rate * 30  # 30 s headroom; overrun is logged, never fatal
         self._ring = RingBuffer(capacity)
         self._preroll = RingBuffer(max(1, cfg.sample_rate * cfg.preroll_ms // 1000))
@@ -125,7 +132,20 @@ class AudioCapture:
         elif self._cfg.always_open:
             self._preroll.write(frames)
 
+    def _finished_for(self, generation: int) -> Callable[[], None]:
+        def finished() -> None:
+            """PortAudio thread: the stream stopped. Ours to close, or lost?"""
+            if generation == self._generation and self._stream is not None:
+                self.failed = "audio stream ended (device unplugged or audio server restarted)"
+                log.warning("%s", self.failed)
+
+        return finished
+
     def start(self) -> None:
+        if self.failed is not None and self._stream is not None:
+            # spec 5.1: after device loss, retry opening on the next start.
+            self._release()
+        self.failed = None
         if self._stream is None:
             device = None if self._cfg.device == "default" else self._cfg.device
             self._stream = self._stream_factory(
@@ -135,6 +155,7 @@ class AudioCapture:
                 channels=1,
                 dtype="float32",
                 callback=self._callback,
+                finished_callback=self._finished_for(self._generation),
             )
             self._stream.start()
             log.info("mic open: %d Hz, %d ms blocks", self._cfg.sample_rate, self._cfg.block_ms)
@@ -147,19 +168,27 @@ class AudioCapture:
     def stop(self) -> None:
         self._recording = False
         if self._stream is not None and not self._cfg.always_open:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-            log.info("mic closed")
+            self._release()
 
     def close(self) -> None:
         """Release the device unconditionally, for shutdown."""
         self._recording = False
         if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
-            log.info("mic closed")
+            self._release()
+
+    def _release(self) -> None:
+        # Retire the generation first, so the finished callback this stop
+        # triggers is recognised as ours rather than as a lost device.
+        self._generation += 1
+        stream, self._stream = self._stream, None
+        try:
+            stream.stop()
+            stream.close()
+        except Exception as exc:
+            # A stream whose device is already gone may refuse to stop; it is
+            # released either way, and the next start opens a fresh one.
+            log.warning("error closing audio stream: %s", exc)
+        log.info("mic closed")
 
     def read(self) -> np.ndarray:
         return self._ring.read_available()

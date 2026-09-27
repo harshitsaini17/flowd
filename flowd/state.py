@@ -27,6 +27,8 @@ class Event(StrEnum):
     TOGGLE = "toggle"
     CANCEL = "cancel"
     MAX_DURATION = "max_duration"
+    #: The microphone went away mid-session (spec 9.2). Finalizes like `stop`.
+    DEVICE_LOST = "device_lost"
     CHUNKS_RESOLVED = "chunks_resolved"
     INJECT_DONE = "inject_done"
     FATAL = "fatal"
@@ -111,7 +113,11 @@ class Machine:
             case (State.IDLE, Event.START):
                 self._state = State.RECORDING
                 return Action.OPEN_MIC
-            case (State.RECORDING, Event.STOP) | (State.RECORDING, Event.MAX_DURATION):
+            case (
+                (State.RECORDING, Event.STOP)
+                | (State.RECORDING, Event.MAX_DURATION)
+                | (State.RECORDING, Event.DEVICE_LOST)
+            ):
                 self._state = State.FINALIZING
                 return Action.FLUSH_AND_FINALIZE
             case (State.RECORDING, Event.CANCEL) | (State.FINALIZING, Event.CANCEL):
