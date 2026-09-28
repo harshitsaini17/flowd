@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'">
+<title>flowd settings</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/overlay.css">
+<link rel="stylesheet" href="assets/settings.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to settings</a>
+
+<header class="hdr">
+  <button class="icon-btn menu-btn" id="menuBtn" aria-controls="nav" aria-expanded="false" aria-label="Sections"><i data-icon="sliders-horizontal" data-size="20"></i></button>
+  <a class="brand" href="#overview"><i data-icon="audio-lines" data-size="16"></i>flowd</a>
+  <ul class="status-strip" aria-label="Status">
+    <li id="st-daemon"><span class="badge ok"><i data-icon="circle-check" data-size="12"></i>Running</span></li>
+    <li id="st-models" title="Moonshine small-streaming-en · Parakeet TDT 0.6B v2">Speech <span class="badge ok"><i data-icon="circle-check" data-size="12"></i>Ready</span></li>
+    <li id="st-cleanup">Cleanup <span class="badge ok"><i data-icon="circle-check" data-size="12"></i>Ready</span></li>
+    <li class="opt" id="st-mem" title="Memory flowd is using"><i data-icon="memory-stick" data-size="14"></i><span class="tnum">1.2 GB memory</span></li>
+    <li class="opt" id="st-privacy"><i data-icon="eye-off" data-size="14"></i>No audio or text kept</li>
+  </ul>
+  <button class="badge ok hdr-compact" id="compactStatus" aria-label="Status: all systems ok. Show details"><i data-icon="circle-check" data-size="12"></i><span>All ok</span></button>
+  <span class="spacer"></span>
+  <span class="save-state" id="saveState" data-s="saved" role="status"><i data-icon="check" data-size="14"></i><span class="txt">All changes saved</span></span>
+  <button class="icon-btn" id="themeBtn" aria-label="Theme: System. Change theme"><i data-icon="palette" data-size="16"></i></button>
+</header>
+
+<div class="shell">
+  <nav class="nav" id="nav" aria-label="Settings sections">
+    <ul>
+      <li><a href="#overview" aria-current="page"><i data-icon="gauge"></i><span class="txt">Overview</span></a></li>
+      <li><a href="#hotkey"><i data-icon="keyboard"></i><span class="txt">Hotkey &amp; activation</span></a></li>
+      <li><a href="#microphone"><i data-icon="mic"></i><span class="txt">Microphone</span></a></li>
+      <li><a href="#recognition"><i data-icon="audio-lines"></i><span class="txt">Recognition</span></a></li>
+      <li><a href="#cleanup" id="nav-cleanup"><i data-icon="sparkles"></i><span class="txt">Cleanup</span></a></li>
+      <li><a href="#vocabulary"><i data-icon="book-a"></i><span class="txt">Vocabulary</span></a></li>
+      <li><a href="#apps"><i data-icon="app-window"></i><span class="txt">Apps &amp; modes</span></a></li>
+      <li><a href="#typing" id="nav-typing"><i data-icon="type"></i><span class="txt">Typing</span><span class="attn" aria-hidden="true" title="One paste method needs attention"></span><span class="sr-only">(one paste method needs attention)</span></a></li>
+      <li><a href="#appearance"><i data-icon="palette"></i><span class="txt">Appearance</span></a></li>
+      <li><a href="#privacy"><i data-icon="shield"></i><span class="txt">Privacy</span></a></li>
+      <li><a href="#advanced"><i data-icon="sliders-horizontal"></i><span class="txt">Advanced</span></a></li>
+      <li><a href="#states"><i data-icon="circle-dashed"></i><span class="txt">State gallery (mockup)</span></a></li>
+    </ul>
+    <p class="nav-foot">Config: <span class="mono">~/<wbr>.config/<wbr>flowd/<wbr>config.toml</span><br>Everything runs on this machine.</p>
+  </nav>
+
+  <main class="main" id="main" tabindex="-1">
+    <div class="content">
+      <div class="banner" id="restartBanner" hidden role="region" aria-label="Restart required">
+        <i data-icon="triangle-alert" data-size="16"></i>
+        <div class="bt"><b id="restartCount">1 change</b> takes effect after flowd restarts.</div>
+        <div class="ba"><button class="btn sm" id="restartNow"><i data-icon="rotate-ccw" data-size="14"></i>Restart flowd</button><button class="btn ghost sm" id="restartLater">Later</button></div>
+      </div>
+
+      <!-- ============================================================ 1 OVERVIEW -->
+      <section class="sec wide" id="overview" aria-labelledby="h-overview">
+        <div class="sec-head">
+          <div>
+            <h2 id="h-overview" tabindex="-1">Your dictation</h2>
+            <p class="lede" id="ovLede">What flowd has done for you, worked out on this machine from your own sessions.</p>
+          </div>
+          <div class="segmented" role="radiogroup" aria-label="Period" id="periodSeg">
+            <button role="radio" aria-checked="false" data-v="7" tabindex="-1">7 days</button><button role="radio" aria-checked="true" data-v="30">30 days</button><button role="radio" aria-checked="false" data-v="all" tabindex="-1">All time</button>
+          </div>
+        </div>
+
+        <div class="saved" aria-live="polite">
+          <div class="saved-main">
+            <span class="saved-k">Time saved</span>
+            <span class="saved-v" id="savedV">—</span>
+            <span class="saved-s" id="savedS"></span>
+          </div>
+          <div class="saved-chart"><div class="sc-head"><span id="scTitle">Minutes saved per day</span><span id="scPeak"></span></div><div id="savedChart"></div></div>
+        </div>
+        <p class="assume" id="assume">Estimate: typing the same words at <button class="inline-edit" id="wpmBtn" aria-haspopup="dialog" aria-describedby="assumeWhy"><span id="wpmV">40</span> words a minute</button>, minus the time you spent speaking. <span id="assumeWhy">Change the typing speed if yours is different.</span></p>
+        <div class="wpm-pop" id="wpmPop" role="dialog" aria-label="Your typing speed" hidden>
+          <label for="wpmIn" class="field-note" style="margin:0 0 6px;display:block">Your typing speed</label>
+          <div style="display:flex;gap:8px;align-items:center"><div class="num"><input class="input" id="wpmIn" inputmode="numeric" value="40" data-min="5" data-max="200" data-int><span class="unit">words/min</span></div><button class="btn sm primary" id="wpmOk">Done</button></div>
+          <p class="field-note">Most people type 35–45 words a minute. Fast typists reach 70 or more.</p>
+        </div>
+
+        <div class="cards three">
+          <div class="card"><div class="ct"><i data-icon="timer" data-size="14"></i>Longest dictation</div><div class="cv" id="cWords">—</div><div class="cs" id="cWordsS"></div></div>
+          <div class="card"><div class="ct"><i data-icon="activity" data-size="14"></i>You speak at</div><div class="cv" id="cWpm">—</div><div class="cs" id="cWpmS"></div></div>
+          <div class="card"><div class="ct"><i data-icon="audio-lines" data-size="14"></i>Dictations</div><div class="cv" id="cSess">—</div><div class="cs" id="cSessS"></div></div>
+        </div>
+
+        <div class="ov-grid">
+          <div class="panel">
+            <h3 class="panel-t">Where you dictate</h3>
+            <ul class="apps-bars" id="appsBars"></ul>
+          </div>
+          <div class="panel">
+            <h3 class="panel-t">How it’s running</h3>
+            <ul class="health" id="health"></ul>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-head"><h3>Recent dictations</h3></div>
+          <div class="rows"><ul class="recent" id="recent"></ul></div>
+          <p class="field-note">flowd doesn’t keep what you said. Only counts and timings are stored. You can turn on transcript logging in <a href="#privacy">Privacy</a>.</p>
+        </div>
+
+        <div class="group">
+          <button class="disclosure" aria-expanded="false" aria-controls="perfBody" id="perfBtn"><span><b>Performance details</b><small>Latency percentiles and fallback rate, for troubleshooting</small></span><i data-icon="chevron-down" data-size="16"></i></button>
+          <div id="perfBody" class="perf-body" hidden>
+            <div class="perf-cards">
+              <div><span class="k">Release → paste, median</span><span class="v tnum" id="pP50">—</span></div>
+              <div><span class="k">Release → paste, slowest 5%</span><span class="v tnum" id="pP95">—</span></div>
+              <div><span class="k">Cleanup fallback</span><span class="v tnum">4.2%<small> of chunks</small></span></div>
+              <div><span class="k">Memory</span><span class="v tnum">1.21 GB<small> of 1.6 budget</small></span></div>
+            </div>
+            <div class="chart">
+              <div class="chart-head">
+                <h3 id="chartTitle">Release to paste, last 50 dictations</h3>
+                <div class="legend" aria-hidden="true"><span><span class="sw"></span>p50</span><span><span class="sw p95"></span>p95</span><span><span class="sw bud"></span>Budget 1000 ms</span><span><span class="sw fb"></span>Used fallback</span></div>
+              </div>
+              <div class="chart-wrap" id="chartWrap"></div>
+              <button class="link-btn" id="chartTableBtn" aria-expanded="false" aria-controls="chartTable">Show as table</button>
+              <div id="chartTable" hidden></div>
+            </div>
+            <p class="field-note">From <span class="mono">~/.local/state/flowd/metrics.jsonl</span>. <span class="mono">flowctl stats</span> prints the same numbers per stage.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 2 HOTKEY -->
+      <section class="sec" id="hotkey" aria-labelledby="h-hotkey">
+        <h2 id="h-hotkey" tabindex="-1">Hotkey &amp; activation</h2>
+        <p class="lede">flowd doesn’t grab keys itself. Your compositor runs <span class="mono">flowctl</span> when you press the hotkey.</p>
+        <div class="group">
+          <div class="group-head"><h3>Trigger</h3><button class="link-btn" data-reset="hotkey"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-mode">Activation</div><div class="d" id="d-mode">Press once to start, again to stop.</div><div class="field-warn" id="kdePtt" hidden><i data-icon="triangle-alert" data-size="14"></i><span>Plasma custom shortcuts fire on press only, so push-to-talk won’t work there. Use toggle.</span></div></div>
+              <div class="ctl"><div class="segmented" role="radiogroup" aria-labelledby="l-mode" aria-describedby="d-mode" data-key="hotkey.mode"><button role="radio" aria-checked="true" data-v="toggle">Toggle</button><button role="radio" aria-checked="false" data-v="ptt" tabindex="-1">Push-to-talk</button></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row">
+              <div class="lab"><div class="t" id="l-hk">Hotkey label</div><div class="d" id="d-hk">Shown in hints. The binding itself lives in your compositor config.</div></div>
+              <div class="ctl"><input class="input" id="hk" value="Super+D" aria-labelledby="l-hk" aria-describedby="d-hk" data-key="ui.hotkey_label"><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row">
+              <div class="lab"><div class="t" id="l-deb">Debounce</div><div class="d" id="d-deb">Ignore repeat presses closer together than this.</div></div>
+              <div class="ctl"><div class="num"><input class="input" inputmode="numeric" value="200" aria-labelledby="l-deb" aria-describedby="d-deb" data-key="hotkey.debounce_ms" data-min="1" data-int><span class="unit">ms</span></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3>Indicator</h3></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-ind">Show indicator</div><div class="d" id="d-ind">The thin line at the bottom of the screen. Dictation works without it.</div></div>
+              <div class="ctl"><button class="switch" role="switch" aria-checked="true" aria-labelledby="l-ind" aria-describedby="d-ind" data-key="overlay.indicator"><span class="chk"></span></button><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row">
+              <div class="lab"><div class="t">Indicator position</div><div class="d">Centre of eDP-1. Drag the indicator along the bottom edge to move it.</div></div>
+              <div class="ctl"><button class="btn" id="resetPos"><i data-icon="rotate-ccw" data-size="14"></i>Reset position</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3 id="l-snip">Set up your hotkey</h3></div>
+          <div class="segmented" role="radiogroup" aria-labelledby="l-snip" id="deTabs" style="margin-bottom:12px">
+            <button role="radio" aria-checked="true" data-v="hyprland">Hyprland</button><button role="radio" aria-checked="false" data-v="sway" tabindex="-1">Sway</button><button role="radio" aria-checked="false" data-v="kde" tabindex="-1">KDE</button><button role="radio" aria-checked="false" data-v="gnome" tabindex="-1">GNOME</button><button role="radio" aria-checked="false" data-v="x11" tabindex="-1">X11</button>
+          </div>
+          <div id="snippets"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 3 MICROPHONE -->
+      <section class="sec" id="microphone" aria-labelledby="h-mic">
+        <h2 id="h-mic" tabindex="-1">Microphone</h2>
+        <p class="lede">The mic opens when you start dictating and closes when you stop.</p>
+        <div class="group">
+          <div class="group-head"><h3>Input</h3><button class="link-btn" data-reset="audio"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-dev">Input device <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d">PipeWire source used for dictation.</div></div>
+              <div class="ctl"><div class="lb-wrap" id="devPicker"></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row">
+              <div class="lab"><div class="t" id="l-test">Test microphone</div><div class="d">Speak normally for a few seconds. The test stops by itself after 15 s.</div></div>
+              <div class="ctl" style="flex-direction:column;align-items:stretch;gap:8px">
+                <button class="btn" id="micTest" aria-describedby="micCap"><i data-icon="mic" data-size="14"></i><span>Test microphone</span></button>
+                <div id="micMeter" hidden>
+                  <div class="meter-line"><div class="meter-track" style="flex:1;width:auto" role="meter" aria-label="Input level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60" id="mtr"><span class="meter-fill" id="mtrFill"></span><span class="meter-mark" style="left:40%" title="-35 dB"></span><span class="meter-mark" style="left:80%" title="-12 dB"></span></div><span class="meter-db" id="mtrDb">−60 dB</span></div>
+                  <div class="meter-cap" id="micCap" aria-live="polite"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3>Session</h3></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-open">Keep microphone open <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d" id="d-open">Keeps 300 ms of audio before you press the key, so your first syllable is never cut. The mic stays open while idle, and your system’s mic indicator will stay on.</div></div>
+              <div class="ctl"><button class="switch" role="switch" aria-checked="false" aria-labelledby="l-open" aria-describedby="d-open" data-key="audio.always_open" data-restart><span class="chk"></span></button><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row">
+              <div class="lab"><div class="t" id="l-max">Max session length <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d" id="d-max">Dictation stops and pastes when it reaches this (currently 5 min).</div></div>
+              <div class="ctl"><div class="num"><input class="input" inputmode="numeric" value="300" aria-labelledby="l-max" aria-describedby="d-max" data-key="audio.max_session_s" data-min="1" data-int data-restart><span class="unit">s</span></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 4 RECOGNITION -->
+      <section class="sec" id="recognition" aria-labelledby="h-rec">
+        <h2 id="h-rec" tabindex="-1">Recognition</h2>
+        <p class="lede">Two local models: a fast one for the live preview, and a more accurate one for the text that gets pasted.</p>
+        <div class="group">
+          <div class="group-head"><h3>Models</h3><button class="link-btn" data-reset="stt"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-pm">Preview model <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d">Drives the words you see while speaking.</div></div>
+              <div class="ctl"><span class="select-wrap"><select class="input" aria-labelledby="l-pm" data-key="stt.model" data-restart><option value="small-streaming-en" selected>Moonshine small streaming (default)</option><option value="medium-streaming-en">Moonshine medium streaming (+190 MB)</option></select><i data-icon="chevron-down" data-size="14"></i></span><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row">
+              <div class="lab"><div class="t" id="l-fm">Final transcript model <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d">Better accuracy on the pasted text. Adds about 1 GB of memory.</div></div>
+              <div class="ctl"><span class="select-wrap"><select class="input" aria-labelledby="l-fm" data-key="stt.final_model" data-restart><option value="parakeet-tdt-0.6b-v2-int8" selected>Parakeet TDT 0.6B v2 (default)</option><option value="">None: paste the preview model’s text</option></select><i data-icon="chevron-down" data-size="14"></i></span><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3>Timing</h3><button class="link-btn" data-reset="vad"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-sil">Pause before a phrase is committed <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d" id="d-sil">Shorter commits sooner; too short splits phrases mid-thought.</div></div>
+              <div class="ctl"><div class="slider" data-slider="350" data-min="150" data-max="1500" data-step="50" data-unit="ms" data-default="350" data-warn-above="1000" data-warn="Above 1000 ms the preview may feel sluggish." data-label="l-sil" data-desc="d-sil" data-key="vad.commit_silence_ms" data-restart></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row">
+              <div class="lab"><div class="t" id="l-tail">Trailing audio kept <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d" id="d-tail">Extra audio after you stop, so the last word isn’t clipped.</div></div>
+              <div class="ctl"><div class="slider" data-slider="150" data-min="0" data-max="500" data-step="10" data-unit="ms" data-default="150" data-label="l-tail" data-desc="d-tail" data-key="vad.tail_ms" data-restart></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+          </div>
+          <p class="field-note">Voice-detection sensitivity isn’t adjustable with the current recognizer, which does its own segmentation (ADR 0002). It’s listed read-only under Advanced.</p>
+        </div>
+      </section>
+
+      <!-- ============================================================ 5 CLEANUP -->
+      <section class="sec" id="cleanup" aria-labelledby="h-clean">
+        <h2 id="h-clean" tabindex="-1">Cleanup <span class="badge ok" id="cleanBadge"><i data-icon="circle-check" data-size="12"></i>Ready</span></h2>
+        <p class="lede">A small local language model fixes punctuation, filler words and self-corrections. If it’s slow or offline, flowd pastes what it heard instead.</p>
+        <div class="group">
+          <div class="group-head"><h3>Model</h3></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-cl">Clean up text with the local model</div><div class="d" id="d-cl">Off pastes the recognizer’s text with basic punctuation only.</div></div>
+              <div class="ctl"><button class="switch" role="switch" aria-checked="true" aria-labelledby="l-cl" aria-describedby="d-cl" data-key="llm.enabled"><span class="chk"></span></button><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row" id="modelRow">
+              <div class="lab"><div class="t">Model status</div><div class="d"><span class="mono">LFM2.5-350M Q4_0</span> on <span class="mono">127.0.0.1:8177</span> · checked <span id="hcAgo">12 s</span> ago</div><div id="offlineHelp" hidden></div></div>
+              <div class="ctl"><button class="btn" id="checkNow">Check now</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3>Timeouts</h3><button class="link-btn" data-reset="llm"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-ct">Chunk timeout</div><div class="d" id="d-ct">Per request while you’re still speaking.</div></div>
+              <div class="ctl"><div class="num"><input class="input" inputmode="numeric" value="2000" aria-labelledby="l-ct" aria-describedby="d-ct" data-key="llm.timeout_ms" data-min="1" data-int><span class="unit">ms</span></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+            <div class="row">
+              <div class="lab"><div class="t" id="l-ft">Final timeout</div><div class="d" id="d-ft">The most flowd waits after you stop before pasting as heard.</div></div>
+              <div class="ctl"><div class="num"><input class="input" inputmode="numeric" value="800" aria-labelledby="l-ft" aria-describedby="d-ft" data-key="llm.final_timeout_ms" data-min="1" data-int><span class="unit">ms</span></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3 id="l-cues">Correction phrases</h3><button class="link-btn" data-reset="cues"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+          <div class="rows"><div class="row stack">
+            <div class="lab"><div class="d" id="d-cues">Saying one of these tells cleanup to replace what came just before: “Friday, no wait, Thursday” becomes “Thursday”.</div></div>
+            <div class="ctl"><div class="tags" data-tags="cues" data-label="l-cues" data-desc="d-cues" data-placeholder="Add a phrase…"></div></div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 6 VOCABULARY -->
+      <section class="sec" id="vocabulary" aria-labelledby="h-voc">
+        <h2 id="h-voc" tabindex="-1">Vocabulary</h2>
+        <p class="lede">Stored in <span class="mono">~/.config/flowd/vocab.toml</span>. Changes apply to the next dictation.</p>
+        <div class="group">
+          <div class="group-head"><h3 id="l-terms">Terms</h3></div>
+          <div class="rows"><div class="row stack">
+            <div class="lab"><div class="d" id="d-terms">Spelled exactly like this, and the recognizer is nudged toward them. Good for names and acronyms.</div></div>
+            <div class="ctl" style="flex-direction:column;align-items:stretch"><div class="tags" data-tags="terms" data-mono data-label="l-terms" data-desc="d-terms" data-placeholder="Add a term…" data-nocomma></div></div>
+          </div></div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3 id="l-rep">Replacements</h3></div>
+          <div class="rows" id="repTable"></div>
+          <p class="field-note">Matched anywhere and ignoring case, so only add phrases you’d never mean literally.</p>
+          <div class="rows" style="margin-top:12px"><div class="row stack">
+            <div class="lab"><div class="t" id="l-try">Try it</div><div class="d">Type what you’d say. The result uses your terms and replacements.</div></div>
+            <div class="ctl" style="flex-direction:column;align-items:stretch"><input class="input" id="tryIn" aria-labelledby="l-try" value="i pushed the fix to hyper land and pipe wire" autocomplete="off"><div class="field-note" aria-live="polite">→ <span id="tryOut"></span></div></div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 7 APPS -->
+      <section class="sec" id="apps" aria-labelledby="h-apps">
+        <h2 id="h-apps" tabindex="-1">Apps &amp; modes</h2>
+        <p class="lede">The mode shapes how cleanup writes. flowd picks it from the app you’re dictating into.</p>
+        <dl class="modes-dl">
+          <dt><i data-icon="file-text" data-size="14"></i>Default</dt><dd>Plain prose with sentence case and punctuation.</dd>
+          <dt><i data-icon="code" data-size="14"></i>Code</dt><dd>Keeps identifiers and symbols, doesn’t add a closing period.</dd>
+          <dt><i data-icon="message-square" data-size="14"></i>Chat</dt><dd>Casual. Short sentences, no forced capitals.</dd>
+          <dt><i data-icon="mail" data-size="14"></i>Email</dt><dd>Complete sentences and paragraphs.</dd>
+        </dl>
+        <div class="group">
+          <div class="group-head"><h3 id="l-appt">App → mode</h3><button class="btn sm" id="detectApp"><i data-icon="app-window" data-size="14"></i><span>Detect focused app</span></button></div>
+          <div class="kv-filter"><i data-icon="search" data-size="14"></i><input class="input" id="appFilter" placeholder="Filter apps" aria-label="Filter apps"><kbd aria-hidden="true">/</kbd></div>
+          <div class="rows" id="appTable"></div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3 id="l-term">Terminal apps</h3><button class="link-btn" data-reset="terms"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+          <div class="rows"><div class="row stack">
+            <div class="lab"><div class="d" id="d-term">Terminals get Code mode and paste with Ctrl+Shift+V.</div></div>
+            <div class="ctl"><div class="tags" data-tags="terminals" data-mono data-label="l-term" data-desc="d-term" data-placeholder="Add an app id…"></div></div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 8 TYPING -->
+      <section class="sec" id="typing" aria-labelledby="h-typ">
+        <h2 id="h-typ" tabindex="-1">Typing</h2>
+        <p class="lede">flowd tries each paste method in order and uses the first one that works.</p>
+        <div class="group">
+          <div class="group-head"><h3 id="l-order">Paste method order</h3><button class="link-btn" data-reset="order"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+          <p class="sr-only" id="d-order">To reorder with the keyboard, focus a handle, press Space to pick it up, use the arrow keys to move it, and Space to drop.</p>
+          <div class="rows"><ul class="reorder" id="order" aria-labelledby="l-order" aria-describedby="d-order"></ul></div>
+          <div class="banner inline" id="ydoBanner"><i data-icon="triangle-alert" data-size="16"></i><div class="bt"><b>ydotool is installed but ydotoold isn’t running.</b> It’ll be skipped until you start it.</div><div class="ba"><button class="copy" data-copy="systemctl --user enable --now ydotoold"><i data-icon="copy" data-size="14"></i><span>Copy command</span></button></div></div>
+        </div>
+        <div class="group">
+          <div class="group-head"><h3>Clipboard</h3></div>
+          <div class="rows">
+            <div class="row">
+              <div class="lab"><div class="t" id="l-rd">Clipboard restore delay</div><div class="d" id="d-rd">How long before your previous clipboard is put back.</div></div>
+              <div class="ctl"><div class="num"><input class="input" inputmode="numeric" value="150" aria-labelledby="l-rd" aria-describedby="d-rd" data-key="inject.restore_delay_ms" data-min="1" data-int><span class="unit">ms</span></div><span class="feedback" aria-hidden="true"></span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 9 APPEARANCE -->
+      <section class="sec" id="appearance" aria-labelledby="h-app">
+        <h2 id="h-app" tabindex="-1">Appearance</h2>
+        <p class="lede">Applies to this page, the indicator and the preview popup.</p>
+        <div class="with-aside">
+          <div>
+            <div class="group">
+              <div class="group-head"><h3>Theme</h3></div>
+              <div class="rows">
+                <div class="row">
+                  <div class="lab"><div class="t" id="l-th">Theme</div><div class="d">System follows your desktop’s light or dark setting.</div></div>
+                  <div class="ctl"><div class="segmented" role="radiogroup" aria-labelledby="l-th" id="themeSeg" data-key="ui.theme"><button role="radio" aria-checked="true" data-v="system">System</button><button role="radio" aria-checked="false" data-v="light" tabindex="-1">Light</button><button role="radio" aria-checked="false" data-v="dark" tabindex="-1">Dark</button></div><span class="feedback" aria-hidden="true"></span></div>
+                </div>
+              </div>
+            </div>
+            <div class="group">
+              <div class="group-head"><h3>Preview popup</h3><button class="link-btn" data-reset="overlay"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+              <div class="rows">
+                <div class="row">
+                  <div class="lab"><div class="t" id="l-lines">Lines <span class="badge restart"><i data-icon="power" data-size="12"></i>Restarts preview</span></div><div class="d" id="d-lines">Older text scrolls away above this.</div></div>
+                  <div class="ctl"><div class="slider" data-slider="4" data-min="1" data-max="6" data-step="1" data-unit="lines" data-default="4" data-label="l-lines" data-desc="d-lines" data-key="overlay.max_lines" id="linesSlider"></div><span class="feedback" aria-hidden="true"></span></div>
+                </div>
+                <div class="row">
+                  <div class="lab"><div class="t" id="l-fade">Fade after paste <span class="badge restart"><i data-icon="power" data-size="12"></i>Restarts preview</span></div><div class="d" id="d-fade">How long the pasted confirmation stays.</div></div>
+                  <div class="ctl"><div class="slider" data-slider="1000" data-min="300" data-max="3000" data-step="100" data-unit="ms" data-default="1000" data-label="l-fade" data-desc="d-fade" data-key="overlay.fade_ms" id="fadeSlider"></div><span class="feedback" aria-hidden="true"></span></div>
+                </div>
+                <div class="row">
+                  <div class="lab"><div class="t" id="l-foot">Show mode and app</div><div class="d" id="d-foot">Footer under the text. Status messages show regardless.</div></div>
+                  <div class="ctl"><button class="switch" role="switch" aria-checked="true" aria-labelledby="l-foot" aria-describedby="d-foot" data-key="overlay.footer" id="footSwitch"><span class="chk"></span></button><span class="feedback" aria-hidden="true"></span></div>
+                </div>
+                <div class="row">
+                  <div class="lab"><div class="t" id="l-notif">Desktop notification when finished</div><div class="d" id="d-notif">For when you don’t watch the popup. Errors always notify.</div></div>
+                  <div class="ctl"><button class="switch" role="switch" aria-checked="false" aria-labelledby="l-notif" aria-describedby="d-notif" data-key="overlay.notify"><span class="chk"></span></button><span class="feedback" aria-hidden="true"></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <aside class="aside-preview" aria-label="Live preview">
+            <div class="ph"><h3>Preview</h3>
+              <div class="segmented" role="radiogroup" aria-label="Preview wallpaper" id="wallSeg"><button role="radio" aria-checked="false" data-v="light" tabindex="-1">Light</button><button role="radio" aria-checked="true" data-v="dark">Dark</button><button role="radio" aria-checked="false" data-v="busy" tabindex="-1">Busy</button></div>
+            </div>
+            <div class="fl-stage fl-blur" data-wall="dark" id="pvStage" aria-hidden="true"><div class="fl-dock"><div class="popup" id="pvPopup" hidden></div><div class="pill" id="pvPill" data-state="idle"></div></div></div>
+            <div class="pc"><button class="btn sm" id="pvPlay"><i data-icon="audio-lines" data-size="14"></i>Play</button><span class="field-note" style="margin:0" id="pvState" aria-live="polite"></span></div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ============================================================ 10 PRIVACY -->
+      <section class="sec" id="privacy" aria-labelledby="h-priv">
+        <h2 id="h-priv" tabindex="-1">Privacy</h2>
+        <div class="statement">
+          <i data-icon="lock" data-size="20"></i>
+          <div><b>Nothing leaves this machine.</b><p>Speech recognition and cleanup run locally. flowd makes no network requests, has no accounts and sends no telemetry. The cleanup server has to be on 127.0.0.1; any other address is rejected.</p></div>
+        </div>
+        <div class="group" style="margin-top:24px">
+          <div class="group-head"><h3>Stored data</h3></div>
+          <div class="rows">
+            <div class="row stack" id="recRow">
+              <div class="row-inner">
+                <div class="lab"><div class="t" id="l-recs">Save recordings</div><div class="d" id="d-recs">Keeps each dictation’s audio and transcript, for testing the recognizer on your voice.</div></div>
+                <div class="ctl"><button class="switch" role="switch" aria-checked="false" aria-labelledby="l-recs" aria-describedby="d-recs" data-key="logging.recordings" id="recSwitch" aria-controls="recMore"><span class="chk"></span></button><span class="feedback" aria-hidden="true"></span></div>
+              </div>
+              <div id="recMore" hidden>
+                <label class="field-note" for="recDir" style="display:block;margin:0 0 6px">Folder</label>
+                <input class="input" id="recDir" value="~/flowd-recordings" style="width:100%;max-width:360px;font-family:var(--font-mono);font-size:.8125rem" data-key="logging.recordings_dir">
+                <div class="banner inline"><i data-icon="triangle-alert" data-size="16"></i><div class="bt">Every dictation’s audio and transcript will be saved as WAV and text in this folder until you turn this off.</div></div>
+              </div>
+            </div>
+            <div class="row stack" id="logRow">
+              <div class="row-inner">
+                <div class="lab"><div class="t" id="l-logt">Log transcripts</div><div class="d" id="d-logt">Adds your dictated text to the journal and the metrics log. Useful when debugging.</div></div>
+                <div class="ctl"><button class="switch" role="switch" aria-checked="false" aria-labelledby="l-logt" aria-describedby="d-logt" data-key="logging.log_transcripts" id="logSwitch" aria-controls="logMore"><span class="chk"></span></button><span class="feedback" aria-hidden="true"></span></div>
+              </div>
+              <div id="logMore" hidden><div class="banner inline"><i data-icon="triangle-alert" data-size="16"></i><div class="bt">Your dictated text will be written to the journal and <span class="mono">metrics.jsonl</span>. Anyone who can read your logs can read it.</div></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 11 ADVANCED -->
+      <section class="sec" id="advanced" aria-labelledby="h-adv">
+        <h2 id="h-adv" tabindex="-1">Advanced</h2>
+        <p class="lede">Tuning for the pipeline. The defaults were measured on real sessions; change them one at a time.</p>
+        <button class="disclosure" aria-expanded="false" aria-controls="advBody" id="advBtn"><span>Show advanced settings</span><i data-icon="chevron-down" data-size="16"></i></button>
+        <div id="advBody" class="adv-body" hidden>
+          <div class="group">
+            <div class="group-head"><h3>Guardrails</h3><button class="link-btn" data-reset="guardrails"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+            <div class="rows">
+              <div class="row"><div class="lab"><div class="t" id="l-lrmin">Min length ratio</div><div class="d">Cleanup output shorter than this × input is rejected.</div></div><div class="ctl"><div class="num"><input class="input" id="lrmin" value="0.6" inputmode="decimal" aria-labelledby="l-lrmin" data-key="guardrails.len_ratio_min" data-min="0.01" data-pair="lrmax" data-pair-role="min"><span class="unit">×</span></div><span class="feedback" aria-hidden="true"></span></div></div>
+              <div class="row"><div class="lab"><div class="t" id="l-lrmax">Max length ratio</div><div class="d">Longer than this × input is rejected.</div></div><div class="ctl"><div class="num"><input class="input" id="lrmax" value="1.3" inputmode="decimal" aria-labelledby="l-lrmax" data-key="guardrails.len_ratio_max" data-min="0.01" data-pair="lrmin" data-pair-role="max"><span class="unit">×</span></div><span class="feedback" aria-hidden="true"></span></div></div>
+              <div class="row"><div class="lab"><div class="t" id="l-nov">Max new words</div><div class="d">Share of words not in the input before output is rejected.</div></div><div class="ctl"><div class="num"><input class="input" value="20" inputmode="numeric" aria-labelledby="l-nov" data-key="guardrails.novel_word_max" data-min="0" data-max="100"><span class="unit">%</span></div><span class="feedback" aria-hidden="true"></span></div></div>
+            </div>
+          </div>
+          <div class="group">
+            <div class="group-head"><h3>Chunking</h3><button class="link-btn" data-reset="chunking"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+            <div class="rows">
+              <div class="row"><div class="lab"><div class="t" id="l-cmin">Min chunk</div></div><div class="ctl"><div class="num"><input class="input" id="cmin" value="5" inputmode="numeric" aria-labelledby="l-cmin" data-key="chunking.min_chunk_words" data-min="1" data-int data-pair="cmax" data-pair-role="min"><span class="unit">words</span></div><span class="feedback" aria-hidden="true"></span></div></div>
+              <div class="row"><div class="lab"><div class="t" id="l-cmax">Max chunk</div></div><div class="ctl"><div class="num"><input class="input" id="cmax" value="25" inputmode="numeric" aria-labelledby="l-cmax" data-key="chunking.max_chunk_words" data-min="1" data-int data-pair="cmin" data-pair-role="max"><span class="unit">words</span></div><span class="feedback" aria-hidden="true"></span></div></div>
+              <div class="row"><div class="lab"><div class="t" id="l-ctx">Context sentences</div><div class="d">Earlier sentences sent with each chunk.</div></div><div class="ctl"><div class="num"><input class="input" value="2" inputmode="numeric" aria-labelledby="l-ctx" data-key="chunking.context_sentences" data-min="1" data-int><span class="unit">sent.</span></div><span class="feedback" aria-hidden="true"></span></div></div>
+            </div>
+          </div>
+          <div class="group">
+            <div class="group-head"><h3>Cleanup server</h3><button class="link-btn" data-reset="llmsrv"><i data-icon="rotate-ccw" data-size="12"></i>Reset to defaults</button></div>
+            <div class="rows">
+              <div class="row"><div class="lab"><div class="t" id="l-url">Server URL</div><div class="d">Must be on this machine.</div></div><div class="ctl" style="flex-direction:column;align-items:flex-end"><input class="input" id="llmUrl" value="http://127.0.0.1:8177" style="width:240px;font-family:var(--font-mono);font-size:.8125rem" aria-labelledby="l-url" data-key="llm.url" data-loopback><span class="feedback" aria-hidden="true"></span></div></div>
+              <div class="row"><div class="lab"><div class="t" id="l-ctxt">Context tokens</div><div class="d">Must match llama-server’s <span class="mono">-c</span>.</div></div><div class="ctl"><div class="num"><input class="input" value="1024" inputmode="numeric" aria-labelledby="l-ctxt" data-key="llm.context_tokens" data-min="1" data-int><span class="unit">tok</span></div><span class="feedback" aria-hidden="true"></span></div></div>
+            </div>
+          </div>
+          <div class="group">
+            <div class="group-head"><h3>Recognition internals</h3></div>
+            <div class="rows">
+              <div class="row"><div class="lab"><div class="t" id="l-lag">Lag allowance <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d">How far transcription may trail the audio before a gap counts as silence.</div></div><div class="ctl"><div class="num"><input class="input" value="900" inputmode="numeric" aria-labelledby="l-lag" data-key="vad.lag_allowance_ms" data-min="1" data-int data-restart><span class="unit">ms</span></div><span class="feedback" aria-hidden="true"></span></div></div>
+              <div class="row" aria-disabled="true"><div class="lab"><div class="t" id="l-thr">Voice-detection threshold <span class="badge neutral"><i data-icon="circle-dashed" data-size="12"></i>Not used</span></div><div class="d">The current recognizer segments speech itself (ADR 0002), so this has no effect.</div></div><div class="ctl"><div class="num"><input class="input" value="0.5" aria-labelledby="l-thr" readonly aria-readonly="true" style="color:var(--text-2)"><span class="unit">×</span></div></div></div>
+            </div>
+          </div>
+          <div class="group">
+            <div class="group-head"><h3>Logging</h3></div>
+            <div class="rows">
+              <div class="row"><div class="lab"><div class="t" id="l-ll">Log level <span class="badge restart"><i data-icon="power" data-size="12"></i>Requires restart</span></div><div class="d" id="d-ll">Written to the journal: <span class="mono">journalctl --user -u flowd</span></div><div class="field-warn" id="dbgWarn" hidden><i data-icon="triangle-alert" data-size="14"></i><span>Debug logs include transcript text.</span></div></div><div class="ctl"><span class="select-wrap"><select class="input" id="logLevel" aria-labelledby="l-ll" aria-describedby="d-ll" data-key="logging.level" data-restart><option>debug</option><option selected>info</option><option>warning</option><option>error</option></select><i data-icon="chevron-down" data-size="14"></i></span><span class="feedback" aria-hidden="true"></span></div></div>
+            </div>
+          </div>
+          <div class="group danger-zone">
+            <div class="group-head"><h3>Reset</h3></div>
+            <div class="rows"><div class="row"><div class="lab"><div class="t">Reset all settings</div><div class="d">Rewrites <span class="mono">~/.config/flowd/config.toml</span> with defaults. A backup is kept as <span class="mono">config.toml.bak</span>.</div></div><div class="ctl"><button class="btn" id="resetAll" style="color:var(--danger)">Reset all…</button></div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ STATE GALLERY (mockup only) -->
+      <section class="sec" id="states" aria-labelledby="h-states">
+        <h2 id="h-states" tabindex="-1">State gallery</h2>
+        <p class="lede">Mockup only, not part of the product. Every component state in one place, plus switches to put the page into degraded states.</p>
+        <div class="group">
+          <div class="group-head"><h3>Simulate</h3></div>
+          <div class="gallery">
+            <div class="cell"><span class="gl">Cleanup model</span><div class="gv"><button class="btn sm" id="simCleanup">Take cleanup offline</button></div></div>
+            <div class="cell"><span class="gl">Daemon</span><div class="gv"><button class="btn sm" id="simDaemon">Stop daemon</button></div></div>
+            <div class="cell"><span class="gl">Save</span><div class="gv"><button class="btn sm" id="simSaveErr">Fail next save</button></div></div>
+            <div class="cell"><span class="gl">Config</span><div class="gv"><button class="btn sm" id="simConflict">Edited on disk</button></div></div>
+          </div>
+        </div>
+        <div class="group"><div class="group-head"><h3>Controls</h3></div><div class="gallery" id="gallery"></div></div>
+        <div class="group"><div class="group-head"><h3>Empty states</h3></div><div class="rows" id="empties"></div></div>
+        <div class="group"><div class="group-head"><h3>Toasts</h3></div><div class="gallery" id="toastGallery"></div></div>
+      </section>
+    </div>
+  </main>
+</div>
+<div class="scrim" id="scrim" hidden></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="sr-only" id="announce" aria-live="polite"></div>
+<div class="sr-only" id="alert" role="alert"></div>
+
+<dialog id="resetDlg" aria-labelledby="rdT" aria-describedby="rdD">
+  <h2 id="rdT">Reset all settings?</h2>
+  <p id="rdD">This rewrites <span class="mono">~/.config/flowd/config.toml</span> with the defaults. Your current file is kept as <span class="mono">config.toml.bak</span>. Vocabulary isn’t touched.</p>
+  <div class="acts"><button class="btn" value="cancel" id="rdCancel" autofocus>Cancel</button><button class="btn danger" id="rdOk">Reset all</button></div>
+</dialog>
+
+<script src="assets/icons.js"></script>
+<script src="assets/settings.js"></script>
+</body>
+</html>

@@ -1,0 +1,69 @@
+/* flowd design tokens (docs/design/design.md).
+   Keep in sync with docs/design/design.md. */
+@font-face { font-family: "Inter"; src: url("fonts/inter-latin-wght-normal.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("fonts/inter-latin-wght-italic.woff2") format("woff2"); font-weight: 100 900; font-style: italic; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2"); font-weight: 100 800; font-style: normal; font-display: swap; }
+
+/* Light: white canvas, black text, light gray alt surface, violet the only accent. */
+:root, [data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff; --surface: #ffffff; --raised: #ffffff; --sunken: #f1f1f1; --hover: #f6f6f6;
+  --border: rgba(0, 0, 0, .10); --border-strong: #8a8989;
+  --text: #000000; --text-2: #6c6b6b; --text-3: #6c6b6b;
+  --brand: #b154f9;                 /* violet: fills, rings, indicators (3:1 non-text) */
+  --primary: #9333ea;               /* violet, text-safe: links, active labels, focus (5.4:1) */
+  --on-primary: #ffffff; --primary-soft: #f5edfe;
+  --live: #8b2fd9; --record: #c42f2a; --record-fill: #c42f2a;
+  --warn: #835500; --warn-soft: #fbf0da; --danger: #b8261f; --danger-soft: #fbe8e6; --on-danger: #ffffff;
+  --glass: rgba(255, 255, 255, 0.94); --glass-edge: inset 0 0 0 1px rgba(0, 0, 0, 0.10);
+  --shadow-sm: none; --shadow-md: none;
+  /* Flat on the page. Only surfaces floating over other apps get a whisper of lift. */
+  --shadow-float: 0 1px 2px rgba(0, 0, 0, .06), 0 8px 24px rgba(0, 0, 0, .08);
+  --shadow-lg: var(--shadow-float);
+}
+/* Dark: the Charcoal family. Violet is lifted so it still reads on near-black. */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111111; --surface: #171717; --raised: #1f1f1f; --sunken: #0b0b0b; --hover: #222222;
+  --border: rgba(255, 255, 255, .10); --border-strong: #6e6d6d;
+  --text: #ffffff; --text-2: #a3a3a3; --text-3: #a3a3a3;
+  --brand: #b154f9; --primary: #c98bfb; --on-primary: #000000; --primary-soft: #2a1840;
+  --live: #c98bfb; --record: #ff6b66; --record-fill: #d03b36;
+  --warn: #f2b34c; --warn-soft: #2d2412; --danger: #ff7470; --danger-soft: #341b1a; --on-danger: #000000;
+  --glass: rgba(23, 23, 23, 0.88); --glass-edge: inset 0 0 0 1px rgba(255, 255, 255, 0.10), 0 0 0 1px rgba(0, 0, 0, .5);
+  --shadow-sm: none; --shadow-md: none;
+  --shadow-float: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .5);
+  --shadow-lg: var(--shadow-float);
+}
+@media (prefers-color-scheme: dark) {
+  [data-theme="system"] {
+    color-scheme: dark;
+    --bg: #111111; --surface: #171717; --raised: #1f1f1f; --sunken: #0b0b0b; --hover: #222222;
+    --border: rgba(255, 255, 255, .10); --border-strong: #6e6d6d;
+    --text: #ffffff; --text-2: #a3a3a3; --text-3: #a3a3a3;
+    --brand: #b154f9; --primary: #c98bfb; --on-primary: #000000; --primary-soft: #2a1840;
+    --live: #c98bfb; --record: #ff6b66; --record-fill: #d03b36;
+    --warn: #f2b34c; --warn-soft: #2d2412; --danger: #ff7470; --danger-soft: #341b1a; --on-danger: #000000;
+    --glass: rgba(23, 23, 23, 0.88); --glass-edge: inset 0 0 0 1px rgba(255, 255, 255, 0.10), 0 0 0 1px rgba(0, 0, 0, .5);
+    --shadow-sm: none; --shadow-md: none;
+    --shadow-float: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .5);
+    --shadow-lg: var(--shadow-float);
+  }
+}
+:root {
+  --idle-fill: #171717;
+  --font-sans: "Inter", "InterVariable", system-ui, "Cantarell", "Noto Sans", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+  /* Radii: 8 for controls and cards, 14 for large containers, 30 for hero panels. */
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 8px; --r-xl: 14px; --r-hero: 30px; --r-pill: 999px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px; --s-12: 48px; --s-24: 96px;
+  --dur-instant: 80ms; --dur-fast: 120ms; --dur-base: 160ms; --dur-slow: 200ms; --dur-fade-out: 240ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1); --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1); --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --ctl-h: 40px;
+}
+@media (prefers-contrast: more) {
+  :root { --glass: var(--surface); --border: var(--border-strong); }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-fast: 0ms; --dur-base: 0ms; --dur-slow: 0ms; --dur-fade-out: 80ms; }
+}

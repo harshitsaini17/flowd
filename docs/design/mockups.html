@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>flowd · indicator &amp; popup mockups</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/overlay.css">
+<style>
+  body { margin: 0; background: var(--bg); color: var(--text); font: 400 16px/22px var(--font-sans); letter-spacing: .01em; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 48px 48px 128px; }
+  header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 20px 24px; padding-bottom: 40px; border-bottom: 1px solid var(--border); }
+  header.top h1 { font-size: 64px; line-height: 1.1; font-weight: 400; letter-spacing: -.01em; margin: 0; flex-basis: 100%; }
+  header.top p { margin: 0; color: var(--text-2); flex-basis: 100%; max-width: 60ch; font-size: 18px; line-height: 1.3; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; }
+  .controls label { display: inline-flex; gap: 8px; align-items: center; color: var(--text-2); font-size: 13px; }
+  .seg { display: inline-flex; gap: 8px; }
+  .seg button { font: 400 14px/16px var(--font-sans); letter-spacing: .01em; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); height: 36px; padding: 0 16px; cursor: pointer; }
+  .seg button[aria-checked="true"] { border-color: transparent; box-shadow: inset 0 0 0 1.5px var(--brand); }
+  .seg button:focus-visible, button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+  input[type="checkbox"] { accent-color: var(--brand); width: 18px; height: 18px; }
+  h2 { font-size: 48px; line-height: 1.2; font-weight: 400; letter-spacing: -.01em; margin: 80px 0 12px; }
+  h2 + p.lede { margin: 0 0 32px; color: var(--text-2); max-width: 60ch; font-size: 18px; line-height: 1.3; }
+  .grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .grid.wide { grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); }
+  figure { margin: 0; }
+  figcaption { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+  figure.span2 { grid-column: span 2; }
+  @media (max-width: 620px) { figure.span2 { grid-column: auto; } }
+  figcaption b { font-weight: 400; font-size: 16px; }
+  figcaption span { color: var(--text-2); font-size: 14px; line-height: 18px; }
+  .fl-stage { border-radius: var(--r-xl); }
+  .fl-stage.s-ind { height: 140px; }
+  .fl-stage.s-pop { height: 240px; }
+  .fl-stage.s-demo { height: 340px; border-radius: var(--r-hero); }
+  @media (max-width: 620px) { .fl-stage.s-demo { height: 240px; } .popup .foot .hint { display: none; } }
+  .note { font-size: 12px; color: var(--text-2); }
+  .demo-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; align-items: center; }
+  .btn { font: 400 16px/20px var(--font-sans); height: 44px; padding: 0 20px; border-radius: var(--r-md); border: 1.5px solid var(--primary); background: var(--surface); color: var(--primary); cursor: pointer; }
+  .btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+  .btn:hover { background: var(--primary-soft); } .btn.primary:hover { background: color-mix(in srgb, var(--primary) 86%, #000); }
+  .kbd { font: 400 12px/16px var(--font-mono); background: var(--sunken); border: 1px solid var(--border); border-radius: var(--r-xs); padding: 1px 5px; }
+  a { color: var(--primary); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* Simulated reduced motion (the real media query is also honoured). */
+  html[data-rm] { --dur-fast: 0ms; --dur-base: 0ms; --dur-slow: 0ms; --dur-fade-out: 80ms; }
+  html[data-rm] .ring-breath, html[data-rm] .caret, html[data-rm] .dots b,
+  html[data-rm] .pill[data-state="finishing"] .btn-disc svg, html[data-rm] .popup .foot .spin svg { animation: none !important; }
+  html[data-rm] .popup { animation: fade-only 80ms linear; }
+  .demo-stage .pill { cursor: pointer; }
+  .demo-stage .hit { position: absolute; left: 50%; bottom: 0; width: 140px; height: 48px; transform: translateX(-50%); }
+  .tbl { border-collapse: collapse; font-size: 15px; width: 100%; }
+  .tbl td, .tbl th { text-align: left; padding: 14px 16px 14px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .tbl th { font-weight: 400; color: var(--text-2); font-size: 14px; }
+  @media (max-width: 767px) { .wrap { padding: 20px 16px 64px; } .grid.wide { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Indicator &amp; popup</h1>
+    <div class="controls" role="group" aria-label="Preview controls">
+      <span class="seg" role="radiogroup" aria-label="Theme" data-ctl="theme">
+        <button role="radio" aria-checked="false" data-v="light">Light</button>
+        <button role="radio" aria-checked="true" data-v="dark">Dark</button>
+      </span>
+      <span class="seg" role="radiogroup" aria-label="Wallpaper" data-ctl="wall">
+        <button role="radio" aria-checked="false" data-v="light">Light wallpaper</button>
+        <button role="radio" aria-checked="true" data-v="dark">Dark wallpaper</button>
+        <button role="radio" aria-checked="false" data-v="busy">Busy (worst case)</button>
+      </span>
+      <label><input type="checkbox" id="blur" checked> Compositor blur</label>
+      <label><input type="checkbox" id="rm"> Reduced motion</label>
+    </div>
+    <p>Every state of both desktop surfaces, rendered from <code>assets/tokens.css</code>. Specs live in <a href="design.md">design.md</a>; the settings page is in <a href="settings.html">settings.html</a>. Turn blur off to see the no-blur fallback, which still meets contrast.</p>
+  </header>
+
+  <h2 id="demo">Live: one full dictation</h2>
+  <p class="lede">Hover the line, then click it, or press <span class="kbd">Space</span> while this page is focused (standing in for the global hotkey). Levels are simulated at 20 Hz.</p>
+  <figure>
+    <div class="fl-stage s-demo demo-stage" data-wall-target>
+      <div class="fl-dock" id="demoDock">
+        <div class="popup" id="demoPopup" hidden></div>
+        <div class="pill" id="demoPill" data-state="idle" aria-hidden="true"></div>
+      </div>
+      <div class="hit" id="demoHit" role="button" aria-label="Start dictation (demo)" tabindex="-1"></div>
+    </div>
+    <div class="demo-bar">
+      <button class="btn primary" id="demoPlay">Play full sequence</button>
+      <button class="btn" data-demo-warn>Toggle warning (cleanup offline)</button>
+      <button class="btn" data-demo-fallback>Next run uses fallback</button>
+      <span class="note" id="demoState" aria-live="polite">State: idle</span>
+    </div>
+  </figure>
+
+  <h2 id="indicator">Indicator states</h2>
+  <p class="lede">A 140 × 48 layer surface with a pill inside. Input region: 120 × 20 when idle, the pill when expanded, empty while finishing.</p>
+  <div class="grid" id="indGrid"></div>
+
+  <h2 id="popup">Popup states</h2>
+  <p class="lede">Polished (upright, full contrast), <span style="color:var(--text-2)">pending (dimmed, dotted underline)</span> and <i style="color:var(--live)">live (italic, violet, caret)</i>. Max 4 lines, auto-scrolled, with a top fade when content is clipped.</p>
+  <div class="grid wide" id="popGrid"></div>
+
+  <h2 id="timings">Timing reference</h2>
+  <table class="tbl">
+    <thead><tr><th>Transition</th><th>Duration</th><th>Easing</th><th>Reduced motion</th></tr></thead>
+    <tbody>
+      <tr><td>Idle → hover / recording (pill size)</td><td>160 ms, content +60 ms</td><td>ease-standard</td><td>Instant swap, 80 ms fade</td></tr>
+      <tr><td>Hover enter / leave delay</td><td>80 / 240 ms</td><td>n/a</td><td>Same</td></tr>
+      <tr><td>Popup enter</td><td>160 ms, translateY 6→0</td><td>ease-enter</td><td>80 ms opacity</td></tr>
+      <tr><td>Pending → polished swap</td><td>120 ms crossfade</td><td>ease-standard</td><td>Instant</td></tr>
+      <tr><td>Popup height change / auto-scroll</td><td>200 ms</td><td>ease-standard</td><td>Jump</td></tr>
+      <tr><td>Pasted hold, then exit</td><td>fade_ms (1000), then 240 ms</td><td>ease-exit</td><td>Hold, then 80 ms opacity</td></tr>
+      <tr><td>Level meter</td><td>20 Hz, 50 ms low-pass</td><td>linear</td><td>Single bar, 10 Hz</td></tr>
+      <tr><td>Recording ring breath</td><td>1.5 s alternate</td><td>ease-standard</td><td>Off (solid)</td></tr>
+      <tr><td>Finishing grace</td><td>Skipped if paste ≤ 120 ms after release</td><td>n/a</td><td>Same</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script src="assets/icons.js"></script>
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const I = (n, s = 16) => iconSVG(n, s);
+  const root = document.documentElement;
+  const rm = () => root.hasAttribute('data-rm') || matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ---------- preview controls
+  const state = { wall: 'dark' };
+  document.querySelectorAll('.seg[data-ctl]').forEach((seg) => {
+    seg.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+      if (seg.dataset.ctl === 'theme') root.dataset.theme = b.dataset.v;
+      else { state.wall = b.dataset.v; applyWall(); }
+    });
+    seg.addEventListener('keydown', (e) => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+      const bs = [...seg.querySelectorAll('button')]; const i = bs.indexOf(document.activeElement);
+      const n = bs[(i + (e.key === 'ArrowRight' ? 1 : bs.length - 1)) % bs.length]; n.focus(); n.click(); e.preventDefault();
+    });
+  });
+  const applyWall = () => document.querySelectorAll('.fl-stage').forEach((s) => (s.dataset.wall = state.wall));
+  const applyBlur = () => document.querySelectorAll('.fl-stage').forEach((s) => s.classList.toggle('fl-blur', $('#blur').checked));
+  $('#blur').addEventListener('change', applyBlur);
+  $('#rm').addEventListener('change', (e) => root.toggleAttribute('data-rm', e.target.checked));
+
+  // ---------- pill + popup renderers (shared by the grids and the demo)
+  const pillHTML = (st, o = {}) => {
+    switch (st) {
+      case 'idle': return o.warn ? '<span class="warn-dot" aria-hidden="true"></span>' : '';
+      case 'hover': return `<span class="btn-disc">${I('mic')}</span><span class="lbl">Dictate</span>${o.grip ? `<span class="grip">${I('grip-vertical', 12)}</span>` : ''}`;
+      case 'recording': return `<span class="btn-disc"><span class="stop"></span></span><span class="meter${rm() ? ' static' : ''}">${'<b></b>'.repeat(5)}</span>${rm() ? '' : '<span class="ring-breath"></span>'}`;
+      case 'finishing': return `<span class="btn-disc">${I('loader-circle')}</span><span class="dots"><b></b><b></b><b></b></span>`;
+      case 'warning': return `<span class="btn-disc">${I('mic')}</span><span class="w-ico">${I('triangle-alert', 14)}</span><span class="reason">${o.reason || 'Cleanup offline, pasting as heard'}</span>`;
+      case 'micoff': return `<span class="btn-disc">${I('mic-off')}</span><span class="reason">Microphone unavailable: USB Audio unplugged</span>`;
+      case 'dragging': return `<span style="display:flex;color:var(--text-2)">${I('grip-horizontal')}</span><span class="lbl">Move</span>`;
+    }
+    return '';
+  };
+  const setPill = (el, st, o = {}) => {
+    el.dataset.state = st === 'hover' ? 'hover' : st;
+    if (o.warn) el.dataset.warn = ''; else delete el.dataset.warn;
+    el.innerHTML = pillHTML(st, o);
+  };
+  const meterLevels = (el, level) => {
+    const bars = el.querySelectorAll('.meter b'); if (!bars.length) return;
+    const k = [0.8, 1, 0.9, 0.7, 0.85];
+    if (el.querySelector('.meter.static')) { // reduced motion: one bar, width = level
+      bars.forEach((b, i) => { b.style.height = '4px'; b.style.width = i === 0 ? `${3 + level * 27}px` : '0'; b.style.display = i === 0 ? 'block' : 'none'; });
+      return;
+    }
+    bars.forEach((b, i) => {
+      const target = 4 + 16 * Math.min(1, level * k[i] * (0.85 + Math.random() * 0.3));
+      const prev = parseFloat(b.style.height) || 4;
+      b.style.height = `${prev + (target - prev) * 0.63}px`; // one-pole low-pass, tau ≈ 50 ms at 20 Hz
+    });
+  };
+
+  const foot = (kind, extra = {}) => {
+    const mode = `<span class="chip">${I(extra.icon || 'code', 12)}${extra.mode || 'Code'}</span><span>${extra.app || 'kitty'}</span>`;
+    switch (kind) {
+      case 'rec': return `${mode}<span class="end">${extra.t || '0:07'}<span class="sep">·</span><span class="hint"><kbd>Super D</kbd> to stop</span></span>`;
+      case 'finishing': return `${mode}<span class="end"><span class="spin" style="display:flex">${I('loader-circle', 14)}</span><span class="msg">Finishing</span></span>`;
+      case 'done': return `<span class="ok">${I('check', 14)}</span><span class="msg">Pasted into ${extra.app || 'kitty'}</span>`;
+      case 'fallback': return `<span style="display:flex">${I('info', 14)}</span><span class="msg">Pasted as heard</span><span class="sep">·</span><span>${extra.why || 'cleanup offline'}</span>`;
+      case 'cancel': return `<span style="display:flex">${I('x', 14)}</span><span class="msg">Cancelled, nothing pasted</span>`;
+      case 'micerr': return `<span class="bad">${I('mic-off', 14)}</span><span class="msg">Mic disconnected</span><span class="sep">·</span><span>pasted what was heard</span>`;
+      case 'pasteerr': return `<span class="bad">${I('circle-alert', 14)}</span><span class="msg">Couldn’t paste. Run <kbd>flowctl last</kbd> to copy it</span>`;
+      case 'limit': return `<span class="wr">${I('timer', 14)}</span><span class="msg">Time limit reached (5:00)</span>`;
+      case 'countdown': return `${mode}<span class="end"><span class="wr">${I('timer', 14)}</span><span style="color:var(--warn)">0:09 left</span></span>`;
+      case 'cleanupdown': return `<span class="chip">${I(extra.icon || 'code', 12)}${extra.mode || 'Code'}</span><span class="end"><span class="wr">${I('triangle-alert', 14)}</span><span class="msg">Cleanup offline, pasting as heard</span></span>`;
+    }
+    return mode;
+  };
+  const popupHTML = (body, footer, o = {}) =>
+    `<div class="body${o.scrolled ? ' scrolled' : ''}" style="--lines:${o.lines || 4}"><div class="scroller"><div>${body}</div></div></div>${footer ? `<div class="foot">${footer}</div>` : ''}`;
+
+  const P = (t) => `<span class="z-polished">${t}</span>`;
+  const Pe = (t) => `<span class="z-pending">${t}</span>`;
+  const L = (t) => { const i = t.lastIndexOf(' '); const head = i < 0 ? '' : t.slice(0, i + 1), tail = t.slice(i + 1); return `<span class="z-live">${head}<span style="white-space:nowrap">${tail}<span class="caret" aria-hidden="true"></span></span></span>`; };
+
+  // ---------- indicator grid
+  const indStates = [
+    ['idle', {}, '1 · Idle', '48 × 8, 35% opacity, dark core + light ring'],
+    ['hover', {}, '2 · Hover', '120 × 36, 96% opacity, click to start'],
+    ['hover', { grip: true }, '2b · Hover, 600 ms', 'Drag grip appears'],
+    ['recording', { level: .7 }, '3 · Recording', 'Record ring, stop disc, 5-bar meter @ 20 Hz'],
+    ['finishing', {}, '4 · Finishing', 'Mic closed, so no red. Not clickable'],
+    ['idle', { warn: true }, '5 · Idle + warning', 'Amber dot, line rises to 55%'],
+    ['warning', {}, '5b · Hover + warning', 'One-line reason, still clickable'],
+    ['micoff', {}, '5c · Mic unavailable', 'mic-off in danger, not clickable'],
+    ['dragging', { ticks: true }, '6 · Dragging', 'Lifted, x-only. Tick above = centre snap point (also ¼, ¾)'],
+  ];
+  const indGrid = $('#indGrid');
+  indStates.forEach(([st, o, title, sub]) => {
+    const f = document.createElement('figure');
+    if (st === 'warning' || st === 'micoff') f.className = 'span2';
+    f.innerHTML = `<div class="fl-stage s-ind">${o.ticks ? '<span class="snap-tick" style="left:50%"></span>' : ''}<div class="fl-dock"><div class="pill"></div></div></div><figcaption><b>${title}</b><span>${sub}</span></figcaption>`;
+    const pill = f.querySelector('.pill'); setPill(pill, st, o);
+    if (o.level) { const tick = () => meterLevels(pill, o.level * (0.4 + 0.6 * Math.abs(Math.sin(Date.now() / 380)))); setInterval(tick, 50); }
+    indGrid.appendChild(f);
+  });
+
+  // ---------- popup grid
+  const long = P('I was thinking we should move the Tuesday sync to Thursday afternoon, since half the team is out for the offsite. ') + P('Can you check whether the design review still fits before it, and send the updated invite to everyone on the platform list? ') + Pe('also i want to make sure the notes from last week ') + L('get attached to');
+  const popStates = [
+    ['1 · Listening', popupHTML('<span class="z-listening">Listening…</span>', foot('rec', { t: '0:00' })), 'recording', 'No words yet'],
+    ['2 · Streaming', popupHTML(P('I was thinking we should move the meeting ') + Pe('to uh friday no wait ') + L('thursday'), foot('rec')), 'recording', 'Three zones at once'],
+    ['2b · Streaming, overflow', popupHTML(long, foot('rec', { t: '0:31' }), { scrolled: true }), 'recording', 'Clipped to 4 lines, top fade'],
+    ['2c · Self-correction merge', popupHTML(P('I was thinking we should move the meeting ') + `<span class="z-polished z-merged">to Thursday.</span> ` + L('And'), foot('rec', { t: '0:09' })), 'recording', '600 ms highlight shows why text changed'],
+    ['2d · Cleanup went down mid-session', popupHTML(P('Ship the fix today. ') + Pe('then we can look at the flaky test ') + L('tomorrow'), foot('cleanupdown')), 'recording', 'Pill unchanged; footer carries it'],
+    ['2e · Time limit approaching', popupHTML(P('…and that is the last point on the agenda. ') + L('Thanks every'), foot('countdown')), 'recording', 'Countdown from max_session_s − 10 s'],
+    ['3 · Finishing', popupHTML(P('I was thinking we should move the meeting to Thursday. ') + Pe('Can you send the invite'), foot('finishing')), 'finishing', 'Live restyled to pending'],
+    ['4 · Pasted', popupHTML(P('I was thinking we should move the meeting to Thursday. Can you send the invite?'), foot('done')), 'idle', 'Holds fade_ms (1 s), then exits'],
+    ['5 · Fallback used', popupHTML(P('so i was thinking we should move the meeting to thursday can you send the invite.'), foot('fallback')), 'idle', 'Text is what was pasted; holds +1 s'],
+    ['6 · No speech', popupHTML('<span class="z-listening" style="font-style:normal">No speech detected</span>', ''), 'idle', '1 s, nothing pasted'],
+    ['7 · Cancelled', popupHTML('<span class="z-cancelled">I was thinking we should move the</span>', foot('cancel')), 'idle', '800 ms'],
+    ['8 · Error: mic lost', popupHTML(P('Let’s move the meeting to'), foot('micerr')), 'idle', '3 s + notify-send'],
+    ['9 · Error: paste failed', popupHTML(P('Let’s move the meeting to Thursday.'), foot('pasteerr')), 'idle', '4 s; text kept in flowctl last'],
+    ['10 · Time limit reached', popupHTML(P('…and that is the last point on the agenda.'), foot('limit')), 'finishing', 'Auto-stop, then continues to Pasted'],
+  ];
+  const popGrid = $('#popGrid');
+  popStates.forEach(([title, html, pillSt, sub]) => {
+    const f = document.createElement('figure');
+    f.innerHTML = `<div class="fl-stage s-pop"><div class="fl-dock"><div class="popup" style="animation:none">${html}</div><div class="pill"></div></div></div><figcaption><b>${title}</b><span>${sub}</span></figcaption>`;
+    const pill = f.querySelector('.pill'); setPill(pill, pillSt);
+    if (pillSt === 'recording') setInterval(() => meterLevels(pill, 0.3 + 0.5 * Math.abs(Math.sin(Date.now() / 300))), 50);
+    popGrid.appendChild(f);
+  });
+
+  // ---------- live demo state machine
+  const dPill = $('#demoPill'), dPop = $('#demoPopup'), dHit = $('#demoHit'), dState = $('#demoState');
+  let st = 'idle', warn = false, nextFallback = false, timers = [], meterT = null, hoverT = null, leaveT = null, hovered = false, tStart = 0;
+  const clear = () => { timers.forEach(clearTimeout); timers = []; clearInterval(meterT); meterT = null; };
+  const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+  const say = (s) => (dState.textContent = `State: ${s}`);
+  const script = [
+    [P(''), '', L('so')], [P(''), '', L('so I was thinking')], ['', Pe('so I was thinking we should '), L('move the')],
+    ['', Pe('so I was thinking we should move the meeting '), L('to uh fri')],
+    [P('I was thinking we should move the meeting '), Pe('to uh friday '), L('no wait thursday')],
+    [P('I was thinking we should move the meeting '), `<span class="z-polished z-merged">to Thursday.</span> `, L('Can you send')],
+    [P('I was thinking we should move the meeting to Thursday. '), Pe('Can you send the '), L('invite')],
+  ];
+  const renderIdle = () => { setPill(dPill, hovered ? (warn ? 'warning' : 'hover') : 'idle', { warn }); };
+  const toIdle = () => { clear(); st = 'idle'; renderIdle(); say(warn ? 'idle (warning)' : 'idle'); };
+  const hidePopup = () => {
+    dPop.style.transition = `opacity var(--dur-fade-out) var(--ease-exit), transform var(--dur-fade-out) var(--ease-exit)`;
+    dPop.style.opacity = '0'; if (!rm()) dPop.style.transform = 'translateY(4px)';
+    later(rm() ? 80 : 240, () => { dPop.hidden = true; dPop.style.cssText = ''; });
+  };
+  const start = () => {
+    clear(); st = 'recording'; tStart = Date.now(); say('recording');
+    setPill(dPill, 'recording');
+    dPop.hidden = false; dPop.style.cssText = ''; dPop.style.animation = 'none'; void dPop.offsetWidth; dPop.style.animation = '';
+    dPop.innerHTML = popupHTML('<span class="z-listening">Listening…</span>', warn ? foot('cleanupdown') : foot('rec', { t: '0:00' }));
+    let lvl = 0;
+    meterT = setInterval(() => { lvl = Date.now() - tStart < 500 ? 0.05 : 0.25 + 0.6 * Math.abs(Math.sin((Date.now() - tStart) / 260)) * Math.random(); meterLevels(dPill, lvl); }, rm() ? 100 : 50);
+    script.forEach((z, i) => later(700 + i * 600, () => {
+      const secs = Math.floor((Date.now() - tStart) / 1000);
+      dPop.innerHTML = popupHTML(z.join(''), warn ? foot('cleanupdown') : foot('rec', { t: `0:0${secs}` }));
+    }));
+    later(700 + script.length * 600 + 400, stop);
+  };
+  const stop = () => {
+    if (st !== 'recording') return;
+    clear(); st = 'finishing'; say('finishing');
+    setPill(dPill, 'finishing');
+    const fb = warn || nextFallback;
+    dPop.innerHTML = popupHTML(P('I was thinking we should move the meeting to Thursday. ') + Pe('Can you send the invite'), foot('finishing'));
+    later(520, () => {
+      st = 'done'; setPill(dPill, 'idle', { warn }); say(fb ? 'pasted (fallback)' : 'pasted');
+      dPop.innerHTML = fb
+        ? popupHTML(P('I was thinking we should move the meeting to thursday. can you send the invite.'), foot('fallback', { why: warn ? 'cleanup offline' : 'cleanup timed out' }))
+        : popupHTML(P('I was thinking we should move the meeting to Thursday. Can you send the invite?'), foot('done'));
+      nextFallback = false;
+      later(fb ? 2000 : 1000, () => { hidePopup(); later(260, toIdle); });
+    });
+  };
+  const click = () => { if (st === 'idle' || st === 'done') start(); else if (st === 'recording') stop(); };
+  dHit.addEventListener('pointerenter', () => { clearTimeout(leaveT); hoverT = setTimeout(() => { hovered = true; if (st === 'idle' || st === 'done') renderIdle(); }, 80); });
+  dHit.addEventListener('pointerleave', () => { clearTimeout(hoverT); leaveT = setTimeout(() => { hovered = false; if (st === 'idle' || st === 'done') renderIdle(); }, 240); });
+  dHit.addEventListener('click', click);
+  document.addEventListener('keydown', (e) => { if (e.code === 'Space' && !e.target.closest('button, input, a, [role="radio"]')) { e.preventDefault(); click(); } });
+  $('#demoPlay').addEventListener('click', () => { hidePopup(); toIdle(); later(300, () => { hovered = true; renderIdle(); later(500, () => { hovered = false; start(); }); }); });
+  document.querySelector('[data-demo-warn]').addEventListener('click', () => { warn = !warn; if (st === 'idle') toIdle(); });
+  document.querySelector('[data-demo-fallback]').addEventListener('click', () => { nextFallback = true; say('next run will fall back'); });
+
+  document.querySelectorAll('[data-ctl="theme"] button').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === root.dataset.theme)));
+  applyWall(); applyBlur(); toIdle();
+})();
+</script>
+</body>
+</html>

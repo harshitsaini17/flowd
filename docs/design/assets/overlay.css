@@ -1,0 +1,118 @@
+/* Indicator + popup, as they render on the desktop. Shared by both mockup pages. */
+b, strong, th, h1, h2, h3 { font-weight: 400; }
+.fl-stage { position: relative; overflow: hidden; border-radius: var(--r-lg); isolation: isolate; font-family: var(--font-sans); }
+.fl-stage[data-wall="light"] { background: linear-gradient(160deg, #e9e6df, #d8dde2); }
+.fl-stage[data-wall="dark"] { background: linear-gradient(160deg, #1b1e24, #0c0d10); }
+/* Worst-case wallpaper: saturated, high-frequency, both extremes of luminance. */
+.fl-stage[data-wall="busy"] {
+  background:
+    repeating-linear-gradient(45deg, #ffffff 0 7px, #000000 7px 14px),
+    #808080;
+  background-blend-mode: normal;
+}
+.fl-stage[data-wall="busy"]::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; opacity: .55;
+  background: conic-gradient(from 0deg, #ff0000, #ffff00, #00ff00, #0000ff, #ff00ff, #ff0000);
+  mix-blend-mode: hard-light;
+}
+/* Stand-in for the compositor blur rule (Hyprland layerrule blur). */
+.fl-blur .fl-glass { -webkit-backdrop-filter: blur(24px) saturate(1.1); backdrop-filter: blur(24px) saturate(1.1); }
+
+.fl-dock { position: absolute; left: 0; right: 0; bottom: 6px; display: flex; flex-direction: column; align-items: center; }
+/* Warning pill never exceeds its stage (the real surface is resized to fit, max 360). */
+.fl-dock .pill { max-width: calc(100% - 24px); }
+
+/* ---------------------------------------------------------------- indicator */
+.pill {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  height: 36px; width: 120px; padding: 0 12px 0 4px; box-sizing: border-box;
+  border-radius: var(--r-pill); background: var(--glass); color: var(--text);
+  box-shadow: var(--glass-edge), var(--shadow-float);
+  transition: width var(--dur-base) var(--ease-standard), height var(--dur-base) var(--ease-standard),
+              opacity var(--dur-base) var(--ease-standard), padding var(--dur-base) var(--ease-standard),
+              box-shadow var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard);
+  font: 400 12px/16px var(--font-sans); letter-spacing: .01em; white-space: nowrap;
+}
+.pill > * { transition: opacity var(--dur-fast) var(--ease-standard) 60ms; }
+.pill .btn-disc { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--sunken); color: var(--text); }
+.pill .lbl { color: var(--text-2); }
+.pill .grip { margin-left: auto; color: var(--text-2); opacity: .7; display: flex; }
+
+.pill[data-state="idle"] {
+  width: 48px; height: 8px; padding: 0; opacity: .35; background: var(--idle-fill);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .55), 0 1px 3px rgba(0, 0, 0, .35);
+}
+.pill[data-state="idle"] > * { opacity: 0; transition-delay: 0ms; pointer-events: none; }
+.pill[data-state="idle"][data-warn] { opacity: .55; }
+.pill .warn-dot { position: absolute; right: 6px; top: -5px; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 1px rgba(0, 0, 0, .6); opacity: 1 !important; }
+.pill .warn-dot { background: #f2b34c; } /* amber reads on the dark idle core in both themes */
+
+.pill[data-state="recording"] { box-shadow: var(--glass-edge), inset 0 0 0 1.5px var(--record), var(--shadow-float); }
+.pill[data-state="recording"] .btn-disc { background: var(--record-fill); color: #fff; width: 24px; height: 24px; margin-left: 2px; }
+.pill[data-state="recording"] .btn-disc i, .pill[data-state="recording"] .btn-disc .stop { width: 8px; height: 8px; border-radius: 2px; background: #fff; display: block; }
+.pill .ring-breath { position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1.5px var(--record); animation: breath 1.5s var(--ease-standard) infinite alternate; pointer-events: none; }
+@keyframes breath { from { opacity: 1; } to { opacity: .72; } }
+
+.meter { display: flex; align-items: center; gap: 3px; height: 20px; margin-left: auto; margin-right: 4px; }
+.meter b { display: block; width: 3px; height: 4px; border-radius: var(--r-xs); background: var(--record); }
+.meter.static b { transition: none; }
+
+.pill[data-state="finishing"] .btn-disc { background: transparent; color: var(--text-2); }
+.pill[data-state="finishing"] .btn-disc svg { animation: spin 800ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.dots { display: flex; gap: 4px; margin-left: auto; margin-right: 10px; }
+.dots b { width: 4px; height: 4px; border-radius: 50%; background: var(--text-2); animation: dot 720ms var(--ease-standard) infinite alternate; }
+.dots b:nth-child(2) { animation-delay: 120ms; } .dots b:nth-child(3) { animation-delay: 240ms; }
+@keyframes dot { from { opacity: .3; } to { opacity: 1; } }
+
+.pill[data-state="warning"] { width: auto; max-width: 360px; padding-right: 14px; }
+.pill[data-state="warning"] .reason { overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.pill[data-state="warning"] .w-ico { color: var(--warn); display: flex; }
+.pill[data-state="micoff"] { width: auto; padding-right: 14px; }
+.pill[data-state="micoff"] .btn-disc { color: var(--danger); background: transparent; }
+
+.pill[data-state="dragging"] { transform: scale(1.04); box-shadow: var(--glass-edge), var(--shadow-float); cursor: grabbing; justify-content: center; padding: 0 12px; }
+.snap-tick { position: absolute; bottom: 48px; width: 1px; height: 12px; background: var(--text-2); }
+
+/* ---------------------------------------------------------------- popup */
+.popup {
+  width: min(640px, calc(100% - 32px)); min-width: 280px; box-sizing: border-box; margin-bottom: 10px;
+  border-radius: var(--r-xl); background: var(--glass); color: var(--text);
+  box-shadow: var(--glass-edge), var(--shadow-float);
+  font: 400 15px/22px var(--font-sans); font-feature-settings: "ss03" 1;
+  animation: pop-in var(--dur-base) var(--ease-enter);
+}
+@keyframes pop-in { from { opacity: 0; transform: translateY(6px); } }
+.popup .body { position: relative; padding: 14px 18px; max-height: calc(22px * var(--lines, 4)); box-sizing: content-box; overflow: clip; overflow-clip-margin: content-box; overflow-wrap: anywhere;
+  display: flex; flex-direction: column; justify-content: flex-end; /* newest line stays visible: overflow spills off the top */ }
+.popup .body > .scroller { flex: none; }
+.popup .body.scrolled { -webkit-mask-image: linear-gradient(to bottom, transparent 14px, #000 34px); mask-image: linear-gradient(to bottom, transparent 14px, #000 34px); }
+.z-polished { color: var(--text); }
+.z-pending { color: var(--text-2); text-decoration: underline dotted color-mix(in srgb, var(--text-2) 40%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; }
+.z-live { color: var(--live); font-style: italic; }
+.caret { display: inline-block; width: 2px; height: 16px; margin-left: 2px; vertical-align: -2px; background: var(--live); animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.z-merged { background: var(--primary-soft); border-radius: 3px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.z-listening { color: var(--text-2); font-style: italic; }
+.z-cancelled { color: var(--text-2); text-decoration: line-through 1px; }
+
+.popup .foot { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 18px 0 14px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; font: 400 12px/16px var(--font-sans); letter-spacing: .01em; color: var(--text-2); border-top: 1px solid color-mix(in srgb, var(--text-2) 18%, transparent); }
+.popup .foot .chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px 0 5px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--text-2) 14%, transparent); color: var(--text); }
+.popup .foot .end { margin-left: auto; font-variant-numeric: tabular-nums; display: flex; gap: 6px; align-items: center; }
+.popup .foot kbd { font: 400 11px/16px var(--font-mono); color: var(--text); }
+.popup .foot .ok { color: var(--primary); display: flex; }
+.popup .foot .bad { color: var(--danger); display: flex; }
+.popup .foot .wr { color: var(--warn); display: flex; }
+.popup .foot .msg { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.popup .foot > span:last-child:not(.end), .popup .foot .end { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.popup .foot .end { flex: 0 1 auto; }
+.popup .foot svg { flex: none; }
+.popup .foot .spin svg { animation: spin 800ms linear infinite; }
+.popup .foot .sep { opacity: .6; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ring-breath, .caret, .dots b, .pill[data-state="finishing"] .btn-disc svg, .popup .foot .spin svg { animation: none !important; }
+  .popup { animation: fade-only 80ms linear; }
+  .dots b { opacity: .6; }
+}
+@keyframes fade-only { from { opacity: 0; } }
