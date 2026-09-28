@@ -9,9 +9,11 @@ from typing import Any
 import numpy as np
 import pytest
 
+from flowd.audio import MicrophoneStuck
 from flowd.config import Config, Hotkey, Inject
 from flowd.daemon import Daemon
 from flowd.inject.base import InjectResult
+from flowd.state import State
 from flowd.stt import Committed, Event, FakeSttEngine, Partial
 
 
@@ -991,3 +993,52 @@ async def test_a_suspend_mid_session_cancels_it_and_injects_nothing() -> None:
     assert capture.stopped is True
     assert (await d.handle({"cmd": "status"}))["state"] == "idle"
     assert "suspended" in d.last_record["errors"]
+
+
+class StuckCapture(FakeCapture):
+    """A capture whose last stream would not stop (ADR 0015)."""
+
+    leaked = False
+
+
+async def _start_run(d: Daemon, socket_path: Path) -> "asyncio.Task[None]":
+    task = asyncio.create_task(d.run(socket_path))
+    for _ in range(100):  # wait for the run loop to be up, without a fixed sleep
+        if socket_path.exists():
+            break
+        await asyncio.sleep(0.01)
+    return task
+
+
+async def test_an_idle_daemon_with_a_stuck_microphone_exits_to_be_restarted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An abandoned stream can hold the device until the process exits, and
+    only a restart frees it. systemd restarts on a non-zero exit."""
+    notes: list[str] = []
+    capture = StuckCapture()
+    capture.leaked = True
+    d = daemon(FakeSttEngine([]), capture=capture)
+    monkeypatch.setattr(d, "_notify", notes.append)
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    with pytest.raises(MicrophoneStuck):
+        await asyncio.wait_for(task, timeout=2)
+    assert any("microphone" in n for n in notes)
+
+
+async def test_a_stuck_microphone_waits_for_the_session_to_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exiting mid-dictation would throw away what the user just said."""
+    monkeypatch.setattr(Daemon, "_notify", lambda self, message: None)
+    capture = StuckCapture()
+    d = daemon(FakeSttEngine([]), capture=capture)
+    await d.handle({"cmd": "start"})
+    capture.leaked = True
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    await asyncio.sleep(0.3)
+    assert not task.done()
+    assert d.machine.state is State.RECORDING
+    await d.handle({"cmd": "stop"})
+    with pytest.raises(MicrophoneStuck):
+        await asyncio.wait_for(task, timeout=2)

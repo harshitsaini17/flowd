@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 
 from flowd import __version__
-from flowd.audio import AudioCapture, load_wav
+from flowd.audio import AudioCapture, MicrophoneStuck, load_wav
 from flowd.config import Config, data_dir, load_config, runtime_dir, state_dir
 from flowd.context import detect
 from flowd.hybrid import HybridSttEngine, load_parakeet
@@ -29,6 +29,9 @@ log = logging.getLogger(__name__)
 #: failure it is restarting from. 2 is `_verify_or_exit`'s hash mismatch.
 EXIT_CONFIG = 3
 EXIT_STT_LOAD = 4
+#: ADR 0015: an audio stream would not stop. Non-zero so systemd restarts us,
+#: which releases the device.
+EXIT_MIC_STUCK = 5
 
 
 def _setup_logging(level: str) -> None:
@@ -267,6 +270,9 @@ def main(argv: list[str] | None = None) -> int:
     except AlreadyRunning as exc:
         print(f"flowd: {exc}", file=sys.stderr)
         return 1
+    except MicrophoneStuck as exc:
+        print(f"flowd: {exc}; exiting so the microphone is released", file=sys.stderr)
+        return EXIT_MIC_STUCK
     except KeyboardInterrupt:
         return 0
     return 0

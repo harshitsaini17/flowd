@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import flowd.main as main
+from flowd.audio import MicrophoneStuck
 from flowd.config import Config, Hotkey, Logging, state_dir
 from flowd.main import _ReplayCapture, build_parser, lock_path, replay_config
 from flowd.stt import Committed, FakeSttEngine
@@ -246,6 +247,23 @@ def test_an_invalid_config_at_startup_exits_with_the_reason(
     monkeypatch.setattr(main, "load_config", invalid)
     assert main.main([]) == main.EXIT_CONFIG
     assert "block_ms" in capsys.readouterr().err
+
+
+def test_a_stuck_microphone_exits_with_its_own_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Non-zero so systemd's `Restart=on-failure` starts a fresh daemon, and
+    distinct so `systemctl --user status flowd` says why (ADR 0015)."""
+    from flowd.daemon import Daemon
+
+    async def stuck(self: Daemon, socket_path: Path) -> None:
+        raise MicrophoneStuck("audio stream did not stop")
+
+    monkeypatch.setattr(main, "_verify_or_exit", lambda cfg: None)
+    monkeypatch.setattr(main, "_load_stt", lambda cfg: FakeSttEngine([]))
+    monkeypatch.setattr(Daemon, "run", stuck)
+    assert main.main([]) == main.EXIT_MIC_STUCK
+    assert "did not stop" in capsys.readouterr().err
 
 
 # --- the final model (ADR 0011) ----------------------------------------------

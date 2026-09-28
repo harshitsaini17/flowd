@@ -16,6 +16,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from flowd import guardrails
+from flowd.audio import MicrophoneStuck
 from flowd.cleanup import CleanupClient
 from flowd.config import Config, config_path, reload_config, state_dir
 from flowd.context import AppContext
@@ -736,6 +737,7 @@ class Daemon:
             while True:
                 await self.pump()
                 await self._check_max_duration()
+                self._exit_if_microphone_stuck()
                 await asyncio.sleep(block_s if self.session is not None else 0.2)
         finally:
             if health is not None:
@@ -751,6 +753,21 @@ class Daemon:
             # daemon does not leave a stale preview over the user's work.
             if self.overlay is not None:
                 self.overlay.stop()
+
+    def _exit_if_microphone_stuck(self) -> None:
+        """ADR 0015: a stream that would not stop may hold the device until this
+        process exits, blocking every other program that wants the mic.
+
+        Only while idle, so a dictation in progress still gets its text. The
+        exit is non-zero and systemd's `Restart=on-failure` starts a fresh
+        daemon, which is what actually frees the device.
+        """
+        if self.machine.state is not State.IDLE:
+            return
+        if not getattr(self.capture, "leaked", False):
+            return
+        self._notify("flowd: the microphone did not close; restarting to release it")
+        raise MicrophoneStuck("an audio stream did not stop and may still hold the microphone")
 
     async def _health_loop(self) -> None:
         """spec 5.5: probe the LLM every `health_interval_s` while idle.
