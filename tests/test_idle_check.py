@@ -1,6 +1,7 @@
 """scripts/idle_check.py: the idle microphone check (ADR 0015)."""
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -44,5 +45,25 @@ def test_other_objects_and_processes_are_ignored() -> None:
     no_info = {"id": 3, "type": "PipeWire:Interface:Client", "info": None}
     try:
         assert load().flowd_clients([node, no_info, client(7, 99, "pulse")], {1234}) == []
+    finally:
+        sys.modules.pop("idle_check", None)
+
+
+def test_pw_dump_failure_is_reported(monkeypatch):  # type: ignore
+    """When pw-dump fails, mic_clients returns a failure string instead of raising."""
+    module = load()
+    try:
+
+        def mock_run(*args, **kwargs):  # type: ignore
+            raise subprocess.CalledProcessError(1, "pw-dump", stderr="PipeWire not running")
+
+        monkeypatch.setattr("idle_check.subprocess.run", mock_run)
+
+        class MockProc:
+            pid = 1234
+
+        result = module.mic_clients([MockProc()])
+        assert isinstance(result, str)
+        assert "pw-dump failed" in result
     finally:
         sys.modules.pop("idle_check", None)

@@ -26,6 +26,7 @@ from typing import Any
 
 RAM_BUDGET_MB = 1600.0  # ADR 0011
 CPU_BUDGET_PCT = 1.0
+PW_DUMP_TIMEOUT_S = 10.0  # stops a hung PipeWire from hanging the check
 #: How each process is recognised: its executable's name, then a script
 #: argument. Matching on argv[0] keeps out shells and editors whose command
 #: line merely mentions flowd.
@@ -122,12 +123,21 @@ def flowd_clients(dump: list[dict[str, Any]], pids: set[int]) -> list[str]:
     return found
 
 
-def mic_clients(procs: list[Proc]) -> list[str] | None:
-    """flowd's PipeWire clients right now, or None when `pw-dump` is missing."""
+def mic_clients(procs: list[Proc]) -> list[str] | str | None:
+    """flowd's PipeWire clients now, a failure reason, or None if pw-dump is missing."""
     if shutil.which("pw-dump") is None:
         return None
-    out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True, timeout=10)
-    return flowd_clients(json.loads(out.stdout), {p.pid for p in procs})
+    try:
+        out = subprocess.run(
+            ["pw-dump"], capture_output=True, text=True, check=True, timeout=PW_DUMP_TIMEOUT_S
+        )
+        return flowd_clients(json.loads(out.stdout), {p.pid for p in procs})
+    except subprocess.CalledProcessError as e:
+        return f"pw-dump failed: {e.stderr or 'exit code ' + str(e.returncode)}"
+    except subprocess.TimeoutExpired:
+        return "pw-dump failed: timeout"
+    except json.JSONDecodeError as e:
+        return f"pw-dump failed: invalid JSON: {e.msg}"
 
 
 def report(seconds: float) -> bool:
@@ -137,9 +147,14 @@ def report(seconds: float) -> bool:
     clients = mic_clients(procs)
     if clients is None:
         print("  audio: pw-dump not found, PipeWire clients not checked")
+        audio_ok = True
+    elif isinstance(clients, str):
+        print(f"  audio: {clients}")
+        audio_ok = False
     else:
         print("  audio: " + (", ".join(clients) if clients else "no PipeWire clients"))
-    ok = anon <= RAM_BUDGET_MB and cpu < CPU_BUDGET_PCT and not clients
+        audio_ok = not clients
+    ok = anon <= RAM_BUDGET_MB and cpu < CPU_BUDGET_PCT and audio_ok
     print(
         f"  total anon {anon:.1f} MB (budget {RAM_BUDGET_MB:.0f}), rss {rss:.1f} MB, "
         f"cpu {cpu:.2f}% over {seconds:.0f} s (budget < {CPU_BUDGET_PCT:.0f}%) -> "
