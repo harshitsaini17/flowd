@@ -1,5 +1,7 @@
+import sys
 import threading
 import time
+import types
 import wave
 from pathlib import Path
 from typing import Any
@@ -7,7 +9,14 @@ from typing import Any
 import numpy as np
 import pytest
 
-from flowd.audio import STALL_S, AudioCapture, RingBuffer, load_wav
+from flowd.audio import (
+    STALL_S,
+    AudioCapture,
+    RingBuffer,
+    _open_input_stream,
+    load_wav,
+    release_portaudio,
+)
 from flowd.config import Audio
 
 
@@ -93,6 +102,174 @@ class FakeStream:
     def deliver(self, frames: np.ndarray) -> None:
         """Invoke the capture callback the way PortAudio's thread would."""
         self.kwargs["callback"](frames.reshape(-1, 1), frames.size, None, None)
+
+
+# --- PortAudio lifetime (ADR 0015) ------------------------------------------
+
+
+class FakeSoundDevice(types.ModuleType):
+    """Stands in for the `sounddevice` module and counts PortAudio init/terminate.
+
+    Importing the real module initialises PortAudio once, which is why
+    `_initialized` starts at 1.
+    """
+
+    def __init__(self, device_name: str = "default") -> None:
+        super().__init__("sounddevice")
+        self._initialized = 1
+        self.device_name = device_name
+        self.opened_while_initialized: list[int] = []
+
+    def _initialize(self) -> None:
+        self._initialized += 1
+
+    def _terminate(self) -> None:
+        self._initialized -= 1
+
+    def InputStream(self, **kwargs: Any) -> FakeStream:
+        self.opened_while_initialized.append(self._initialized)
+        stream = FakeStream(**kwargs)
+        stream.device = 5  # type: ignore[attr-defined]
+        return stream
+
+    def query_devices(self, index: int) -> dict[str, Any]:
+        return {"name": self.device_name, "hostapi": 0}
+
+    def query_hostapis(self, index: int) -> dict[str, Any]:
+        return {"name": "ALSA"}
+
+
+def test_releasing_portaudio_never_imports_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon that never dictated has not loaded PortAudio; releasing it must
+    not load it just to shut it down."""
+    monkeypatch.delitem(sys.modules, "sounddevice", raising=False)
+    release_portaudio()
+    assert "sounddevice" not in sys.modules
+
+
+def test_releasing_portaudio_terminates_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`Pa_Initialize` registers a PipeWire client that outlives every stream;
+    only `Pa_Terminate` removes it."""
+    sd = FakeSoundDevice()
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    release_portaudio()
+    assert sd._initialized == 0
+
+
+def test_a_stream_opened_after_release_reinitialises_portaudio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After `Pa_Terminate`, opening a stream fails with "Error querying device
+    -1" until PortAudio is initialised again."""
+    sd = FakeSoundDevice()
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    release_portaudio()
+    _open_input_stream(samplerate=16000, channels=1)
+    assert sd.opened_while_initialized == [1]
+
+
+def test_opening_logs_the_device_and_host_api(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    sd = FakeSoundDevice("default")
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    with caplog.at_level("INFO", logger="flowd.audio"):
+        _open_input_stream(samplerate=16000, channels=1, device=None)
+    assert any("default (ALSA)" in r.getMessage() for r in caplog.records)
+
+
+def test_a_raw_hardware_default_device_is_warned_about(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A raw `hw:` device is exclusive: while flowd holds it no other program can
+    record. With `audio.device = "default"` that should never be what opens."""
+    sd = FakeSoundDevice("HD-Audio Generic: ALC294 Analog (hw:1,0)")
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    with caplog.at_level("WARNING", logger="flowd.audio"):
+        _open_input_stream(samplerate=16000, channels=1, device=None)
+    assert any("raw hardware device" in r.getMessage() for r in caplog.records)
+
+
+def released_capture(**overrides: Any) -> tuple[AudioCapture, list[FakeStream], list[int]]:
+    """A capture over fake streams that records each PortAudio release."""
+    streams: list[FakeStream] = []
+    releases: list[int] = []
+
+    def factory(**kwargs: Any) -> FakeStream:
+        streams.append(FakeStream(**kwargs))
+        return streams[-1]
+
+    cap = AudioCapture(
+        Audio(**overrides),
+        stream_factory=factory,
+        release_backend=lambda: releases.append(len(streams)),
+    )
+    return cap, streams, releases
+
+
+def test_stopping_a_session_releases_portaudio() -> None:
+    cap, streams, releases = released_capture()
+    cap.start()
+    cap.stop()
+    assert streams[0].closed is True
+    assert releases == [1]
+
+
+def test_always_open_never_releases_portaudio_between_sessions() -> None:
+    cap, _, releases = released_capture(always_open=True)
+    cap.start()
+    cap.stop()
+    cap.start()
+    cap.stop()
+    assert releases == []
+
+
+def test_closing_an_always_open_capture_releases_portaudio() -> None:
+    cap, _, releases = released_capture(always_open=True)
+    cap.start()
+    cap.stop()
+    cap.close()
+    assert releases == [1]
+
+
+def test_an_abandoned_stream_marks_the_capture_leaked() -> None:
+    streams: list[HangingStream] = []
+    releases: list[int] = []
+
+    def factory(**kwargs: Any) -> HangingStream:
+        streams.append(HangingStream(**kwargs))
+        return streams[-1]
+
+    cap = AudioCapture(Audio(), stream_factory=factory, release_backend=lambda: releases.append(1))
+    cap.start()
+    assert cap.leaked is False
+    cap.stop()
+    assert cap.leaked is True
+    assert releases == []
+    streams[0].release.set()
+
+
+def test_portaudio_is_kept_while_an_abandoned_stream_may_still_be_stopping() -> None:
+    """The abandoned stop runs on its own thread inside `Pa_StopStream`;
+    terminating PortAudio under it is undefined behaviour. The restart in the
+    daemon frees the device instead."""
+    streams: list[FakeStream] = []
+    releases: list[int] = []
+
+    def factory(**kwargs: Any) -> FakeStream:
+        stream: FakeStream = HangingStream(**kwargs) if not streams else FakeStream(**kwargs)
+        streams.append(stream)
+        return stream
+
+    cap = AudioCapture(Audio(), stream_factory=factory, release_backend=lambda: releases.append(1))
+    cap.start()
+    cap.stop()  # hangs, abandoned
+    cap.start()
+    cap.stop()  # stops cleanly
+    assert releases == []
+    first = streams[0]
+    assert isinstance(first, HangingStream)
+    first.release.set()
 
 
 def capture(**overrides: Any) -> tuple[AudioCapture, list[FakeStream]]:

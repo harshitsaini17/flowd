@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 import wave
@@ -25,6 +26,18 @@ STALL_S = 1.0
 #: How long `_release` waits for PortAudio to stop a stream before abandoning it.
 #: A healthy stop takes milliseconds; one on a dead audio server took 8 s.
 RELEASE_WAIT_S = 0.25
+
+#: How PortAudio names a raw ALSA device, e.g. "ALC294 Analog (hw:1,0)". Such a
+#: device is exclusive: while flowd holds it, no other program can record.
+RAW_ALSA_MARKER = "(hw:"
+
+
+class MicrophoneStuck(RuntimeError):
+    """A capture stream would not stop and was abandoned (ADR 0015).
+
+    It may keep the device until this process exits, so the daemon exits once
+    it is idle and systemd starts a fresh one.
+    """
 
 
 class RingBuffer:
@@ -92,11 +105,51 @@ class RingBuffer:
             self._available = 0
 
 
-def _open_input_stream(**kwargs: Any) -> Any:
-    """Import `sounddevice` lazily: it loads PortAudio at import time."""
+def _sounddevice() -> Any:
+    """`sounddevice`, with PortAudio initialised.
+
+    The first import initialises PortAudio itself. After `release_portaudio`
+    it has to be initialised again, or every open fails with "Error querying
+    device -1". Re-initialising costs about 17 ms (Ryzen 5 5600H).
+    """
     import sounddevice as sd
 
-    return sd.InputStream(**kwargs)
+    if sd._initialized == 0:
+        sd._initialize()
+    return sd
+
+
+def _open_input_stream(**kwargs: Any) -> Any:
+    """Import `sounddevice` lazily: it loads PortAudio at import time."""
+    sd = _sounddevice()
+    stream = sd.InputStream(**kwargs)
+    info = sd.query_devices(stream.device)
+    name = f"{info['name']} ({sd.query_hostapis(info['hostapi'])['name']})"
+    log.info("mic device: %s", name)
+    if kwargs.get("device") is None and RAW_ALSA_MARKER in info["name"]:
+        log.warning(
+            "the default input is a raw hardware device (%s); other programs cannot "
+            "record while flowd does. Route it through PipeWire or set [audio] device.",
+            name,
+        )
+    return stream
+
+
+def release_portaudio() -> None:
+    """Shut PortAudio down if it is loaded (ADR 0015).
+
+    `Pa_Initialize` registers a PipeWire client and a "PortAudio" node that
+    stay for as long as PortAudio is initialised, stream or no stream. Only
+    `Pa_Terminate` removes them. `sounddevice` counts nested initialisations,
+    so this terminates until the count is zero, as its own exit handler does.
+    Never imports `sounddevice`: a daemon that never dictated has nothing to
+    release.
+    """
+    sd = sys.modules.get("sounddevice")
+    if sd is None:
+        return
+    while sd._initialized > 0:
+        sd._terminate()
 
 
 class AudioCapture:
@@ -113,6 +166,7 @@ class AudioCapture:
         on_status: Callable[[str], None] | None = None,
         stream_factory: Callable[..., Any] = _open_input_stream,
         clock: Callable[[], float] = time.monotonic,
+        release_backend: Callable[[], None] = release_portaudio,
     ) -> None:
         self._cfg = cfg
         self._on_status = on_status
@@ -120,6 +174,11 @@ class AudioCapture:
         self._stream: Any = None
         self._recording = False
         self._clock = clock
+        self._release_backend = release_backend
+        # Streams `_release` gave up on. Each may still be stopping on its own
+        # thread and holding the device, so PortAudio is never terminated
+        # under them; the daemon restarts instead (ADR 0015).
+        self._abandoned = 0
         # Set from PortAudio's thread when the stream ends without us asking:
         # an unplugged device (spec 9.2). Read through `failed`, which also
         # reports a stream that has gone silent.
@@ -168,6 +227,11 @@ class AudioCapture:
         if self._recording and self._stream is not None and self._stalled():
             return f"no audio from the microphone for {STALL_S:.0f} s (audio server restarted?)"
         return None
+
+    @property
+    def leaked(self) -> bool:
+        """Whether a stream was abandoned and may still hold the device."""
+        return self._abandoned > 0
 
     def _stalled(self) -> bool:
         return self._clock() - self._last_frame > STALL_S
@@ -226,7 +290,10 @@ class AudioCapture:
         closer.start()
         closer.join(RELEASE_WAIT_S)
         if closer.is_alive():
+            self._abandoned += 1
             log.warning("audio stream did not stop within %.2f s; abandoning it", RELEASE_WAIT_S)
+        elif self._abandoned == 0:
+            self._release_backend()
         log.info("mic closed")
 
     @staticmethod
