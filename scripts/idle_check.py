@@ -100,11 +100,41 @@ def check(seconds: float) -> tuple[list[Proc], float, float, float]:
     return procs, sum(p.anon_mb for p in procs), sum(p.rss_mb for p in procs), cpu_pct
 
 
+def flowd_clients(dump: list[dict[str, Any]], pids: set[int]) -> list[str]:
+    """PipeWire clients owned by `pids`, from `pw-dump` output (ADR 0015).
+
+    An idle flowd should own none: not a capture stream, and not the client
+    that `Pa_Initialize` registers even without one.
+    """
+    found = []
+    for obj in dump:
+        if not str(obj.get("type", "")).endswith(":Client"):
+            continue
+        props = (obj.get("info") or {}).get("props") or {}
+        pid = props.get("application.process.id")
+        if pid in pids:
+            found.append(f"{props.get('client.api', '?')} client {obj['id']} (pid {pid})")
+    return found
+
+
+def mic_clients(procs: list[Proc]) -> list[str] | None:
+    """flowd's PipeWire clients right now, or None when `pw-dump` is missing."""
+    if shutil.which("pw-dump") is None:
+        return None
+    out = subprocess.run(["pw-dump"], capture_output=True, text=True, check=True, timeout=10)
+    return flowd_clients(json.loads(out.stdout), {p.pid for p in procs})
+
+
 def report(seconds: float) -> bool:
     procs, anon, rss, cpu = check(seconds)
     for p in sorted(procs, key=lambda p: p.name):
         print(f"  {p.name:<13} pid {p.pid:<8} anon {p.anon_mb:7.1f} MB  rss {p.rss_mb:7.1f} MB")
-    ok = anon <= RAM_BUDGET_MB and cpu < CPU_BUDGET_PCT
+    clients = mic_clients(procs)
+    if clients is None:
+        print("  audio: pw-dump not found, PipeWire clients not checked")
+    else:
+        print("  audio: " + (", ".join(clients) if clients else "no PipeWire clients"))
+    ok = anon <= RAM_BUDGET_MB and cpu < CPU_BUDGET_PCT and not clients
     print(
         f"  total anon {anon:.1f} MB (budget {RAM_BUDGET_MB:.0f}), rss {rss:.1f} MB, "
         f"cpu {cpu:.2f}% over {seconds:.0f} s (budget < {CPU_BUDGET_PCT:.0f}%) -> "
