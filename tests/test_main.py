@@ -2,7 +2,7 @@ import asyncio
 import dataclasses
 import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 import pytest
@@ -253,8 +253,12 @@ def test_a_stuck_microphone_exits_with_its_own_code(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Non-zero so systemd's `Restart=on-failure` starts a fresh daemon, and
-    distinct so `systemctl --user status flowd` says why (ADR 0015)."""
+    distinct so `systemctl --user status flowd` says why (ADR 0015). The exit
+    skips atexit, so it is intercepted here rather than returned."""
     from flowd.daemon import Daemon
+
+    def hard_exit(code: int) -> NoReturn:
+        raise SystemExit(code)
 
     async def stuck(self: Daemon, socket_path: Path) -> None:
         raise MicrophoneStuck("audio stream did not stop")
@@ -262,7 +266,10 @@ def test_a_stuck_microphone_exits_with_its_own_code(
     monkeypatch.setattr(main, "_verify_or_exit", lambda cfg: None)
     monkeypatch.setattr(main, "_load_stt", lambda cfg: FakeSttEngine([]))
     monkeypatch.setattr(Daemon, "run", stuck)
-    assert main.main([]) == main.EXIT_MIC_STUCK
+    monkeypatch.setattr(main, "_hard_exit", hard_exit)
+    with pytest.raises(SystemExit) as exited:
+        main.main([])
+    assert exited.value.code == main.EXIT_MIC_STUCK
     assert "did not stop" in capsys.readouterr().err
 
 

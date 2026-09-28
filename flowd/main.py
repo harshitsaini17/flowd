@@ -6,11 +6,12 @@ import argparse
 import asyncio
 import dataclasses
 import logging
+import os
 import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import numpy as np
 
@@ -32,6 +33,20 @@ EXIT_STT_LOAD = 4
 #: ADR 0015: an audio stream would not stop. Non-zero so systemd restarts us,
 #: which releases the device.
 EXIT_MIC_STUCK = 5
+
+
+def _hard_exit(code: int) -> NoReturn:
+    """Exit now, skipping atexit handlers (ADR 0015).
+
+    `sounddevice`'s atexit handler calls `Pa_Terminate`, and with a stuck
+    microphone an abandoned thread may still be inside `Pa_StopStream`. A
+    deadlock there would leave the process running, so systemd would never
+    restart it. Logs and stdio are flushed first, since `os._exit` does not.
+    """
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 def _setup_logging(level: str) -> None:
@@ -272,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except MicrophoneStuck as exc:
         print(f"flowd: {exc}; exiting so the microphone is released", file=sys.stderr)
-        return EXIT_MIC_STUCK
+        _hard_exit(EXIT_MIC_STUCK)
     except KeyboardInterrupt:
         return 0
     return 0
