@@ -4,7 +4,8 @@
 Sums anonymous memory (ADR 0006) and RSS over flowd, its overlay and
 llama-server, then samples their CPU time for `--seconds` (spec 10.1: 60 s).
 With `--soak HOURS` it repeats the check every `--every` minutes and reports
-growth and PID changes, which is the 24 h leak and restart check.
+growth and PID changes, which is the 24 h leak and restart check. Also verifies
+that flowd holds no PipeWire client while idle (ADR 0015).
 
 Run it while flowd is idle. Reads /proc only; it never talks to the daemon.
 """
@@ -13,11 +14,15 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 RAM_BUDGET_MB = 1600.0  # ADR 0011
 CPU_BUDGET_PCT = 1.0
