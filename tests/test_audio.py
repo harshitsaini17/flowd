@@ -3,6 +3,7 @@ import threading
 import time
 import types
 import wave
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import numpy as np
 import pytest
 
 from flowd.audio import (
+    LEAK_GRACE_S,
     STALL_S,
     AudioCapture,
     RingBuffer,
@@ -232,27 +234,10 @@ def test_closing_an_always_open_capture_releases_portaudio() -> None:
     assert releases == [1]
 
 
-def test_an_abandoned_stream_marks_the_capture_leaked() -> None:
-    streams: list[HangingStream] = []
-    releases: list[int] = []
-
-    def factory(**kwargs: Any) -> HangingStream:
-        streams.append(HangingStream(**kwargs))
-        return streams[-1]
-
-    cap = AudioCapture(Audio(), stream_factory=factory, release_backend=lambda: releases.append(1))
-    cap.start()
-    assert cap.leaked is False
-    cap.stop()
-    assert cap.leaked is True
-    assert releases == []
-    streams[0].release.set()
-
-
 def test_portaudio_is_kept_while_an_abandoned_stream_may_still_be_stopping() -> None:
     """The abandoned stop runs on its own thread inside `Pa_StopStream`;
-    terminating PortAudio under it is undefined behaviour. The restart in the
-    daemon frees the device instead."""
+    terminating PortAudio under it is undefined behaviour. A clean stop meanwhile
+    keeps PortAudio; `settle` releases it once the abandoned stop is done."""
     streams: list[FakeStream] = []
     releases: list[int] = []
 
@@ -270,6 +255,14 @@ def test_portaudio_is_kept_while_an_abandoned_stream_may_still_be_stopping() -> 
     first = streams[0]
     assert isinstance(first, HangingStream)
     first.release.set()
+
+    def drained() -> bool:
+        cap.settle()
+        return bool(releases)
+
+    # Once the abandoned stop has finished, the skipped release happens.
+    wait_until(drained)
+    assert releases == [1]
 
 
 def test_a_failing_portaudio_shutdown_does_not_break_stop(caplog: pytest.LogCaptureFixture) -> None:
@@ -531,4 +524,72 @@ def test_releasing_a_lost_stream_does_not_wait_for_it() -> None:
     assert time.monotonic() - began < 0.5
     cap.start()
     assert len(streams) == 2
+    streams[0].release.set()
+
+
+def wait_until(condition: Callable[[], bool], timeout: float = 2.0) -> None:
+    """Poll `condition` until it holds; the closer thread finishes on its own time."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition never held"
+        time.sleep(0.01)
+
+
+def hanging_capture() -> tuple[AudioCapture, list[HangingStream], list[int], Clock]:
+    """A capture whose streams hang in `stop()` until released, on a fake clock."""
+    streams: list[HangingStream] = []
+    releases: list[int] = []
+    clock = Clock()
+
+    def factory(**kwargs: Any) -> HangingStream:
+        streams.append(HangingStream(**kwargs))
+        return streams[-1]
+
+    cap = AudioCapture(
+        Audio(), stream_factory=factory, clock=clock, release_backend=lambda: releases.append(1)
+    )
+    return cap, streams, releases, clock
+
+
+def test_a_slow_stop_that_finishes_within_the_grace_is_not_stuck() -> None:
+    """A stop on a restarted audio server took 8 s live and then completed. That
+    is slow, not stuck: the daemon must not restart for it, and PortAudio is
+    released once the stop is done, since nothing is inside it any more."""
+    cap, streams, releases, clock = hanging_capture()
+    cap.start()
+    cap.stop()  # hangs, abandoned
+    assert cap.settle() is False
+    assert releases == []
+    clock.now += LEAK_GRACE_S - 1
+    streams[0].release.set()
+
+    def drained() -> bool:
+        cap.settle()
+        return bool(releases)
+
+    wait_until(drained)
+    assert cap.settle() is False
+    assert releases == [1]
+
+
+def test_a_stop_still_running_past_the_grace_is_stuck() -> None:
+    cap, streams, releases, clock = hanging_capture()
+    cap.start()
+    cap.stop()  # hangs, abandoned
+    clock.now += LEAK_GRACE_S + 1
+    assert cap.settle() is True
+    assert releases == []
+    streams[0].release.set()
+
+
+def test_an_abandoned_stream_is_logged_as_abandoned_not_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cap, streams, _, _ = hanging_capture()
+    cap.start()
+    with caplog.at_level("INFO", logger="flowd.audio"):
+        cap.stop()
+    messages = [r.getMessage() for r in caplog.records]
+    assert "mic abandoned" in messages
+    assert "mic closed" not in messages
     streams[0].release.set()

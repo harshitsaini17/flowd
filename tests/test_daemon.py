@@ -996,9 +996,16 @@ async def test_a_suspend_mid_session_cancels_it_and_injects_nothing() -> None:
 
 
 class StuckCapture(FakeCapture):
-    """A capture whose last stream would not stop (ADR 0015)."""
+    """A capture whose abandoned stop may outlive the grace period (ADR 0015).
 
-    leaked = False
+    `stuck` is what `settle()` reports: a stop still running past
+    `LEAK_GRACE_S`, which may hold the device until the process exits.
+    """
+
+    stuck = False
+
+    def settle(self) -> bool:
+        return self.stuck
 
 
 async def _start_run(d: Daemon, socket_path: Path) -> "asyncio.Task[None]":
@@ -1017,7 +1024,7 @@ async def test_an_idle_daemon_with_a_stuck_microphone_exits_to_be_restarted(
     only a restart frees it. systemd restarts on a non-zero exit."""
     notes: list[str] = []
     capture = StuckCapture()
-    capture.leaked = True
+    capture.stuck = True
     d = daemon(FakeSttEngine([]), capture=capture)
     monkeypatch.setattr(d, "_notify", notes.append)
     task = await _start_run(d, tmp_path / "flowd.sock")
@@ -1034,7 +1041,7 @@ async def test_a_stuck_microphone_waits_for_the_session_to_finish(
     capture = StuckCapture()
     d = daemon(FakeSttEngine([]), capture=capture)
     await d.handle({"cmd": "start"})
-    capture.leaked = True
+    capture.stuck = True
     task = await _start_run(d, tmp_path / "flowd.sock")
     await asyncio.sleep(0.3)
     assert not task.done()

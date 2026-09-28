@@ -758,13 +758,17 @@ class Daemon:
         """ADR 0015: a stream that would not stop may hold the device until this
         process exits, blocking every other program that wants the mic.
 
-        Only while idle, so a dictation in progress still gets its text. The
-        exit is non-zero and systemd's `Restart=on-failure` starts a fresh
-        daemon, which is what actually frees the device.
+        Only while idle, so a dictation in progress still gets its text, and
+        `settle` releases PortAudio only when no stream is open. A stop that
+        finishes within the grace period is slow, not stuck, and does not
+        restart the daemon. The exit is non-zero and systemd's
+        `Restart=on-failure` starts a fresh daemon, which is what actually
+        frees the device. Captures without `settle` (replay, tests) never leak.
         """
         if self.machine.state is not State.IDLE:
             return
-        if not getattr(self.capture, "leaked", False):
+        settle = getattr(self.capture, "settle", None)
+        if settle is None or not settle():
             return
         self._notify("flowd: the microphone did not close; restarting to release it")
         raise MicrophoneStuck("an audio stream did not stop and may still hold the microphone")

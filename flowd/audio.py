@@ -27,6 +27,11 @@ STALL_S = 1.0
 #: A healthy stop takes milliseconds; one on a dead audio server took 8 s.
 RELEASE_WAIT_S = 0.25
 
+#: How long an abandoned stop may keep running before the stream counts as
+#: stuck. PortAudio's stop on a restarted audio server took 8 s live and then
+#: completed; a stop still running after this is treated as stuck (ADR 0015).
+LEAK_GRACE_S = 10.0
+
 #: How PortAudio names a raw ALSA device, e.g. "ALC294 Analog (hw:1,0)". Such a
 #: device is exclusive: while flowd holds it, no other program can record.
 RAW_ALSA_MARKER = "(hw:"
@@ -175,10 +180,12 @@ class AudioCapture:
         self._recording = False
         self._clock = clock
         self._release_backend = release_backend
-        # Streams `_release` gave up on. Each may still be stopping on its own
-        # thread and holding the device, so PortAudio is never terminated
-        # under them; the daemon restarts instead (ADR 0015).
-        self._abandoned = 0
+        # Closer threads `_release` gave up waiting for, with when each was
+        # abandoned. While one is alive it is inside `Pa_StopStream`, so
+        # PortAudio is never terminated under it. Most finish (a stop on a
+        # restarted server took 8 s); one alive past `LEAK_GRACE_S` is stuck
+        # and the daemon restarts to free the device (ADR 0015).
+        self._abandoned: list[tuple[threading.Thread, float]] = []
         # Set from PortAudio's thread when the stream ends without us asking:
         # an unplugged device (spec 9.2). Read through `failed`, which also
         # reports a stream that has gone silent.
@@ -228,10 +235,37 @@ class AudioCapture:
             return f"no audio from the microphone for {STALL_S:.0f} s (audio server restarted?)"
         return None
 
-    @property
-    def leaked(self) -> bool:
-        """Whether a stream was abandoned and may still hold the device."""
-        return self._abandoned > 0
+    def settle(self) -> bool:
+        """Account for abandoned stops; True if one is stuck (ADR 0015).
+
+        Called by the daemon only while idle. A stop that finished is merely
+        slow: once the last one is done, PortAudio is released, since the
+        release `_release` skipped for it is now safe. That happens once per
+        drained set, not on every call. True only when a stop has kept
+        running for longer than `LEAK_GRACE_S`: it may hold the device until
+        this process exits.
+        """
+        if not self._abandoned:
+            return False
+        if self._closers_alive():
+            now = self._clock()
+            return any(now - since > LEAK_GRACE_S for _, since in self._abandoned)
+        # The set just drained. An open stream (`always_open`, or a session
+        # started meanwhile) still needs PortAudio; its own release covers it.
+        if self._stream is None:
+            self._release_portaudio()
+        return False
+
+    def _closers_alive(self) -> bool:
+        """Drop abandoned closers that have finished; whether any remain."""
+        self._abandoned = [(t, since) for t, since in self._abandoned if t.is_alive()]
+        return bool(self._abandoned)
+
+    def _release_portaudio(self) -> None:
+        try:
+            self._release_backend()
+        except Exception as exc:
+            log.warning("could not shut PortAudio down: %s", exc)
 
     def _stalled(self) -> bool:
         return self._clock() - self._last_frame > STALL_S
@@ -290,13 +324,12 @@ class AudioCapture:
         closer.start()
         closer.join(RELEASE_WAIT_S)
         if closer.is_alive():
-            self._abandoned += 1
+            self._abandoned.append((closer, self._clock()))
             log.warning("audio stream did not stop within %.2f s; abandoning it", RELEASE_WAIT_S)
-        elif self._abandoned == 0:
-            try:
-                self._release_backend()
-            except Exception as exc:
-                log.warning("could not shut PortAudio down: %s", exc)
+            log.info("mic abandoned")
+            return
+        if not self._closers_alive():
+            self._release_portaudio()
         log.info("mic closed")
 
     @staticmethod
