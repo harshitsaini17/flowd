@@ -593,3 +593,61 @@ def test_an_abandoned_stream_is_logged_as_abandoned_not_closed(
     assert "mic abandoned" in messages
     assert "mic closed" not in messages
     streams[0].release.set()
+
+
+# --- a failed open (ADR 0015) ------------------------------------------------
+
+
+def test_a_failed_open_releases_portaudio() -> None:
+    """A busy or forbidden device fails after `_sounddevice()` has initialised
+    PortAudio; left as is, the idle daemon would keep its PipeWire client."""
+    releases: list[int] = []
+
+    def factory(**kwargs: Any) -> FakeStream:
+        raise OSError("Device unavailable")
+
+    cap = AudioCapture(Audio(), stream_factory=factory, release_backend=lambda: releases.append(1))
+    with pytest.raises(OSError):
+        cap.start()
+    assert releases == [1]
+
+
+class UnstartableStream(FakeStream):
+    """A stream PortAudio opened but could not start."""
+
+    def start(self) -> None:
+        raise OSError("Error starting stream")
+
+
+def test_a_stream_that_fails_to_start_is_closed_and_portaudio_released() -> None:
+    streams: list[FakeStream] = []
+    releases: list[int] = []
+
+    def factory(**kwargs: Any) -> FakeStream:
+        stream = UnstartableStream(**kwargs) if not streams else FakeStream(**kwargs)
+        streams.append(stream)
+        return stream
+
+    cap = AudioCapture(Audio(), stream_factory=factory, release_backend=lambda: releases.append(1))
+    with pytest.raises(OSError):
+        cap.start()
+    assert streams[0].closed is True
+    assert releases == [1]
+    cap.start()
+    assert len(streams) == 2
+    assert streams[1].started is True
+
+
+class UnqueryableSoundDevice(FakeSoundDevice):
+    def query_devices(self, index: int) -> dict[str, Any]:
+        raise RuntimeError("Error querying device 5")
+
+
+def test_a_failed_device_query_still_returns_the_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The device name is only logged; losing an opened stream over it would
+    leave it unclosed."""
+    monkeypatch.setitem(sys.modules, "sounddevice", UnqueryableSoundDevice())
+    stream = _open_input_stream(samplerate=16000, channels=1, device=None)
+    assert isinstance(stream, FakeStream)

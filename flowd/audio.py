@@ -125,19 +125,32 @@ def _sounddevice() -> Any:
 
 
 def _open_input_stream(**kwargs: Any) -> Any:
-    """Import `sounddevice` lazily: it loads PortAudio at import time."""
+    """Open a `sounddevice.InputStream` and log which device it opened.
+
+    PortAudio is (re)initialised first by `_sounddevice`. The device lookup
+    only feeds the log, so a failing query is logged and the stream returned
+    rather than dropped unclosed.
+    """
     sd = _sounddevice()
     stream = sd.InputStream(**kwargs)
+    try:
+        _log_device(sd, stream, kwargs.get("device"))
+    except Exception as exc:
+        log.warning("could not look up the mic device: %s", exc)
+    return stream
+
+
+def _log_device(sd: Any, stream: Any, requested: Any) -> None:
+    """Log the opened device, and warn if a default input is raw hardware."""
     info = sd.query_devices(stream.device)
     name = f"{info['name']} ({sd.query_hostapis(info['hostapi'])['name']})"
     log.info("mic device: %s", name)
-    if kwargs.get("device") is None and RAW_ALSA_MARKER in info["name"]:
+    if requested is None and RAW_ALSA_MARKER in info["name"]:
         log.warning(
             "the default input is a raw hardware device (%s); other programs cannot "
             "record while flowd does. Route it through PipeWire or set [audio] device.",
             name,
         )
-    return stream
 
 
 def release_portaudio() -> None:
@@ -278,7 +291,27 @@ class AudioCapture:
             self._release()
         self._ended = None
         if self._stream is None:
-            device = None if self._cfg.device == "default" else self._cfg.device
+            self._open()
+            # The stall clock starts at open: a device that never delivers a
+            # first block is as lost as one that stopped.
+            self._last_frame = self._clock()
+            log.info("mic open: %d Hz, %d ms blocks", self._cfg.sample_rate, self._cfg.block_ms)
+        # Anything left unread belongs to the previous session; replaying it
+        # would inject phantom words into this one.
+        self._ring.clear()
+        self._ring.write(self.preroll())
+        self._recording = True
+
+    def _open(self) -> None:
+        """Open and start a stream, or leave nothing behind (ADR 0015).
+
+        A busy or forbidden device fails after PortAudio was initialised, and
+        an idle daemon would then keep its PipeWire client. So on any failure
+        the stream, if one was created, is closed and PortAudio released
+        before the error propagates, and the next start opens afresh.
+        """
+        device = None if self._cfg.device == "default" else self._cfg.device
+        try:
             self._stream = self._stream_factory(
                 samplerate=self._cfg.sample_rate,
                 blocksize=self.blocksize,
@@ -289,15 +322,14 @@ class AudioCapture:
                 finished_callback=self._finished_for(self._generation),
             )
             self._stream.start()
-            # The stall clock starts at open: a device that never delivers a
-            # first block is as lost as one that stopped.
-            self._last_frame = self._clock()
-            log.info("mic open: %d Hz, %d ms blocks", self._cfg.sample_rate, self._cfg.block_ms)
-        # Anything left unread belongs to the previous session; replaying it
-        # would inject phantom words into this one.
-        self._ring.clear()
-        self._ring.write(self.preroll())
-        self._recording = True
+        except Exception:
+            stream, self._stream = self._stream, None
+            if stream is not None:
+                # Never started, so there is no running stop to wait for.
+                self._close_stream(stream)
+            if not self._closers_alive():
+                self._release_portaudio()
+            raise
 
     def stop(self) -> None:
         self._recording = False
