@@ -272,6 +272,21 @@ def test_portaudio_is_kept_while_an_abandoned_stream_may_still_be_stopping() -> 
     first.release.set()
 
 
+def test_a_failing_portaudio_shutdown_does_not_break_stop(caplog: pytest.LogCaptureFixture) -> None:
+    """If PortAudio fails to shut down, log it and continue; do not break stop()."""
+    cap, streams, _ = released_capture()
+
+    def failing_backend() -> None:
+        raise RuntimeError("Pa_Terminate failed")
+
+    cap._release_backend = failing_backend
+    cap.start()
+    with caplog.at_level("WARNING", logger="flowd.audio"):
+        cap.stop()
+    assert streams[0].closed is True
+    assert any("could not shut PortAudio down" in r.getMessage() for r in caplog.records)
+
+
 def capture(**overrides: Any) -> tuple[AudioCapture, list[FakeStream]]:
     streams: list[FakeStream] = []
 

@@ -293,7 +293,10 @@ class AudioCapture:
             self._abandoned += 1
             log.warning("audio stream did not stop within %.2f s; abandoning it", RELEASE_WAIT_S)
         elif self._abandoned == 0:
-            self._release_backend()
+            try:
+                self._release_backend()
+            except Exception as exc:
+                log.warning("could not shut PortAudio down: %s", exc)
         log.info("mic closed")
 
     @staticmethod
