@@ -27,6 +27,7 @@ here in the same commit.
 | --- | --- |
 | No mic or device unplugged | `test_daemon.py::test_microphone_failure_is_reported_and_releases_the_machine`, `test_audio.py::test_a_stream_that_ends_while_recording_marks_the_capture_failed`, `::test_a_new_session_after_device_loss_opens_a_fresh_stream` |
 | PipeWire restarted mid-session | `test_audio.py::test_a_stream_that_stops_delivering_marks_the_capture_failed`, `::test_releasing_a_lost_stream_does_not_wait_for_it`, `test_daemon.py::test_a_lost_microphone_injects_the_text_so_far_and_notifies`, `::test_a_lost_microphone_with_nothing_heard_injects_nothing`. Manual, 2026-09-27: `systemctl --user restart pipewire` during a session; the daemon logged the lost mic within a second, returned to idle, answered `flowctl status` at once, and the next session recorded normally. |
+| Mic held while idle (ADR 0015) | Pending: regression test with the fake stream factory. Manual: after start, a session, a cancel, device loss and resume, `pactl list source-outputs` shows no flowd stream and `arecord` records. |
 | Mic busy or permission denied | `test_daemon.py::test_microphone_failure_is_reported_and_releases_the_machine`: one notification with the error, no retry until the next `start`. |
 | STT falling behind real time | `test_daemon.py::test_stt_falling_behind_warns_with_cpu_load_and_drops_nothing` |
 | STT model fails to load | `test_main.py::test_an_stt_model_that_fails_to_load_exits_non_zero_with_a_message` (exit 4). Manual, 2026-09-27: under `flowd.service`, `kill -9` was restarted by systemd (`NRestarts=1`). |
@@ -65,6 +66,8 @@ here in the same commit.
 | Stale socket file | `test_control.py::test_stale_socket_is_removed_and_rebound` |
 | Overlay crashes | `test_overlay_ipc.py::test_dead_child_is_respawned_on_next_show`, `::test_broken_pipe_is_swallowed`. Manual, 2026-09-27: killing the overlay mid-session left dictation working, and the next session respawned it. |
 | Overlay would take focus | `test_overlay_process.py::test_overlay_disables_itself_when_layer_shell_is_unavailable`, `::test_overlay_becomes_a_layer_surface_that_refuses_focus` |
+| `flowd-ui` would take focus (ADR 0013) | Pending. Manual: click the indicator and drag it on Hyprland, Sway, KDE and X11; the paste still lands in the original app. GNOME Wayland disables `flowd-ui` with a logged reason. |
+| Settings API reached from another origin (ADR 0014) | Pending: tests for a missing or wrong token, a foreign `Host`, a foreign `Origin`, and a stale etag (`409`). |
 | Config invalid on reload | `test_daemon.py::test_reload_with_bad_config_keeps_old`, `test_config.py::test_reload_keeps_old_config_on_error`. Manual, 2026-09-27: a bad `block_ms` was rejected by `flowctl reload` and the old config stayed. |
 
 ## Resource budget (spec 12)

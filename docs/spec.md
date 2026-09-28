@@ -41,7 +41,7 @@ The target is a CPU-only Arch Linux desktop on PipeWire with a systemd user sess
 - **OS:** Arch Linux (rolling), systemd user services, PipeWire with `pipewire-pulse`.
 - **Display:** Wayland (Hyprland, Sway, KDE Plasma, GNOME) and X11. Detect at runtime from `XDG_SESSION_TYPE`, `XDG_CURRENT_DESKTOP`, `HYPRLAND_INSTANCE_SIGNATURE` and `SWAYSOCK`.
 - **CPU:** x86-64 with AVX2 as the baseline. Do not require AVX-512.
-- **Language:** Python 3 (system version) in a project virtualenv managed with `uv`. Python is chosen because the Moonshine Voice library is Python-first. Performance-critical inference already runs in native code (ONNX Runtime, llama.cpp).
+- **Language:** Python 3 (system version) in a project virtualenv managed with `uv`. Python is chosen because the Moonshine Voice library is Python-first. Performance-critical inference already runs in native code (ONNX Runtime, llama.cpp). Releases ship as native binaries built with mypyc and Nuitka (ADR 0012); the indicator and popup are a C++ program, `flowd-ui` (ADR 0013).
 
 ### System packages
 
@@ -53,7 +53,7 @@ Package names are for Arch Linux; confirm them with `pacman -Ss` or the AUR for 
 | LLM runtime | `llama.cpp` (AUR, or build from source with native CPU flags) |
 | Wayland injection | `wl-clipboard`, `wtype`, `ydotool` |
 | X11 injection | `xclip`, `xdotool` |
-| Overlay | `gtk4`, `gtk4-layer-shell`, `python-gobject` |
+| Indicator and popup | `gtk4`, `gtk4-layer-shell` (build: `gtkmm-4.0`, `cmake`) |
 
 ### Budgets
 
@@ -102,7 +102,7 @@ Use Moonshine Medium Streaming for speech-to-text and LFM2.5-350M (QAD Q4\_0 GGU
 
 ## 4. System architecture
 
-flowd is four processes: a resident daemon, a resident LLM server, a crash-isolated overlay, and a tiny hotkey client. Inside the daemon, a thread pipeline is joined by bounded queues and driven by one state machine.
+flowd is four processes: a resident daemon, a resident LLM server, a crash-isolated indicator and popup (`flowd-ui`), and a tiny hotkey client. Inside the daemon, a thread pipeline is joined by bounded queues and driven by one state machine.
 
 ```mermaid
 flowchart LR
@@ -118,7 +118,7 @@ flowchart LR
     J --> I[Injector]
   end
   Q -- HTTP localhost --> L[llama-server LFM2.5-350M]
-  S -- partials --> O[flowd-overlay]
+  S -- partials --> O[flowd-ui]
   G -- polished chunks --> O
   I --> T[Focused text box]
 ```
@@ -129,10 +129,10 @@ flowchart LR
 | --- | --- | --- |
 | `flowd` | systemd user service, starts at login | Audio, VAD, STT, committer, scheduler, guardrails, injection, control socket |
 | `llama-server` | systemd user service, starts at login | Serves LFM2.5-350M with `-c 2048`, prompt caching, threads = physical cores − 2 |
-| `flowd-overlay` | Spawned by `flowd` and restarted if it dies | GTK4 preview window; never takes keyboard focus |
+| `flowd-ui` | Spawned by `flowd` and restarted if it dies | C++ GTK4 indicator and preview popup; never takes keyboard focus |
 | `flowctl` | Per hotkey press, exits immediately | Sends one command to the daemon |
 
-The overlay is a separate process because GTK wants the main thread, and an overlay crash must never kill a dictation.
+`flowd-ui` is a separate process because GTK wants the main thread, and a UI crash must never kill a dictation.
 
 ### Threads inside flowd
 
@@ -184,7 +184,8 @@ class Session:
 ### IPC
 
 - **Control socket:** `$XDG_RUNTIME_DIR/flowd.sock`, newline-delimited JSON, e.g. `{"cmd": "toggle"}`. Commands: `start`, `stop`, `toggle`, `cancel`, `status`, `last`, `stats`, `reload`. The socket also serves as the single-instance lock.
-- **Overlay messages:** newline-delimited JSON over the child's stdin, e.g. `{"type": "render", "polished": "...", "pending": "...", "live": "..."}`, plus `show`, `hide` and `status` messages.
+- **UI messages:** newline-delimited JSON over `flowd-ui`'s stdin, e.g. `{"type": "render", "polished": "...", "pending": "...", "live": "..."}`, plus `show`, `fade`, `hide`, `state`, `level`, `meta`, `warn` and `config`. `flowd-ui` writes `click` and `moved` events to stdout (ADR 0013).
+- **Settings page:** HTTP on `127.0.0.1:8178`, token-authenticated (ADR 0014). `flowctl settings` opens it.
 
 ## 5. Component specifications
 
@@ -196,6 +197,7 @@ Each component sits behind a small interface so backends can be swapped and test
 - **Mic policy:** by default, open the stream on `start` and close it on stop or cancel, so the mic indicator is off when idle. With `audio.always_open = true`, keep the stream open and retain a 300 ms pre-roll so the first syllable is never clipped. This is a privacy trade-off, off by default.
 - Measure first-word clipping in the eval (section 11). If the clip rate exceeds 5%, recommend enabling `always_open` in the report rather than changing the default silently.
 - Device selection: `audio.device` (name or index); default = the PipeWire default source. On device loss, end the session with an error and retry opening on the next `start`.
+- **Idle holds no stream (ADR 0015).** While idle, no flowd capture stream exists and other programs can record. Open through PipeWire or PulseAudio, never a raw `hw:` device unless named in `audio.device`. PortAudio loads on the first dictation, not at start. A stream that fails to stop in time is reported as a warning and the daemon restarts itself at the next idle moment to free the device.
 
 ### 5.2 VAD (`vad.py`)
 
@@ -250,16 +252,19 @@ Backends, tried in configured order; default: `clipboard`, then `wtype` (wlroots
 
 The last final text is always kept in memory and returned by `flowctl last`, so nothing is lost if injection lands nowhere.
 
-### 5.8 Overlay (`flowd-overlay`)
+### 5.8 Indicator and popup (`flowd-ui`)
 
-- GTK4 with `gtk4-layer-shell` on wlroots compositors and KDE: anchored bottom-center, keyboard interactivity `none`.
-- On X11: an undecorated, override-redirect or `_NET_WM_STATE_ABOVE` window that does not accept focus.
-- On GNOME/Wayland, which lacks layer-shell: if the window cannot be guaranteed never to take focus, disable the overlay and log why. **A focus-stealing overlay breaks injection and is worse than no overlay.**
-- Render three zones: polished (normal), pending (dimmed), live partial (italic, secondary colour). Cap it at 4 visible lines, auto-scroll to the end, and fade out 1 s after injection.
+A C++ program (gtkmm-4.0, gtk4-layer-shell), spawned and supervised by the daemon (ADR 0013). Visual design: `docs/design/design.md`.
+
+- **Indicator:** a small pill at the bottom edge, always present when `[ui] indicator = true`. Idle it is a dim 48 × 8 px line; on hover it expands to a mic button; recording shows a live level meter; finishing and warning states follow the design. Click toggles dictation; drag moves it along the bottom edge, with its position saved per output.
+- **Popup:** appears above the indicator while dictating. Three zones: polished (normal), pending (dimmed, underlined), live partial (italic, accent colour). Up to `[ui] max_lines` lines, auto-scrolls, fades out `[ui] fade_ms` after injection.
+- **Focus:** both are layer surfaces with keyboard interactivity `none`. On X11, override-redirect windows that never accept focus. On GNOME Wayland, which lacks layer-shell, `flowd-ui` disables itself and logs why. **A focus-stealing surface breaks injection and is worse than none.**
+- **Text goes in at release.** The popup is a preview; the text is injected into the focused app when dictation stops. Typing into the app while speaking is version 2 (section 12).
 
 ### 5.9 flowctl
 
-- A tiny Python or shell client: connect to the socket, send one JSON line, print the reply, exit. It must finish in under 50 ms.
+- `flowctl settings` opens the settings page in the browser (ADR 0014).
+- A tiny client: connect to the socket, send one JSON line, print the reply, exit. It must finish in under 50 ms.
 - Hotkey examples go in the README: a Hyprland `bind`, a Sway `bindsym`, KDE and GNOME custom shortcuts, and `sxhkd` for X11. Support both `toggle` and push-to-talk (`start` on press, `stop` on release, where the compositor supports release bindings).
 
 ## 6. Chunked streaming cleanup
@@ -466,6 +471,7 @@ short_bypass_words = 5
 correction_cues = ["no wait", "no no", "actually", "i mean", "sorry", "scratch that", "let me rephrase"]
 
 [llm]
+enabled = true               # false = always rule-based text
 url = "http://127.0.0.1:8177"
 timeout_ms = 2000
 final_timeout_ms = 800
@@ -482,10 +488,19 @@ order = ["clipboard", "wtype", "ydotool", "xdotool"]
 restore_delay_ms = 150
 terminal_apps = ["kitty", "Alacritty", "foot", "org.wezfurlong.wezterm", "konsole", "org.gnome.Terminal"]
 
-[overlay]
+[ui]                         # replaces [overlay], which is still read for one release
 enabled = true
+indicator = true             # always-present pill at the bottom edge
+theme = "system"             # system | light | dark
 max_lines = 4
 fade_ms = 1000
+footer = true                # mode and app in the popup
+notify_on_finish = false
+hotkey_label = ""            # shown in hints only, e.g. "Super D"
+
+[settings]
+enabled = true
+port = 8178                  # loopback only
 
 [modes]                      # app id (as reported by context.py) -> mode
 "code" = "code"
@@ -518,10 +533,11 @@ flowd/
 │   ├── joiner.py
 │   ├── context.py
 │   ├── inject/               # base.py, clipboard.py, wtype.py, ydotool.py, xdotool.py
-│   ├── overlay_ipc.py
+│   ├── overlay_ipc.py        # flowd-ui child process and protocol
+│   ├── settings_server.py    # loopback HTTP server for the settings page
 │   └── metrics.py
-├── overlay/
-│   └── flowd_overlay.py      # GTK4 process
+├── ui/                       # flowd-ui, C++ (CMake)
+├── docs/design/              # design.md, settings page and its assets
 ├── flowctl                   # CLI client
 ├── prompts/                  # system.txt, fewshot.jsonl, modes/*.txt
 ├── vocab.toml.example
@@ -614,7 +630,9 @@ Measure every stage of every session . Budgets are pass/fail gates, and reported
 | Release → last chunk committed | STT finalize | ≤ 300 ms |
 | Release → all chunks resolved | Final LLM call | ≤ 500 ms (hard cap `final_timeout_ms`) |
 | Release → text injected | End to end | p50 ≤ 600 ms, p95 ≤ 1,000 ms |
-| Idle resident memory | RSS of `flowd` + `llama-server` + overlay | ≤ 900 MB |
+| Idle memory | Anonymous memory of `flowd` + `llama-server` + `flowd-ui` | ≤ 1,600 MB (ADR 0011); ≤ 1,350 MB after ADR 0012/0013 |
+| `flowctl` round trip | Command sent → reply | ≤ 20 ms |
+| Daemon start → ready | Process start → socket accepting, models loaded | ≤ 5 s |
 | Idle CPU | 60 s average | < 1% |
 
 ### 10.2 Session metrics log
@@ -635,6 +653,8 @@ Measure every stage of every session . Budgets are pass/fail gates, and reported
 3. Lower `max_chunk_words` so each LLM call is smaller.
 4. Build `llama.cpp` with native CPU flags.
 5. Only then propose an approved fallback model (section 3), via a decision record.
+
+Known further optimizations, not yet scheduled: one shared ONNX Runtime for Moonshine and Parakeet (both bundle their own, roughly 50–100 MB), and the ~2.2 s from mic open to the first preview word.
 
 ## 11. Testing and evaluation
 
@@ -686,6 +706,22 @@ flowd is built in seven milestones, in order. A milestone is done when every acc
 | 4. Chunk pipelining | Scheduler: single-flight, coalescing, merges, release flush | Scheduler and merge unit tests pass. On 60 s dictations, release → inject p50 ≤ 600 ms and p95 ≤ 1,000 ms. The eval shows cleaned WER no worse than phase 3 by more than 1 pt. |
 | 5. Context and polish | `context.py`, modes, `vocab.toml` and reload, all injector backends, terminal paste | Mode switches correctly in at least 3 apps. Vocab replacement works after `flowctl reload` without a restart. Each backend works where supported, or falls through with a logged reason. |
 | 6. Hardening | Every edge case in section 9, `flowd.service`, README (install, hotkeys per compositor, `ydotool` setup, troubleshooting), optional full-rewrite mode | Every section 9 row has a passing test or a logged manual check. Idle RAM ≤ 900 MB and idle CPU < 1%. A 24 h idle soak shows no leaks or restarts. |
+
+### Next
+
+In order, each done when its criteria pass:
+
+| Step | Deliverable | Acceptance criteria |
+| --- | --- | --- |
+| 7. Microphone release | ADR 0015 | While idle after start, a session, a cancel, device loss and resume, `pactl list source-outputs` shows no flowd stream and `arecord` can record. Regression test with the fake stream factory passes. |
+| 8. `flowd-ui` | ADR 0013: C++ indicator and popup | Click and hotkey both toggle. Drag, snap and per-output position work and survive restart. Neither surface takes focus on Hyprland, Sway, KDE and X11; GNOME Wayland disables with a logged reason. `flowd-ui` ≤ 40 MB anonymous memory. |
+| 9. Settings page | ADR 0014 | Every setting in 8.1 and `vocab.toml` editable; comments in `config.toml` survive a save. Token, `Host` and `Origin` checks and the `409` conflict are tested. Playwright tests pass, including 320 px width. |
+| 10. Native build | ADR 0012: `make dist` | `dist/flowd`, `dist/flowctl`, `flowd-ui` run without a venv. pytest passes against the compiled modules. Targets in ADR 0012 met; 24 h soak on the built binaries shows no growth or restarts. |
+
+### Version 2
+
+- **Typing into the focused app while speaking.** Default stays preview-then-paste. Config choices: type each cleaned chunk as it resolves (never rewritten); type raw words live and correct with backspaces; or paste at release with no popup. Selectable per mode.
+  Needs a decision record first: typing text before release relaxes the 13.2 rule against typing partial or unpolished text.
 
 
 ## 13. Engineering rules
