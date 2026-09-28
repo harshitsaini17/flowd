@@ -387,7 +387,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "sherpa-onnx", specifier = "==1.13.8" },
-    { name = "sounddevice", specifier = ">=0.5.0" },
+    { name = "sounddevice", specifier = ">=0.5.0,<0.6" },
 ]
 provides-extras = ["dev"]
 

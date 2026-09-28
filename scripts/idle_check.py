@@ -5,7 +5,9 @@ Sums anonymous memory (ADR 0006) and RSS over flowd, its overlay and
 llama-server, then samples their CPU time for `--seconds` (spec 10.1: 60 s).
 With `--soak HOURS` it repeats the check every `--every` minutes and reports
 growth and PID changes, which is the 24 h leak and restart check. Also verifies
-that flowd holds no PipeWire client while idle (ADR 0015).
+that flowd holds no PipeWire client while idle (ADR 0015). With
+`[audio] always_open = true` flowd keeps its stream open on purpose, so that
+check fails by design.
 
 Run it while flowd is idle. Reads /proc only; it never talks to the daemon.
 """

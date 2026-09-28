@@ -5,7 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, NoReturn
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "idle_check.py"
 
@@ -49,12 +51,12 @@ def test_other_objects_and_processes_are_ignored() -> None:
         sys.modules.pop("idle_check", None)
 
 
-def test_pw_dump_failure_is_reported(monkeypatch):  # type: ignore
+def test_pw_dump_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     """When pw-dump fails, mic_clients returns a failure string instead of raising."""
     module = load()
     try:
 
-        def mock_run(*args, **kwargs):  # type: ignore
+        def mock_run(*args: Any, **kwargs: Any) -> NoReturn:
             raise subprocess.CalledProcessError(1, "pw-dump", stderr="PipeWire not running")
 
         monkeypatch.setattr("idle_check.subprocess.run", mock_run)

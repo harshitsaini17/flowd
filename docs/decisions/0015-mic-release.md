@@ -40,10 +40,22 @@ order they will be checked:
   asserts no stream stays open while idle.
 - `docs/edge-cases.md` gets a manual check: record with `pw-record` while flowd
   is idle.
-- PortAudio is terminated after every clean release and re-initialised before
-  the next open.
-- An abandoned stream makes the daemon exit with code 5 once idle, so systemd
-  restarts it and the device is freed.
+- PortAudio is terminated when a stream is released and no abandoned stop is
+  still running, and re-initialised before the next open. While an abandoned
+  stop runs it is inside `Pa_StopStream`, so PortAudio is kept; the skipped
+  release happens once that stop finishes, checked while idle.
+- A slow stop is not a stuck one. PortAudio's stop on a restarted audio
+  server took 8 s live and then completed, so an abandoned stop gets
+  `LEAK_GRACE_S` (10 s) to finish. Only one still running after that makes
+  the daemon exit with code 5 once idle, so systemd restarts it and the
+  device is freed. A PipeWire restart mid-dictation therefore does not
+  restart flowd.
+- That exit is `os._exit`, after flushing logs and stdio. A normal exit runs
+  `sounddevice`'s atexit handler, whose `Pa_Terminate` could deadlock against
+  the stop still in progress and keep the process, and so the device, alive.
+- A failed open (device busy, permission denied, or `start()` failing) closes
+  whatever stream was created and releases PortAudio before the error
+  propagates, so the idle daemon holds no PipeWire client.
 - The warning is a desktop notification until `flowd-ui` (ADR 0013) can show
   it.
 
