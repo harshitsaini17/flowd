@@ -38,5 +38,26 @@ order they will be checked:
 
 - A regression test drives the fake stream factory through each case above and
   asserts no stream stays open while idle.
-- `docs/edge-cases.md` gets a manual check: record with `arecord` while flowd
+- `docs/edge-cases.md` gets a manual check: record with `pw-record` while flowd
   is idle.
+- PortAudio is terminated after every clean release and re-initialised before
+  the next open.
+- An abandoned stream makes the daemon exit with code 5 once idle, so systemd
+  restarts it and the device is freed.
+- The warning is a desktop notification until `flowd-ui` (ADR 0013) can show
+  it.
+
+## Findings
+
+Measured 2026-09-28, this machine:
+
+- The default input resolves to the ALSA `default` device (index 5), which
+  routes through `pipewire-alsa`. With `audio.device = "default"` PortAudio
+  does not open a raw `hw:` device, so cause 2 above is ruled out for the
+  default config.
+- `import sounddevice` runs `Pa_Initialize`, which registers a PipeWire JACK
+  client and a node named `PortAudio` in state `running`, with 0 ports and no
+  links. It stays until `Pa_Terminate` removes it; closing the stream alone
+  leaves the client behind.
+- Re-initialising PortAudio (`_terminate` then `_initialize`) costs about
+  17 ms, added to mic open on the next session.

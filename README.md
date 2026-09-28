@@ -359,6 +359,7 @@ code:
 | 2 | A model file does not match `models.lock` | Run `scripts/fetch_models.sh`. flowd refuses to run a model it cannot identify, and systemd does not retry this one. |
 | 3 | The config file is invalid | The reason is on the line above, e.g. `flowd: invalid config: block_ms ...`. Fix `~/.config/flowd/config.toml`. |
 | 4 | A speech model failed to load | Usually a missing or partial download: run `scripts/fetch_models.sh`. To run on Moonshine alone, set `[stt] final_model = ""`. |
+| 5 | An audio stream would not stop | systemd restarts flowd, which releases the microphone. If it repeats, check `journalctl --user -u flowd` for the device that hung. |
 
 After fixing it, `systemctl --user reset-failed flowd` lets systemd try again
 if it had given up.
