@@ -39,6 +39,51 @@ How each edge case it lists is covered is in
 Decisions that diverge from it are recorded in
 [`docs/decisions/`](docs/decisions/).
 
+## Quick start
+
+On Arch Linux with Hyprland or Sway:
+
+```bash
+sudo pacman -S --needed uv pipewire pipewire-pulse portaudio llama-cpp \
+  wl-clipboard wtype gtk4 gtk4-layer-shell python-gobject
+git clone https://github.com/harshitsaini17/flowd
+cd flowd
+make install
+```
+
+`make install` sets up a virtualenv in the checkout, downloads and verifies the
+models (about 1.1 GB), installs the two user services with paths and thread
+counts for this machine, puts `flowctl` on your `PATH` and starts flowd. It
+never uses `sudo`. If a system package is missing it names it and stops, and it
+is safe to run again.
+
+It finishes by printing the hotkey line for your compositor. On Hyprland, add
+to `~/.config/hypr/hyprland.conf`:
+
+```ini
+bind = SUPER, D, exec, flowctl toggle
+```
+
+Press it, speak, press it again: the text is typed into the focused window.
+Other desktops, push-to-talk and the X11 packages are under
+[Hotkeys](#hotkeys) and [Requirements](#requirements).
+
+### Everyday commands
+
+| Command | What it does |
+|---|---|
+| `make status` | Is flowd running, and what is it doing |
+| `make logs` | Follow the daemon log |
+| `make restart` | Restart after a `git pull` or a config change |
+| `make stop` / `make start` | Stop or start the services |
+| `make run` | Run flowd in this terminal instead, for trying it out (stop the service first) |
+| `make check` | Idle memory and CPU, and that flowd is not holding the microphone |
+| `make uninstall` | Stop flowd and remove its services; keeps models and config |
+| `make test` | Linters, type checks and tests, as CI runs them |
+
+`make` on its own lists them. `scripts/uninstall.sh --purge` also deletes the
+models.
+
 ## Requirements
 
 A Linux desktop, Python 3.11 or newer, and a CPU with AVX2. AVX-512 is not
@@ -66,7 +111,10 @@ On other distributions the names differ but the set does not: PipeWire (or
 PulseAudio), PortAudio, llama.cpp, the clipboard and typing tools for your
 session type, and GTK4 with the layer-shell library.
 
-## Install
+## Manual install
+
+`make install` does everything in this section and the next. The steps are
+here for doing it by hand, or on a setup the script does not cover.
 
 ```bash
 git clone https://github.com/harshitsaini17/flowd
