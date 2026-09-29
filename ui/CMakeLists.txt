@@ -28,6 +28,8 @@ set(FLOWD_CORE_SOURCES
   src/indicator_model.cpp
   src/popup_model.cpp
   src/footer.cpp
+  src/theme.cpp
+  src/icons.cpp
 )
 add_library(flowd-ui-core STATIC ${FLOWD_CORE_SOURCES} src/version.hpp)
 set_target_properties(flowd-ui-core PROPERTIES LINKER_LANGUAGE CXX)
@@ -46,6 +48,7 @@ set(FLOWD_CORE_TESTS
   tests/test_indicator_model.cpp
   tests/test_popup_model.cpp
   tests/test_footer.cpp
+  tests/test_theme.cpp
 )
 add_executable(flowd-ui-tests tests/main.cpp ${FLOWD_CORE_TESTS})
 target_link_libraries(flowd-ui-tests PRIVATE flowd-ui-core)
@@ -81,6 +84,7 @@ endif()
 
 set(FLOWD_GTK_TESTS
   # tests that need GTK (e.g. icon path parsing)
+  tests/test_icons_parse.cpp
 )
 if(FLOWD_GTK_TESTS)
   add_executable(flowd-ui-gtk-tests tests/main.cpp ${FLOWD_GTK_TESTS})

@@ -4,6 +4,7 @@
 #include <string>
 #include <variant>
 
+#include "icons.hpp"
 #include "protocol.hpp"
 
 // What the preview popup shows, for how long, and when it leaves. The widget
@@ -16,18 +17,6 @@ enum class PopupPhase {
     Entering,
     Shown,
     Exiting,
-};
-
-// The Lucide icons the popup footer uses (design.md "Preview popup" → States).
-enum class Icon {
-    Check,
-    Info,
-    X,
-    MicOff,
-    CircleAlert,
-    Timer,
-    LoaderCircle,
-    TriangleAlert,
 };
 
 // The footer icon's color role. Muted is text-2. design.md: error footers use
