@@ -27,7 +27,10 @@ struct TempDir {
     }
     ~TempDir() {
         // Only ever this exact path, and never throwing from a destructor.
+        // A test may have made it read-only; restore that first so the
+        // removal works even when the test failed part-way.
         std::error_code ec;
+        std::filesystem::permissions(path, std::filesystem::perms::owner_all, ec);
         std::filesystem::remove_all(path, ec);
     }
     TempDir(const TempDir&) = delete;

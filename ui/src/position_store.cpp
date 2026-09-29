@@ -1,14 +1,14 @@
 #include "position_store.hpp"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
-#include <fstream>
-#include <iterator>
+#include <optional>
 #include <nlohmann/json.hpp>
 #include <system_error>
 
@@ -26,6 +26,8 @@ constexpr const char* kAppDir = "flowd";
 constexpr const char* kFileName = "indicator.json";
 // A plain user file; the umask narrows it further.
 constexpr mode_t kFileMode = 0644;
+// The real file is a few dozen bytes per output; anything past this is not ours.
+constexpr std::size_t kMaxFileBytes = 64 * 1024;
 
 bool in_range(double f) { return f >= kMinFraction && f <= kMaxFraction; }
 
@@ -39,22 +41,59 @@ bool write_all(int fd, const std::string& text) {
             if (errno == EINTR) continue;
             return false;
         }
+        // write() returning 0 for a non-empty buffer makes no progress; bail
+        // out instead of spinning.
+        if (n == 0) return false;
         p += n;
         left -= static_cast<std::size_t>(n);
     }
     return true;
 }
 
+// Reads a whole regular file with plain POSIX calls. ifstream is not used on
+// purpose: libstdc++ throws from basic_filebuf::underflow on a read error
+// (e.g. when the path is a directory), which would terminate flowd-ui.
+std::optional<std::string> read_small_file(const std::filesystem::path& path) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return std::nullopt;
+
+    std::optional<std::string> text;
+    struct stat st {};
+    if (::fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+        std::string buf;
+        char chunk[4096];
+        bool ok = true;
+        for (;;) {
+            const ssize_t n = ::read(fd, chunk, sizeof chunk);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                ok = false;
+                break;
+            }
+            if (n == 0) break;
+            buf.append(chunk, static_cast<std::size_t>(n));
+            if (buf.size() > kMaxFileBytes) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) text = std::move(buf);
+    }
+    // A read-only descriptor has no pending writes, but a failed close still
+    // means the read cannot be trusted.
+    if (::close(fd) != 0) return std::nullopt;
+    return text;
+}
+
 }  // namespace
 
 PositionStore::PositionStore(std::filesystem::path file) : file_(std::move(file)) {
     if (file_.empty()) return;
-    // ifstream does not throw by default; a missing file just reads as defaults.
-    std::ifstream in(file_, std::ios::binary);
-    if (!in) return;
-    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    // A missing, unreadable, oversized or non-regular file reads as defaults.
+    const auto text = read_small_file(file_);
+    if (!text) return;
 
-    const json doc = json::parse(text, nullptr, false);
+    const json doc = json::parse(*text, nullptr, false);
     if (doc.is_discarded() || !doc.is_object()) return;
     const auto version = doc.find("version");
     if (version == doc.end() || !version->is_number_integer() || *version != kPositionFileVersion) return;

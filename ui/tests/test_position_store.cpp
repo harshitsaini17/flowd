@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -20,16 +21,18 @@ public:
     ScopedEnv(const char* name, const char* value) : name_(name) {
         if (const char* old = std::getenv(name)) old_ = old;
         if (value) {
-            setenv(name, value, 1);
+            REQUIRE(setenv(name, value, 1) == 0);
         } else {
-            unsetenv(name);
+            REQUIRE(unsetenv(name) == 0);
         }
     }
     ~ScopedEnv() {
+        // A destructor cannot fail a test, and with a valid name these calls
+        // only fail on out-of-memory, so the results are deliberately ignored.
         if (old_) {
-            setenv(name_, old_->c_str(), 1);
+            (void)setenv(name_, old_->c_str(), 1);
         } else {
-            unsetenv(name_);
+            (void)unsetenv(name_);
         }
     }
     ScopedEnv(const ScopedEnv&) = delete;
@@ -113,8 +116,35 @@ TEST_CASE("store: an unwritable directory fails quietly") {
     PositionStore s(d.path / "indicator.json");
     CHECK_FALSE(s.set("eDP-1", 0.4));
     CHECK(s.get("eDP-1") == doctest::Approx(0.4));  // kept in memory for this run
-    std::filesystem::permissions(d.path, std::filesystem::perms::owner_all);
-    CHECK_FALSE(std::filesystem::exists(d.path / "indicator.json"));
+    // TempDir's destructor restores the permissions, even if a check fails.
+    CHECK(std::filesystem::is_empty(d.path));  // no indicator.json, no .tmp.<pid>
+}
+
+TEST_CASE("store: a path that is a directory reads as defaults and fails to save") {
+    TempDir d;
+    std::filesystem::create_directory(d.path / "indicator.json");
+    std::optional<PositionStore> s;
+    CHECK_NOTHROW(s.emplace(d.path / "indicator.json"));
+    REQUIRE(s.has_value());
+    CHECK(s->get("eDP-1") == doctest::Approx(0.5));
+    CHECK_FALSE(s->set("eDP-1", 0.3));
+}
+
+TEST_CASE("store: an output name that is not UTF-8 does not throw") {
+    TempDir d;
+    PositionStore s(d.path / "indicator.json");
+    bool ok = false;
+    CHECK_NOTHROW(ok = s.set("bad\xff", 0.3));
+    CHECK(ok);
+    CHECK(s.get("bad\xff") == doctest::Approx(0.3));
+}
+
+TEST_CASE("store: NaN is stored as the centre") {
+    TempDir d;
+    PositionStore s(d.path / "indicator.json");
+    CHECK(s.set("eDP-1", NAN));
+    CHECK(s.get("eDP-1") == doctest::Approx(0.5));
+    CHECK(PositionStore(d.path / "indicator.json").get("eDP-1") == doctest::Approx(0.5));
 }
 
 TEST_CASE("store: an empty path fails quietly") {
