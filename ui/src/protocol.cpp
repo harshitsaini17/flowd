@@ -175,13 +175,13 @@ std::optional<Message> parse_message(std::string_view line) {
             ui.max_lines = std::clamp(*v, kMaxLinesFloor, kMaxLinesCeiling);
         }
         if (auto v = field<int>(ui_obj, "fade_ms")) {
-            ui.fade_ms = std::clamp(*v, 0, kFadeMsCeiling);
+            ui.fade_ms = std::clamp(*v, kFadeMsFloor, kFadeMsCeiling);
         }
         if (auto v = field<bool>(ui_obj, "footer")) {
             ui.footer = *v;
         }
         if (auto v = field<int>(ui_obj, "max_session_s")) {
-            ui.max_session_s = std::clamp(*v, 1, kMaxSessionSCeiling);
+            ui.max_session_s = std::clamp(*v, kMaxSessionSFloor, kMaxSessionSCeiling);
         }
         if (auto v = field<std::string>(ui_obj, "hotkey_label")) {
             ui.hotkey_label = *v;

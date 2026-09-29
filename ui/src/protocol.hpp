@@ -39,6 +39,10 @@ constexpr int kDefaultMaxSessionS = 300;
 constexpr int kFadeMsCeiling = 10000;
 constexpr int kMaxSessionSCeiling = 3600;
 constexpr int kMaxLinesFloor = 1;
+// 0 means no hold: the popup fades at once.
+constexpr int kFadeMsFloor = 0;
+// A session needs at least a second to mean anything.
+constexpr int kMaxSessionSFloor = 1;
 
 struct UiConfig {
     bool indicator = true;
