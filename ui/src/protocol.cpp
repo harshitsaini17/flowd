@@ -58,8 +58,8 @@ constexpr std::array<std::pair<std::string_view, UiState>, 9> kStateMap{{
     {"fallback", UiState::Fallback},
     {"error", UiState::Error},
     {"cancelled", UiState::Cancelled},
-    {"no_speech", UiState::NoSpeech},
-    {"time_limit", UiState::TimeLimit},
+    {"nospeech", UiState::NoSpeech},
+    {"timelimit", UiState::TimeLimit},
 }};
 
 // Map theme string names to Theme enum values.

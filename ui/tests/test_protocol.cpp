@@ -73,3 +73,13 @@ TEST_CASE("protocol: out-of-range config integers are ignored, not truncated") {
     auto& c = std::get<ConfigMsg>(*m).ui;
     CHECK(c.max_lines == kDefaultMaxLines);
 }
+
+TEST_CASE("protocol: state names follow the ADR spelling") {
+    auto a = parse_message(R"({"type":"state","state":"nospeech","reason":""})");
+    REQUIRE(a);
+    CHECK(std::get<StateMsg>(*a).state == UiState::NoSpeech);
+    auto b = parse_message(R"({"type":"state","state":"timelimit","reason":""})");
+    REQUIRE(b);
+    CHECK(std::get<StateMsg>(*b).state == UiState::TimeLimit);
+    CHECK_FALSE(parse_message(R"({"type":"state","state":"no_speech","reason":""})"));
+}
