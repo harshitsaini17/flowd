@@ -63,6 +63,8 @@ TEST_CASE("theme: high contrast makes glass opaque and borders strong") {
         CHECK(h.border.r == doctest::Approx(h.border_strong.r));
         CHECK(h.border.a == doctest::Approx(1.0));
         CHECK(h.pending.r == doctest::Approx(h.text.r));
+        CHECK(h.high_contrast);
+        CHECK_FALSE(tokens(dark, false).high_contrast);
     }
 }
 

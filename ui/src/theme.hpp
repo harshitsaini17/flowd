@@ -59,6 +59,9 @@ struct Tokens {
     // design.md "Glass material": dark glass adds a 1 px black-50% outer edge
     // on top of the white-10% inner one, so it separates from dark wallpaper.
     bool dark_edge;
+    // design.md "Elevation & Depth": floating surfaces keep their edge but
+    // drop shadow-float in high contrast, so drawing skips the shadow layers.
+    bool high_contrast;
 };
 
 Tokens tokens(bool dark, bool high_contrast);

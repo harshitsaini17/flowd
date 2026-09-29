@@ -31,6 +31,8 @@ set(FLOWD_CORE_SOURCES
   src/theme.cpp
   src/icons.cpp
   src/backend.cpp
+  src/indicator_geometry.cpp
+  src/output_events.cpp
 )
 add_library(flowd-ui-core STATIC ${FLOWD_CORE_SOURCES} src/version.hpp)
 set_target_properties(flowd-ui-core PROPERTIES LINKER_LANGUAGE CXX)
@@ -51,6 +53,8 @@ set(FLOWD_CORE_TESTS
   tests/test_footer.cpp
   tests/test_theme.cpp
   tests/test_backend.cpp
+  tests/test_indicator_geometry.cpp
+  tests/test_output_events.cpp
 )
 add_executable(flowd-ui-tests tests/main.cpp ${FLOWD_CORE_TESTS})
 target_link_libraries(flowd-ui-tests PRIVATE flowd-ui-core)
@@ -69,6 +73,9 @@ pkg_check_modules(FLOWD_GTK REQUIRED IMPORTED_TARGET gtk4-layer-shell-0 gtkmm-4.
 # The GTK widgets and surfaces, shared by the program and the GTK tests.
 set(FLOWD_GTK_LIB_SOURCES
   src/surface.cpp
+  src/draw.cpp
+  src/outputs.cpp
+  src/indicator.cpp
 )
 add_library(flowd-ui-gtk STATIC ${FLOWD_GTK_LIB_SOURCES})
 target_link_libraries(flowd-ui-gtk PUBLIC flowd-ui-core PkgConfig::FLOWD_GTK)

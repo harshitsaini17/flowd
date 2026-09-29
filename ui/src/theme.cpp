@@ -70,6 +70,7 @@ Tokens dark() {
 Tokens tokens(bool is_dark, bool high_contrast) {
     Tokens t = is_dark ? dark() : light();
     t.pending = t.text2;
+    t.high_contrast = high_contrast;
     if (high_contrast) {
         // design.md "High contrast": opaque glass, border-strong edges, and
         // pending words in text.
