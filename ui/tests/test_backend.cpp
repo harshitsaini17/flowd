@@ -71,6 +71,8 @@ TEST_CASE("backend: X11 origin turns bottom-left margins into a top-left point")
     const X11Origin r = x11_origin({1920, 0, 2560, 1440}, 100, 28, 2560, 200);
     CHECK(r.x == 1920);  // full width: clamped back to the left edge
     CHECK(r.y == 1440 - 28 - 200);
+    const X11Origin n = x11_origin({1920, 0, 2560, 1440}, 100, 28, 144, 54);
+    CHECK(n.x == 2020);
 }
 
 TEST_CASE("backend: X11 origin keeps the window inside the workarea") {

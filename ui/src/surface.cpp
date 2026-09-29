@@ -241,7 +241,9 @@ bool show_x11_overlay(Gtk::Window& win) {
     // Not present(): GTK4 present() asks the window manager to focus the
     // window (_NET_ACTIVE_WINDOW, XSetInputFocus).
     win.set_visible(true);
-    return true;
+    // The map handler hides the window again if GDK's rewritten hints fail
+    // the check, so report what is actually on screen.
+    return win.get_visible() && x11_state(win).verified_xid == t->xid;
 }
 
 bool place_x11_overlay(Gtk::Window& win, const Glib::RefPtr<Gdk::Monitor>& monitor,

@@ -136,6 +136,9 @@ also produces.
 
 ### Where layer-shell is absent
 
+Superseded for X11 by [0013](0013-flowd-ui.md), which gives X11 an
+override-redirect surface verified by read-back.
+
 GNOME Wayland (which does not implement `zwlr_layer_shell_v1`), X11, and any
 process the library could not be preloaded into are indistinguishable from here
 and get the same treatment: the overlay logs
