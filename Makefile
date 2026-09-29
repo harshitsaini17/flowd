@@ -1,6 +1,6 @@
 # Short commands for installing, running and developing flowd. `make` lists them.
 .DEFAULT_GOAL := help
-.PHONY: help install uninstall run start stop restart status logs check test
+.PHONY: help install uninstall run start stop restart status logs check test ui ui-test
 
 SERVICES := flowd-llm.service flowd.service
 
@@ -40,3 +40,11 @@ test: ## Run the linters, type checks and tests, as CI does
 	uv run ruff format --check .
 	uv run mypy flowd flowctl eval
 	uv run pytest -q
+	@if command -v cmake >/dev/null 2>&1; then $(MAKE) --no-print-directory ui-test; fi
+
+ui: ## Build the indicator and popup (flowd-ui) into build/ui
+	cmake -S ui -B build/ui -DCMAKE_BUILD_TYPE=Release
+	cmake --build build/ui -j
+
+ui-test: ui ## Run the flowd-ui unit tests
+	ctest --test-dir build/ui --output-on-failure
