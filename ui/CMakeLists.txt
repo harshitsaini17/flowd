@@ -30,6 +30,7 @@ set(FLOWD_CORE_SOURCES
   src/footer.cpp
   src/theme.cpp
   src/icons.cpp
+  src/backend.cpp
 )
 add_library(flowd-ui-core STATIC ${FLOWD_CORE_SOURCES} src/version.hpp)
 set_target_properties(flowd-ui-core PROPERTIES LINKER_LANGUAGE CXX)
@@ -49,6 +50,7 @@ set(FLOWD_CORE_TESTS
   tests/test_popup_model.cpp
   tests/test_footer.cpp
   tests/test_theme.cpp
+  tests/test_backend.cpp
 )
 add_executable(flowd-ui-tests tests/main.cpp ${FLOWD_CORE_TESTS})
 target_link_libraries(flowd-ui-tests PRIVATE flowd-ui-core)
@@ -64,12 +66,19 @@ find_package(PkgConfig REQUIRED)
 # (the build checks this with readelf). That order is what lets it work without LD_PRELOAD.
 pkg_check_modules(FLOWD_GTK REQUIRED IMPORTED_TARGET gtk4-layer-shell-0 gtkmm-4.0 gtk4-x11 x11)
 
+# The GTK widgets and surfaces, shared by the program and the GTK tests.
+set(FLOWD_GTK_LIB_SOURCES
+  src/surface.cpp
+)
+add_library(flowd-ui-gtk STATIC ${FLOWD_GTK_LIB_SOURCES})
+target_link_libraries(flowd-ui-gtk PUBLIC flowd-ui-core PkgConfig::FLOWD_GTK)
+
 set(FLOWD_GTK_SOURCES
   # GTK program sources
 )
 if(FLOWD_GTK_SOURCES)
   add_executable(flowd-ui ${FLOWD_GTK_SOURCES})
-  target_link_libraries(flowd-ui PRIVATE flowd-ui-core PkgConfig::FLOWD_GTK)
+  target_link_libraries(flowd-ui PRIVATE flowd-ui-gtk)
   target_link_options(flowd-ui PRIVATE -Wl,--no-as-needed $<$<CONFIG:Release>:-s>)
   if(flowd_lto)
     set_property(TARGET flowd-ui PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
@@ -85,9 +94,10 @@ endif()
 set(FLOWD_GTK_TESTS
   # tests that need GTK (e.g. icon path parsing)
   tests/test_icons_parse.cpp
+  tests/test_surface.cpp
 )
 if(FLOWD_GTK_TESTS)
   add_executable(flowd-ui-gtk-tests tests/main.cpp ${FLOWD_GTK_TESTS})
-  target_link_libraries(flowd-ui-gtk-tests PRIVATE flowd-ui-core PkgConfig::FLOWD_GTK)
+  target_link_libraries(flowd-ui-gtk-tests PRIVATE flowd-ui-gtk)
   add_test(NAME gtk COMMAND flowd-ui-gtk-tests)
 endif()
