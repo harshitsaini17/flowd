@@ -56,16 +56,33 @@ bool make_overlay_surface(Gtk::Window& win, const char* ns, Edges anchors, Margi
 // e.g. the indicator's left margin while it is dragged.
 void set_overlay_margins(Gtk::Window& win, Margins margins);
 
-// Makes win an override-redirect window with WM_HINTS input=False, so no
-// window manager maps, decorates or focuses it. Call after win is realized and
-// before it is mapped. Returns false, with the reason logged, when win is not
-// on an X11 display or an Xlib call fails; the caller must then not show win.
-bool make_x11_overlay(Gtk::Window& win);
+// X11 overlay windows. override-redirect keeps the window manager from ever
+// managing (and so focusing) the window, and WM_HINTS input=False tells
+// anything that looks that it takes no keyboard input (ADR 0013).
+//
+// Show these windows only with show_x11_overlay() (set_visible(true)), never
+// Gtk::Window::present(): in GTK4 present() calls gdk_toplevel_focus, which
+// sends _NET_ACTIVE_WINDOW and XSetInputFocus and so takes the focus the
+// overlay must never have.
+
+// Makes win an overlay window: override-redirect plus WM_HINTS input=False,
+// read back from the X server afterwards. Realizes win if it is not yet, and
+// re-applies and re-verifies both on every later realize (each one is a new
+// X window) and the hint on every map (GDK rewrites WM_HINTS when mapping).
+// Returns false with why_not set when win is not on an X11 display, an X
+// error occurs, or the read-back disagrees; win must then not be shown.
+// Calling it again on the same window is safe and adds no handlers.
+bool make_x11_overlay(Gtk::Window& win, std::optional<std::string>& why_not);
+
+// Shows a window set up by make_x11_overlay, without asking for focus.
+// Refuses, returning false, when its current X window has not passed the
+// read-back.
+bool show_x11_overlay(Gtk::Window& win);
 
 // Moves an override-redirect window the way LEFT|BOTTOM anchors and margins
-// would place a layer surface, inside monitor's workarea. GTK4 has no public
-// move call, so this uses XMoveWindow. Returns false when win is not realized
-// on X11 or the move fails.
+// would place a layer surface, kept inside monitor's workarea. GTK4 has no
+// public move call, so this uses XMoveWindow. Returns false when win is not
+// realized on X11 or the X server reports an error.
 bool place_x11_overlay(Gtk::Window& win, const Glib::RefPtr<Gdk::Monitor>& monitor,
                        int left_margin, int bottom_margin);
 

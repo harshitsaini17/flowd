@@ -25,6 +25,13 @@ warning states.
     region, fully click-through.
 - ADR 0003 still holds: if a surface cannot be guaranteed never to take
   keyboard focus (GNOME Wayland), `flowd-ui` disables itself and logs why.
+- On X11 (GNOME on Xorg included) both surfaces are override-redirect
+  windows with `WM_HINTS` `input=False`, and both properties are read back
+  from the X server before a window is shown; a mismatch or X error disables
+  the overlay as on Wayland. Override-redirect windows are never managed by
+  the window manager, so it never focuses them, and they are shown without
+  `present()`, which would request focus. That is the same guarantee ADR 0003
+  asks of a layer surface, so this supersedes 0003's "X11 gets no overlay".
 - Click toggles dictation. A press that moves more than 4 px is a drag. The
   drag moves the indicator by updating its left margin with `LEFT | BOTTOM`
   anchors; Wayland keeps sending pointer events to the pressed surface until

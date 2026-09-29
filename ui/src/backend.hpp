@@ -55,10 +55,13 @@ struct X11Origin {
     int x, y;
 };
 
-// The top-left root position of a surface_h tall window placed like a
+// The top-left root position of a surface_w x surface_h window placed like a
 // LEFT|BOTTOM-anchored layer surface: left margin from the workarea's left
 // edge, bottom margin above its bottom edge. X11 has no anchors, so the
-// window is moved here with XMoveWindow instead.
-X11Origin x11_origin(const WorkArea& wa, int left_margin, int bottom_margin, int surface_h);
+// window is moved here with XMoveWindow instead. The result is clamped so the
+// window stays inside the workarea (the top-left edge wins when it is larger
+// than the workarea), as a compositor keeps a layer surface on its output.
+X11Origin x11_origin(const WorkArea& wa, int left_margin, int bottom_margin, int surface_w,
+                     int surface_h);
 
 }  // namespace flowd

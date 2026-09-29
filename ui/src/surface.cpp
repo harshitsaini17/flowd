@@ -7,6 +7,7 @@
 #include <cairomm/region.h>
 
 #include <iostream>
+#include <string>
 
 #include "backend.hpp"
 
@@ -37,6 +38,7 @@ void apply_margins(GtkWindow* w, Margins m) {
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 
 struct XTarget {
+    GdkDisplay* gdk_display;
     Display* dpy;
     Window xid;
     int scale;  // X11 works in device pixels, GTK in logical ones
@@ -47,19 +49,86 @@ std::optional<XTarget> x_target(Gtk::Window& win) {
     if (!surface) return std::nullopt;
     GdkSurface* s = surface->gobj();
     if (!GDK_IS_X11_SURFACE(s)) return std::nullopt;
-    Display* dpy = gdk_x11_display_get_xdisplay(gdk_surface_get_display(s));
+    GdkDisplay* gd = gdk_surface_get_display(s);
+    Display* dpy = gdk_x11_display_get_xdisplay(gd);
     const Window xid = gdk_x11_surface_get_xid(s);
     if (!dpy || xid == 0) return std::nullopt;
-    return XTarget{dpy, xid, gdk_surface_get_scale_factor(s)};
+    return XTarget{gd, dpy, xid, gdk_surface_get_scale_factor(s)};
 }
 
-// WM_HINTS input=False: the ICCCM way to say "never give this keyboard focus".
-bool set_no_input_hint(const XTarget& t) {
+// Sets override-redirect (the window manager never sees the window, so it
+// cannot map, decorate or focus it) and WM_HINTS input=False (the ICCCM "never
+// give this keyboard focus", for anything that looks anyway).
+void request_x11_overlay(const XTarget& t, bool override_redirect) {
+    if (override_redirect) {
+        XSetWindowAttributes attrs{};
+        attrs.override_redirect = True;
+        XChangeWindowAttributes(t.dpy, t.xid, CWOverrideRedirect, &attrs);
+    }
     XWMHints hints{};
     hints.flags = InputHint;
     hints.input = False;
-    if (!XSetWMHints(t.dpy, t.xid, &hints)) return false;
-    return XFlush(t.dpy) != 0;
+    XSetWMHints(t.dpy, t.xid, &hints);
+}
+
+// Applies the requests and reads them back from the server. Xlib requests are
+// asynchronous and their return values say nothing, so errors come from the
+// GDK error trap (whose pop syncs with the server) and success from the
+// read-back, as ADR 0003 requires for layer surfaces.
+bool apply_x11_overlay(const XTarget& t, bool override_redirect, std::string& why_not) {
+    gdk_x11_display_error_trap_push(t.gdk_display);
+    request_x11_overlay(t, override_redirect);
+    XWindowAttributes attrs{};
+    const Status got_attrs = XGetWindowAttributes(t.dpy, t.xid, &attrs);
+    XWMHints* hints = XGetWMHints(t.dpy, t.xid);
+    const bool no_input = hints && (hints->flags & InputHint) && hints->input == False;
+    if (hints) XFree(hints);
+    if (const int err = gdk_x11_display_error_trap_pop(t.gdk_display); err != 0) {
+        why_not = "X error " + std::to_string(err) + " while setting up the overlay window";
+        return false;
+    }
+    if (!got_attrs || !attrs.override_redirect) {
+        why_not = "the X server did not keep override-redirect on the overlay window";
+        return false;
+    }
+    if (!no_input) {
+        why_not = "the X server did not keep WM_HINTS input=False on the overlay window";
+        return false;
+    }
+    return true;
+}
+
+// Per-window bookkeeping, attached to the GObject: the X window that passed
+// the read-back (each realize makes a new one), and whether the realize and
+// map handlers are already connected, so repeated calls never stack them.
+struct X11OverlayState {
+    Window verified_xid = 0;
+    bool hooked = false;
+};
+constexpr const char* kX11StateKey = "flowd-x11-overlay";
+
+X11OverlayState& x11_state(Gtk::Window& win) {
+    auto* st = static_cast<X11OverlayState*>(g_object_get_data(G_OBJECT(win.gobj()), kX11StateKey));
+    if (!st) {
+        st = new X11OverlayState();
+        g_object_set_data_full(G_OBJECT(win.gobj()), kX11StateKey, st,
+                               [](gpointer p) { delete static_cast<X11OverlayState*>(p); });
+    }
+    return *st;
+}
+
+// Sets up and verifies the window's current X window, recording the result.
+bool setup_current_x_window(Gtk::Window& win, std::string& why_not) {
+    auto& st = x11_state(win);
+    st.verified_xid = 0;
+    const auto t = x_target(win);
+    if (!t) {
+        why_not = "override-redirect needs a realized window on an X11 display";
+        return false;
+    }
+    if (!apply_x11_overlay(*t, true, why_not)) return false;
+    st.verified_xid = t->xid;
+    return true;
 }
 
 WorkArea workarea(const Glib::RefPtr<Gdk::Monitor>& monitor) {
@@ -72,12 +141,12 @@ WorkArea workarea(const Glib::RefPtr<Gdk::Monitor>& monitor) {
     return {r.x, r.y, r.width, r.height};
 }
 
-G_GNUC_END_IGNORE_DEPRECATIONS
-
 }  // namespace
 
 void apply_env_defaults() {
-    if (!g_setenv("GSK_RENDERER", kDefaultRenderer, FALSE))
+    const auto renderer = renderer_default(read_env());
+    if (!renderer) return;
+    if (!g_setenv("GSK_RENDERER", renderer->c_str(), FALSE))
         log_error("could not set GSK_RENDERER; GTK picks its default renderer");
 }
 
@@ -124,28 +193,54 @@ void set_overlay_margins(Gtk::Window& win, Margins margins) {
     apply_margins(win.gobj(), margins);
 }
 
-bool make_x11_overlay(Gtk::Window& win) {
+bool make_x11_overlay(Gtk::Window& win, std::optional<std::string>& why_not) {
+    auto& st = x11_state(win);
+    if (!st.hooked) {
+        st.hooked = true;
+        // Every realize creates a new X window with none of these settings,
+        // so they are applied and verified again for each one. Connected
+        // after the default handler, which is what creates the X window.
+        win.signal_realize().connect(
+            [&win] {
+                std::string why;
+                if (!setup_current_x_window(win, why)) log_error(why);
+            },
+            true);
+        // GDK rewrites WM_HINTS (input=True) when it maps a surface, so the
+        // hint is set again on every map. Override-redirect is untouched by
+        // mapping and already verified; a window that loses the hint is
+        // hidden rather than left up.
+        win.signal_map().connect(
+            [&win] {
+                std::string why;
+                const auto t = x_target(win);
+                if (t && apply_x11_overlay(*t, false, why)) return;
+                log_error(t ? why : "overlay window mapped without an X11 surface");
+                x11_state(win).verified_xid = 0;
+                win.set_visible(false);
+            },
+            true);
+    }
+    if (!win.get_realized()) gtk_widget_realize(GTK_WIDGET(win.gobj()));
+    // The realize handler has already verified the window if the call above
+    // realized it; otherwise it is done here.
     const auto t = x_target(win);
-    if (!t) {
-        log_error("override-redirect needs a realized window on an X11 display");
+    if (t && st.verified_xid == t->xid) return true;
+    std::string why;
+    if (setup_current_x_window(win, why)) return true;
+    why_not = why;
+    return false;
+}
+
+bool show_x11_overlay(Gtk::Window& win) {
+    const auto t = x_target(win);
+    if (!t || x11_state(win).verified_xid != t->xid) {
+        log_error("refusing to show an X11 overlay window that failed its checks");
         return false;
     }
-    XSetWindowAttributes attrs{};
-    attrs.override_redirect = True;
-    if (!XChangeWindowAttributes(t->dpy, t->xid, CWOverrideRedirect, &attrs)) {
-        log_error("XChangeWindowAttributes(override_redirect) failed");
-        return false;
-    }
-    if (!set_no_input_hint(*t)) {
-        log_error("XSetWMHints(input=False) failed");
-        return false;
-    }
-    // GDK writes its own WM_HINTS (input=True) when it shows a surface, so
-    // the hint is set again once the window is mapped.
-    win.signal_map().connect([&win] {
-        if (const auto m = x_target(win); !m || !set_no_input_hint(*m))
-            log_error("XSetWMHints(input=False) after map failed");
-    });
+    // Not present(): GTK4 present() asks the window manager to focus the
+    // window (_NET_ACTIVE_WINDOW, XSetInputFocus).
+    win.set_visible(true);
     return true;
 }
 
@@ -156,18 +251,19 @@ bool place_x11_overlay(Gtk::Window& win, const Glib::RefPtr<Gdk::Monitor>& monit
         log_error("place_x11_overlay needs a realized X11 window and a monitor");
         return false;
     }
-    const X11Origin o =
-        x11_origin(workarea(monitor), left_margin, bottom_margin, win.get_surface()->get_height());
-    if (!XMoveWindow(t->dpy, t->xid, o.x * t->scale, o.y * t->scale)) {
-        log_error("XMoveWindow failed");
-        return false;
-    }
-    if (!XFlush(t->dpy)) {
-        log_error("XFlush after XMoveWindow failed");
+    const auto surface = win.get_surface();
+    const X11Origin o = x11_origin(workarea(monitor), left_margin, bottom_margin,
+                                   surface->get_width(), surface->get_height());
+    gdk_x11_display_error_trap_push(t->gdk_display);
+    XMoveWindow(t->dpy, t->xid, o.x * t->scale, o.y * t->scale);
+    if (const int err = gdk_x11_display_error_trap_pop(t->gdk_display); err != 0) {
+        log_error("X error " + std::to_string(err) + " while moving the overlay window");
         return false;
     }
     return true;
 }
+
+G_GNUC_END_IGNORE_DEPRECATIONS
 
 void set_input_region(Gtk::Window& win, const std::vector<Gdk::Rectangle>& rects, int pad) {
     auto surface = win.get_surface();
