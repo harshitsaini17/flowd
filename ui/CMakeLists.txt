@@ -19,7 +19,7 @@ check_ipo_supported(RESULT flowd_lto OUTPUT flowd_lto_error LANGUAGES CXX)
 
 # --- core: pure logic, no GTK ------------------------------------------------
 set(FLOWD_CORE_SOURCES
-  # (tasks 2-8 add src/*.cpp here)
+  # pure-logic sources
 )
 add_library(flowd-ui-core STATIC ${FLOWD_CORE_SOURCES} src/version.hpp)
 set_target_properties(flowd-ui-core PROPERTIES LINKER_LANGUAGE CXX)
@@ -29,7 +29,7 @@ target_include_directories(flowd-ui-core SYSTEM PUBLIC third_party)
 enable_testing()
 set(FLOWD_CORE_TESTS
   tests/test_smoke.cpp
-  # (tasks 2-8 add tests/test_*.cpp here)
+  # core unit tests
 )
 add_executable(flowd-ui-tests tests/main.cpp ${FLOWD_CORE_TESTS})
 target_link_libraries(flowd-ui-tests PRIVATE flowd-ui-core)
@@ -46,7 +46,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FLOWD_GTK REQUIRED IMPORTED_TARGET gtk4-layer-shell-0 gtkmm-4.0 gtk4-x11 x11)
 
 set(FLOWD_GTK_SOURCES
-  # (tasks 9-12 add src/*.cpp here)
+  # GTK program sources
 )
 if(FLOWD_GTK_SOURCES)
   add_executable(flowd-ui ${FLOWD_GTK_SOURCES})
@@ -64,7 +64,7 @@ if(FLOWD_GTK_SOURCES)
 endif()
 
 set(FLOWD_GTK_TESTS
-  # (task 8 adds tests/test_icons_parse.cpp)
+  # tests that need GTK (e.g. icon path parsing)
 )
 if(FLOWD_GTK_TESTS)
   add_executable(flowd-ui-gtk-tests tests/main.cpp ${FLOWD_GTK_TESTS})
