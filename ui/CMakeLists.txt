@@ -42,7 +42,7 @@ endif()
 # --- flowd-ui: the GTK program -----------------------------------------------
 find_package(PkgConfig REQUIRED)
 # gtk4-layer-shell first, so its NEEDED entry precedes libwayland-client's
-# (checked in Task 9). That order is what lets it work without LD_PRELOAD.
+# (the build checks this with readelf). That order is what lets it work without LD_PRELOAD.
 pkg_check_modules(FLOWD_GTK REQUIRED IMPORTED_TARGET gtk4-layer-shell-0 gtkmm-4.0 gtk4-x11 x11)
 
 set(FLOWD_GTK_SOURCES
