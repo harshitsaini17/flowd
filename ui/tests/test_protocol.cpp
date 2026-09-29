@@ -60,3 +60,16 @@ TEST_CASE("protocol: events are one JSON line each") {
     CHECK(encode_moved(0.42, "eDP-1") == "{\"event\":\"moved\",\"output\":\"eDP-1\",\"x\":0.42}\n");
     CHECK(encode_unsupported("no layer-shell").find("\"unsupported\"") != std::string::npos);
 }
+
+TEST_CASE("protocol: encoders never throw on invalid UTF-8") {
+    std::string out;
+    CHECK_NOTHROW(out = encode_moved(0.5, std::string("bad\xff")));
+    CHECK(out.find("\"event\":\"moved\"") != std::string::npos);
+}
+
+TEST_CASE("protocol: out-of-range config integers are ignored, not truncated") {
+    auto m = parse_message(R"({"type":"config","ui":{"max_lines":99999999999}})");
+    REQUIRE(m);
+    auto& c = std::get<ConfigMsg>(*m).ui;
+    CHECK(c.max_lines == kDefaultMaxLines);
+}

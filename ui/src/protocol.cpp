@@ -1,6 +1,8 @@
 #include "protocol.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -25,7 +27,21 @@ std::optional<T> field(const json& obj, const char* key) {
         return v.get<double>();
     } else if constexpr (std::is_same_v<T, int>) {
         if (!v.is_number_integer()) return std::nullopt;
-        return v.get<int>();
+        // nlohmann stores integers as int64_t or uint64_t; a value that doesn't
+        // fit in an int (e.g. 99999999999) must be rejected, not truncated.
+        if (v.is_number_unsigned()) {
+            auto uv = v.get<std::uint64_t>();
+            if (uv > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+                return std::nullopt;
+            }
+            return static_cast<int>(uv);
+        }
+        auto iv = v.get<std::int64_t>();
+        if (iv < static_cast<std::int64_t>(std::numeric_limits<int>::min()) ||
+            iv > static_cast<std::int64_t>(std::numeric_limits<int>::max())) {
+            return std::nullopt;
+        }
+        return static_cast<int>(iv);
     } else if constexpr (std::is_same_v<T, bool>) {
         if (!v.is_boolean()) return std::nullopt;
         return v.get<bool>();
@@ -156,16 +172,16 @@ std::optional<Message> parse_message(std::string_view line) {
             if (theme) ui.theme = *theme;
         }
         if (auto v = field<int>(ui_obj, "max_lines")) {
-            ui.max_lines = std::clamp(*v, 1, kMaxLinesCeiling);
+            ui.max_lines = std::clamp(*v, kMaxLinesFloor, kMaxLinesCeiling);
         }
         if (auto v = field<int>(ui_obj, "fade_ms")) {
-            ui.fade_ms = std::clamp(*v, 0, 10000);
+            ui.fade_ms = std::clamp(*v, 0, kFadeMsCeiling);
         }
         if (auto v = field<bool>(ui_obj, "footer")) {
             ui.footer = *v;
         }
         if (auto v = field<int>(ui_obj, "max_session_s")) {
-            ui.max_session_s = std::clamp(*v, 1, 3600);
+            ui.max_session_s = std::clamp(*v, 1, kMaxSessionSCeiling);
         }
         if (auto v = field<std::string>(ui_obj, "hotkey_label")) {
             ui.hotkey_label = *v;
@@ -178,10 +194,13 @@ std::optional<Message> parse_message(std::string_view line) {
     return std::nullopt;
 }
 
+// dump() with error_handler_t::replace swaps invalid UTF-8 for U+FFFD instead
+// of throwing type_error.316; these encoders run inside GTK callbacks and must
+// never throw.
 std::string encode_click() {
     json obj;
     obj["event"] = "click";
-    return obj.dump() + "\n";
+    return obj.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
 }
 
 std::string encode_moved(double x, std::string_view output) {
@@ -189,14 +208,14 @@ std::string encode_moved(double x, std::string_view output) {
     obj["event"] = "moved";
     obj["output"] = output;
     obj["x"] = x;
-    return obj.dump() + "\n";
+    return obj.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
 }
 
 std::string encode_unsupported(std::string_view reason) {
     json obj;
     obj["event"] = "unsupported";
     obj["reason"] = reason;
-    return obj.dump() + "\n";
+    return obj.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
 }
 
 }  // namespace flowd

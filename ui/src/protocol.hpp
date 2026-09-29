@@ -28,13 +28,25 @@ enum class Theme {
 
 constexpr int kMaxLinesCeiling = 12;
 
+// Defaults below mirror the [ui] block in docs/spec.md 8.1, except
+// kDefaultMaxSessionS, which mirrors [audio] max_session_s in the same section.
+constexpr int kDefaultMaxLines = 4;
+constexpr int kDefaultFadeMs = 1000;
+constexpr int kDefaultMaxSessionS = 300;
+
+// Sanity caps against a bad daemon message, not spec-derived: 10 s of fade
+// and an hour of session.
+constexpr int kFadeMsCeiling = 10000;
+constexpr int kMaxSessionSCeiling = 3600;
+constexpr int kMaxLinesFloor = 1;
+
 struct UiConfig {
     bool indicator = true;
     Theme theme = Theme::System;
-    int max_lines = 4;
-    int fade_ms = 1000;
+    int max_lines = kDefaultMaxLines;
+    int fade_ms = kDefaultFadeMs;
     bool footer = true;
-    int max_session_s = 300;
+    int max_session_s = kDefaultMaxSessionS;
     std::string hotkey_label;
 };
 
