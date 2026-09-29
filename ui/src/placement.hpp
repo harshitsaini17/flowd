@@ -7,7 +7,7 @@
 // No GTK here, so all of it is unit-tested.
 namespace flowd {
 
-// design.md "Indicator" → Dragging: more than 4 px of movement is a drag.
+// design.md "Indicator" → Dragging: more than 4 px of horizontal movement is a drag.
 constexpr double kDragThresholdPx = 4.0;
 // design.md "Indicator" → Dragging: snap points and their magnetic ranges.
 constexpr std::array<double, 3> kSnapPoints = {0.25, 0.5, 0.75};
@@ -25,7 +25,8 @@ constexpr int kPillH = 36;
 // design.md "Indicator" → Idle: the idle line.
 constexpr int kIdleLineW = 48;
 constexpr int kIdleLineH = 8;
-// design.md "Elevation" → GTK caveat: shadow padding inside each surface.
+// design.md "Elevation" → GTK caveat: shadow padding inside each surface,
+// 12 px for the indicator and 24 px for the popup.
 constexpr int kSurfacePad = 12;
 constexpr int kPopupPad = 24;
 // design.md "Indicator placement": bottom margin from the output edge.
@@ -42,8 +43,11 @@ constexpr int kCardBottomAboveEdge = 52;
 constexpr int kPopupPadY = 14;
 constexpr int kPopupLineH = 22;
 constexpr int kPopupFooterH = 28;
+// design.md "Popup placement": the card holds 1-4 lines, so never fewer than one.
+constexpr int kPopupMinLines = 1;
 
-// True when a pointer move of (dx, dy) is a drag rather than a click.
+// True when a pointer move of (dx, dy) is a drag rather than a click. Only dx
+// counts: the pill moves along x, so a vertical wobble stays a click.
 bool is_drag(double dx, double dy);
 
 struct Snap {
@@ -52,7 +56,8 @@ struct Snap {
 };
 
 // Clamps the pill centre inside the output, then snaps it to the nearest
-// snap point when within that point's (inclusive) range.
+// snap point when within that point's (inclusive) range. Snap points outside
+// the clamp range are skipped, so a snap never pushes the pill past an edge.
 Snap snap_center(double center_x, int output_width);
 
 // Converts between a pill centre and the stored fraction of output width.

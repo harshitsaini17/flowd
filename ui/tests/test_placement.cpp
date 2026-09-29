@@ -6,9 +6,9 @@ using namespace flowd;
 
 TEST_CASE("placement: 4 px is still a click, more is a drag") {
     CHECK_FALSE(is_drag(4, 0));
-    CHECK_FALSE(is_drag(2.8, 2.8));  // hypot < 4
-    CHECK(is_drag(3, 3));            // hypot 4.24
-    CHECK(is_drag(0, -5));
+    CHECK_FALSE(is_drag(0, -5));  // vertical motion is not a drag
+    CHECK(is_drag(4.5, 0));
+    CHECK(is_drag(-5, 3));
 }
 
 TEST_CASE("placement: centre snaps from 12 px, quarters from 8 px") {
@@ -66,4 +66,19 @@ TEST_CASE("placement: a zero-width output never divides by zero") {
 TEST_CASE("placement: the indicator surface is centred on the pill") {
     CHECK(indicator_left_margin(960, 144) == 960 - 72);
     CHECK(indicator_left_margin(100.5, 145) == 28);
+}
+
+TEST_CASE("placement: a snap point inside the edge margin is skipped") {
+    // At 300 px the clamp is [76, 224], so 0.25 (75) and 0.75 (225) are outside it.
+    const double lo = kEdgeClampPx + kPillW / 2.0;
+    auto s = snap_center(0.25 * 300 + 2, 300);
+    CHECK(s.x >= lo);
+    CHECK_FALSE(s.point);
+    auto e = snap_center(0.25 * 300, 300);
+    CHECK(e.x == doctest::Approx(lo));
+    CHECK_FALSE(e.point);
+}
+
+TEST_CASE("placement: a card with no lines yet is one line tall") {
+    CHECK(popup_card(1920, 960, 0, false, 0, 300).h == popup_card(1920, 960, 1, false, 0, 300).h);
 }

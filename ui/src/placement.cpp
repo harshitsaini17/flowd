@@ -7,31 +7,48 @@ namespace flowd {
 
 namespace {
 
-// The pill centre's allowed range on an output of width w (> 0).
-double clamp_center(double center_x, int w) {
+struct Range {
+    double lo, hi;
+};
+
+// The pill centre's allowed range on an output of width w (> 0). An output
+// too narrow for the pill plus both edges collapses it to the output centre.
+Range center_range(int w) {
     const double lo = kEdgeClampPx + kPillW / 2.0;
     const double hi = w - kEdgeClampPx - kPillW / 2.0;
-    // An output too narrow for the pill plus both edges: centre it.
-    if (lo > hi) return w / 2.0;
-    return std::clamp(center_x, lo, hi);
+    if (lo > hi) return {w / 2.0, w / 2.0};
+    return {lo, hi};
+}
+
+double clamp_center(double center_x, int w) {
+    const Range r = center_range(w);
+    return std::clamp(center_x, r.lo, r.hi);
 }
 
 }  // namespace
 
-bool is_drag(double dx, double dy) { return std::hypot(dx, dy) > kDragThresholdPx; }
+// design.md "Indicator" → Dragging: "> 4 px horizontally", so dy is ignored.
+bool is_drag(double dx, double /*dy*/) { return std::abs(dx) > kDragThresholdPx; }
 
 // Widths of 0 or less are guarded throughout: hyprctl can report 0 for a
 // monitor that is being disabled mid-query.
 Snap snap_center(double center_x, int output_width) {
     if (output_width <= 0) return {0.0, std::nullopt};  // the zero-width output's centre
-    const double x = clamp_center(center_x, output_width);
+    const Range r = center_range(output_width);
+    const double x = std::clamp(center_x, r.lo, r.hi);
 
-    double best = kSnapPoints.front();
+    // Nearest snap point that the clamp allows; on a narrow output the
+    // quarters can fall inside the edge margin and must not pull the pill there.
+    std::optional<double> best;
     for (double p : kSnapPoints) {
-        if (std::abs(x - p * output_width) < std::abs(x - best * output_width)) best = p;
+        const double px = p * output_width;
+        if (px < r.lo || px > r.hi) continue;
+        if (!best || std::abs(x - px) < std::abs(x - *best * output_width)) best = p;
     }
-    const double range = best == kSnapCenter ? kSnapCenterRangePx : kSnapRangePx;
-    const double snapped = best * output_width;
+    if (!best) return {x, std::nullopt};
+
+    const double range = *best == kSnapCenter ? kSnapCenterRangePx : kSnapRangePx;
+    const double snapped = *best * output_width;
     if (std::abs(x - snapped) <= range) return {snapped, best};
     return {x, std::nullopt};
 }
@@ -65,7 +82,8 @@ CardRect popup_card(int output_w, double center_x, int lines, bool footer, int p
     const int x_hi = std::max(kPopupEdge, output_w - kPopupEdge - w);
     const int x = std::clamp(static_cast<int>(std::lround(center_x - w / 2.0)), kPopupEdge, x_hi);
 
-    const int h = kPopupPadY + kPopupLineH * lines + kPopupPadY + (footer ? kPopupFooterH : 0);
+    const int n = std::max(kPopupMinLines, lines);
+    const int h = kPopupPadY + kPopupLineH * n + kPopupPadY + (footer ? kPopupFooterH : 0);
 
     return {x, kCardBottomAboveEdge, w, h};
 }
