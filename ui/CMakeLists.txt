@@ -21,6 +21,7 @@ check_ipo_supported(RESULT flowd_lto OUTPUT flowd_lto_error LANGUAGES CXX)
 set(FLOWD_CORE_SOURCES
   # pure-logic sources
   src/protocol.cpp
+  src/placement.cpp
 )
 add_library(flowd-ui-core STATIC ${FLOWD_CORE_SOURCES} src/version.hpp)
 set_target_properties(flowd-ui-core PROPERTIES LINKER_LANGUAGE CXX)
@@ -32,6 +33,7 @@ set(FLOWD_CORE_TESTS
   tests/test_smoke.cpp
   # core unit tests
   tests/test_protocol.cpp
+  tests/test_placement.cpp
 )
 add_executable(flowd-ui-tests tests/main.cpp ${FLOWD_CORE_TESTS})
 target_link_libraries(flowd-ui-tests PRIVATE flowd-ui-core)
