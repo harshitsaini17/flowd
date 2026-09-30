@@ -611,9 +611,12 @@ class Daemon:
             outcome = ("done", "")
         self._end_session(text=final, reason=None, outcome=outcome)
         self._sync_warning()
-        if self.cfg.ui.notify_on_finish:
+        if self.cfg.ui.notify_on_finish and not mic_lost:
             # design.md Appearance: for people who don't watch the popup.
-            # Errors already notify on their own paths.
+            # Errors already notify on their own paths, and a lost mic gets
+            # its own notification right after this call returns (see
+            # `_device_lost`) — skipped here so that session doesn't notify
+            # twice.
             words = len(final.split())
             what = "pasted" if result.ok else "could not paste"
             self._notify_later(f"flowd: {what} {words} word{'s' if words != 1 else ''}")

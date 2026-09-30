@@ -983,6 +983,29 @@ async def test_a_lost_microphone_injects_the_text_so_far_and_notifies() -> None:
     assert "audio stream ended" in d.last_record["errors"][0]
 
 
+async def test_a_lost_microphone_sends_exactly_one_notification_when_notify_on_finish() -> None:
+    """The mic-lost notice already tells the user their text was kept; the
+
+    generic `notify_on_finish` "pasted N words" note would be a second,
+    redundant notification for the same session, so `_finalize` skips it when
+    `mic_lost` is true.
+    """
+    injected: list[str] = []
+    capture = LosableCapture()
+    cfg = replace(Config(), ui=replace(Ui(), notify_on_finish=True))
+    d = daemon(FakeSttEngine([[Committed("keep what i said")]]), capture, injected, cfg=cfg)
+    notes: list[str] = []
+    d._notify = notes.append  # type: ignore[method-assign]
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    capture.failed = "audio stream ended"
+    await d.pump()
+    await asyncio.gather(*d._background)
+    assert injected == ["Keep what I said."]
+    assert len(notes) == 1
+    assert "microphone" in notes[0]
+
+
 async def test_a_lost_microphone_with_nothing_heard_injects_nothing() -> None:
     injected: list[str] = []
     capture = LosableCapture()
