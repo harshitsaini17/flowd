@@ -17,6 +17,9 @@ dependencies = [
     # its own libonnxruntime.so and imports no `onnxruntime` package.
     "sherpa-onnx==1.13.8",
     "httpx>=0.27",
+    # Keeps comments and order when the settings page saves config.toml or
+    # vocab.toml (ADR 0014).
+    "tomlkit==0.15.1",
 ]
 
 [project.optional-dependencies]
