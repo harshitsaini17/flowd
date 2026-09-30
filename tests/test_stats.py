@@ -1,3 +1,5 @@
+import pytest
+
 from flowd.stats import overview
 
 
@@ -44,3 +46,50 @@ def test_no_text_is_ever_returned() -> None:
     r = rec(1.0, 3, 0, 100, 200)
     r["text"] = "secret words"
     assert "secret" not in repr(overview([r], now=2.0))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param({"ts": 1.0, "stages": None, "counts": {}}, id="stages-none"),
+        pytest.param({"ts": 1.0, "stages": {}, "counts": None}, id="counts-none"),
+        pytest.param(
+            {
+                "ts": 1.0,
+                "stages": {"mic_open_ms": "soon", "released_ms": 100, "inject_ms": 200},
+                "counts": {},
+            },
+            id="string-timing",
+        ),
+        pytest.param(
+            {
+                "ts": 1.0,
+                "stages": {"mic_open_ms": True, "released_ms": 100, "inject_ms": 200},
+                "counts": {},
+            },
+            id="bool-timing",
+        ),
+        pytest.param(
+            {
+                "ts": 1.0,
+                "stages": {"mic_open_ms": 0, "released_ms": 100, "inject_ms": 200},
+                "counts": {"fallbacks": "yes"},
+            },
+            id="string-fallbacks",
+        ),
+        pytest.param(
+            # released_ms before mic_open_ms: speak_s would be negative.
+            {
+                "ts": 1.0,
+                "stages": {"mic_open_ms": 500, "released_ms": 100, "inject_ms": 200},
+                "counts": {},
+            },
+            id="negative-duration",
+        ),
+    ],
+)
+def test_overview_skips_malformed_records_without_crashing(bad: dict) -> None:
+    good = rec(2.0, 5, 0, 100, 200)
+    out = overview([bad, good], now=3.0)
+    assert len(out["sessions"]) == 1
+    assert out["sessions"][0]["ts"] == 2.0
