@@ -147,7 +147,9 @@ void PopupModel::on_render(const Render& r) {
     // Once cancelled or with nothing heard, the content is settled. Any other
     // outcome still takes a late render: it is the final text that was pasted.
     if (std::holds_alternative<Struck>(content_)) return;
-    if (const auto* p = std::get_if<Placeholder>(&content_); p != nullptr && p->text != kListening) return;
+    if (const auto* p = std::get_if<Placeholder>(&content_);
+        p != nullptr && p->text != kListening)
+        return;
     if (r.polished.empty() && r.pending.empty() && r.live.empty()) {
         // No words yet: keep listening rather than draw an empty card.
         if (live()) content_ = Placeholder{std::string(kListening), true};
@@ -291,7 +293,8 @@ PopupPhase PopupModel::phase() const {
 
 Content PopupModel::content() const {
     if (phase_ == PopupPhase::Hidden) return NoContent{};
-    if (const auto* z = std::get_if<Zones>(&content_); z != nullptr && !live() && !z->live.empty()) {
+    if (const auto* z = std::get_if<Zones>(&content_);
+        z != nullptr && !live() && !z->live.empty()) {
         // design.md "States" 3: once recording ends the live run restyles to
         // pending, since no partial will replace it any more.
         Zones frozen{z->polished, z->pending, ""};
@@ -339,9 +342,10 @@ FooterInput PopupModel::footer(double now) const {
     if (phase_ == PopupPhase::Hidden) return in;
     const std::optional<Status> st = status();
     if (st) in.status = st->text;
-    // A terminal outcome stands alone (design.md "States" 4-9 list only the
-    // status); without one, the row still names the mode and app.
-    if (terminal_ && st) return in;
+    // Once recording ends, a status stands alone: design.md "States" 3-10
+    // list only the status (Finishing, Time limit, every outcome), where 1
+    // and 2 name "mode · app". Without one, the row still names them.
+    if (!live() && st) return in;
     in.mode = meta_.mode;
     in.app = meta_.app;
     if (!live()) return in;

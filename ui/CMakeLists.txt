@@ -83,6 +83,11 @@ set(FLOWD_GTK_LIB_SOURCES
 )
 add_library(flowd-ui-gtk STATIC ${FLOWD_GTK_LIB_SOURCES})
 target_link_libraries(flowd-ui-gtk PUBLIC flowd-ui-core PkgConfig::FLOWD_GTK)
+# Where the fonts are looked for when none sit beside the binary.
+include(GNUInstallDirs)
+set(FLOWD_FONTS_DIR "${CMAKE_INSTALL_FULL_DATADIR}/flowd/fonts" CACHE PATH
+    "Directory of the bundled fonts in an installed build")
+target_compile_definitions(flowd-ui-gtk PRIVATE FLOWD_FONTS_DIR="${FLOWD_FONTS_DIR}")
 
 set(FLOWD_GTK_SOURCES
   # GTK program sources

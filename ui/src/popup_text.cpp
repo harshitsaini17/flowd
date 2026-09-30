@@ -38,6 +38,12 @@ JoinedZones join_zones(const Zones& z) {
 
 std::optional<ByteRange> correction_range(std::string_view before, std::string_view after) {
     if (after.empty() || after.starts_with(before)) return std::nullopt;
+    // Whole trailing words dropped: nothing left in after was rewritten, so
+    // there is nothing to highlight. A cut inside a word still counts, since
+    // that word's tail changed.
+    if (before.starts_with(after) &&
+        (is_space(before[after.size()]) || is_space(after.back())))
+        return std::nullopt;
     const auto [b, a] = std::mismatch(before.begin(), before.end(), after.begin(), after.end());
     std::size_t start = static_cast<std::size_t>(a - after.begin());
     // Back up to the start of the word the change landed in, so the
@@ -125,7 +131,8 @@ std::optional<Crossfade> crossfade(const TextSpec& before, const TextSpec& after
 
 std::optional<ByteRange> correction(const TextSpec& before, const TextSpec& after) {
     if (before.kind != TextKind::Zones || after.kind != TextKind::Zones) return std::nullopt;
-    const auto r = correction_range(slice(before.text, before.polished), slice(after.text, after.polished));
+    const auto r = correction_range(slice(before.text, before.polished),
+                                    slice(after.text, after.polished));
     if (!r) return std::nullopt;
     return ByteRange{after.polished.begin + r->begin, after.polished.begin + r->end};
 }

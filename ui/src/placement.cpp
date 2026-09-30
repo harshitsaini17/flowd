@@ -68,7 +68,8 @@ int indicator_left_margin(double center_x, int surface_w) {
     return static_cast<int>(std::lround(center_x - surface_w / 2.0));
 }
 
-CardRect popup_card(int output_w, double center_x, int lines, bool footer, int prev_w, int natural_w) {
+CardRect popup_card(int output_w, double center_x, int lines, bool footer, int prev_w,
+                    int natural_w) {
     const int inner = std::max(0, output_w - 2 * kPopupEdge);
     int w;
     if (inner < kPopupMinW) {
@@ -86,6 +87,17 @@ CardRect popup_card(int output_w, double center_x, int lines, bool footer, int p
     const int h = kPopupPadY + kPopupLineH * n + kPopupPadY + (footer ? kPopupFooterH : 0);
 
     return {x, kCardBottomAboveEdge, w, h};
+}
+
+int popup_surface_w(int output_w) {
+    return std::clamp(output_w, 0, kPopupSurfaceMaxW);
+}
+
+int popup_surface_left(int output_w, double center_x) {
+    // The widest card this centre can get; it holds every narrower one.
+    const CardRect widest = popup_card(output_w, center_x, kPopupMinLines, false, 0, kPopupMaxW);
+    const int hi = std::max(0, output_w - popup_surface_w(output_w));
+    return std::clamp(widest.x - kPopupPad, 0, hi);
 }
 
 int popup_surface_h(int max_lines) {

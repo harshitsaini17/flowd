@@ -82,3 +82,40 @@ TEST_CASE("placement: a snap point inside the edge margin is skipped") {
 TEST_CASE("placement: a card with no lines yet is one line tall") {
     CHECK(popup_card(1920, 960, 0, false, 0, 300).h == popup_card(1920, 960, 1, false, 0, 300).h);
 }
+
+TEST_CASE("placement: the popup surface is the widest card plus shadow, within the output") {
+    CHECK(kPopupSurfaceMaxW == kPopupMaxW + 2 * kPopupPad);
+    CHECK(popup_surface_w(1920) == kPopupSurfaceMaxW);
+    CHECK(popup_surface_w(500) == 500);
+    CHECK(popup_surface_w(0) == 0);
+    CHECK(popup_surface_w(-5) == 0);
+}
+
+TEST_CASE("placement: every card for a centre fits inside the surface placed for it") {
+    for (int out_w : {1920, 1280, 700, 500, 300}) {
+        for (double cx : {0.0, 40.0, 300.0, 640.0, 960.0, 1500.0, 1900.0}) {
+            if (cx > out_w) continue;
+            const int left = popup_surface_left(out_w, cx);
+            const int sw = popup_surface_w(out_w);
+            CHECK(left >= 0);
+            CHECK(left + sw <= out_w);
+            // From the smallest card to the widest, as a session grows it.
+            for (int natural : {0, 300, 450, 640, 2000}) {
+                const CardRect c = popup_card(out_w, cx, 1, true, 0, natural);
+                const int offset = c.x - left;  // where the card is drawn
+                CHECK(offset >= 0);
+                CHECK(offset + c.w <= sw);
+            }
+        }
+    }
+}
+
+TEST_CASE("placement: a centred card sits in the middle of its surface, with shadow room") {
+    const int left = popup_surface_left(1920, 960);
+    CHECK(left == 960 - kPopupSurfaceMaxW / 2);
+    const CardRect c = popup_card(1920, 960, 1, false, 0, kPopupMaxW);
+    CHECK(c.x - left == kPopupPad);
+    // A narrow card stays centred on the indicator inside the same surface.
+    const CardRect n = popup_card(1920, 960, 1, false, 0, 0);
+    CHECK(n.x - left + n.w / 2 == kPopupSurfaceMaxW / 2);
+}

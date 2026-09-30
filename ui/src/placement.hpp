@@ -77,13 +77,27 @@ struct CardRect {
 
 // prev_w is the width already shown this session (0 at the start), so the
 // card only grows; natural_w is the width the content wants.
-CardRect popup_card(int output_w, double center_x, int lines, bool footer, int prev_w, int natural_w);
+CardRect popup_card(int output_w, double center_x, int lines, bool footer, int prev_w,
+                    int natural_w);
 
 // The popup surface's fixed height: the tallest card (max_lines of text and
 // the footer) plus kPopupPad of shadow room above and below. It depends only
 // on config, so the surface never resizes mid-session; the card animates
 // inside it (design.md "Motion" → GTK mapping).
 int popup_surface_h(int max_lines);
+
+// The popup surface's width: the widest card plus kPopupPad of shadow room on
+// each side, never wider than the output. Not the output's width: a buffer
+// that wide costs megabytes at scale 2 for a card that is at most 640 px.
+constexpr int kPopupSurfaceMaxW = kPopupMaxW + 2 * kPopupPad;
+int popup_surface_w(int output_w);
+
+// The popup surface's LEFT margin on an output_w-wide output, for a card
+// centred on center_x. It depends on the centre alone, not on the card's
+// current width: the surface is placed around the widest card popup_card
+// could give, and every narrower card sits inside that one, so the card
+// grows during a session without the surface moving.
+int popup_surface_left(int output_w, double center_x);
 
 // The popup surface's bottom margin: the card's bottom edge sits
 // kCardBottomAboveEdge above the output edge, and kPopupPad of shadow room

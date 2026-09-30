@@ -248,16 +248,30 @@ TEST_CASE("popup: the countdown replaces the elapsed time") {
     CHECK(p.footer(291.0).elapsed == "0:09 left");
 }
 
-TEST_CASE("popup: finishing keeps mode and app but drops the clock and hint") {
+TEST_CASE("popup: finishing shows its status alone") {
     PopupModel p; UiConfig c; c.hotkey_label = "Super+D"; p.on_config(c);
     p.on_meta({"prose", "kitty", ""});
     p.on_show(0);
     p.on_state({UiState::Finishing, ""}, 2.0);
     const auto f = p.footer(2.5);
-    CHECK(f.mode == "prose");
+    CHECK(f.mode.empty());
+    CHECK(f.app.empty());
     CHECK(f.elapsed.empty());
     CHECK(f.hint.empty());
     CHECK(*f.status == "Finishing");
+}
+
+TEST_CASE("popup: a time limit shows its status alone") {
+    PopupModel p; UiConfig c; c.max_session_s = 300; c.hotkey_label = "Super+D"; p.on_config(c);
+    p.on_meta({"prose", "kitty", ""});
+    p.on_show(0);
+    p.on_state({UiState::TimeLimit, ""}, 300);
+    const auto f = p.footer(300.5);
+    CHECK(f.mode.empty());
+    CHECK(f.app.empty());
+    CHECK(f.elapsed.empty());
+    CHECK(f.hint.empty());
+    CHECK(*f.status == "Time limit reached (5:00)");
 }
 
 TEST_CASE("popup: a terminal outcome stands alone in the footer") {

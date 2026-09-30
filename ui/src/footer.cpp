@@ -9,7 +9,7 @@ namespace {
 
 // Width of one item, including what the widget draws around its text.
 int item_width(const FooterItem& item, const TextMeasure& measure) {
-    const int text = measure(item.text);
+    const int text = measure(item.kind, item.text);
     switch (item.kind) {
     case FooterKind::Mode:
         return text + kModeChipExtraPx;
@@ -23,10 +23,22 @@ int item_width(const FooterItem& item, const TextMeasure& measure) {
     return text;
 }
 
+}  // namespace
+
+bool footer_sep_before(const std::vector<FooterItem>& items, std::size_t i) {
+    return i > 0 && i < items.size() && items[i].kind == FooterKind::Hint &&
+           items[i - 1].kind == FooterKind::Elapsed;
+}
+
+namespace {
+
 int row_width(const std::vector<FooterItem>& items, const TextMeasure& measure) {
     int w = 0;
     for (std::size_t i = 0; i < items.size(); ++i) {
-        if (i > 0) w += kFooterGapPx;
+        if (footer_sep_before(items, i))
+            w += 2 * kFooterEndGapPx + measure(FooterKind::Hint, kFooterSep);
+        else if (i > 0)
+            w += kFooterGapPx;
         w += item_width(items[i], measure);
     }
     return w;
@@ -39,7 +51,8 @@ int footer_width(const std::vector<FooterItem>& items, const TextMeasure& measur
     return row_width(items, measure);
 }
 
-std::vector<FooterItem> compose_footer(const FooterInput& in, int avail_px, const TextMeasure& measure) {
+std::vector<FooterItem> compose_footer(const FooterInput& in, int avail_px,
+                                       const TextMeasure& measure) {
     std::vector<FooterItem> items;
     if (!in.mode.empty()) items.push_back({FooterKind::Mode, in.mode});
     if (!in.app.empty()) items.push_back({FooterKind::App, in.app});

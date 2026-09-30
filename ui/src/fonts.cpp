@@ -17,6 +17,12 @@ constexpr const char* kLogPrefix = "flowd-ui: ";
 constexpr const char* kFontExt = ".woff2";
 constexpr const char* kFontsDirName = "fonts";
 constexpr const char* kSelfExe = "/proc/self/exe";
+// Where an installed build keeps them, set by CMake (FLOWD_FONTS_DIR).
+#ifdef FLOWD_FONTS_DIR
+constexpr const char* kInstalledFontsDir = FLOWD_FONTS_DIR;
+#else
+constexpr const char* kInstalledFontsDir = "";
+#endif
 
 // Once per distinct message: a respawned session re-registers the same
 // files, and one line per broken file is enough.
@@ -39,7 +45,8 @@ int register_fonts(const std::filesystem::path& dir) {
     }
     std::vector<std::filesystem::path> files;
     for (const auto& entry : it) {
-        if (entry.path().extension() == kFontExt && entry.is_regular_file(ec)) files.push_back(entry.path());
+        if (entry.path().extension() == kFontExt && entry.is_regular_file(ec))
+            files.push_back(entry.path());
     }
     // A stable order, so the same file wins if two ever declare one family.
     std::sort(files.begin(), files.end());
@@ -68,11 +75,18 @@ int register_fonts(const std::filesystem::path& dir) {
 std::optional<std::filesystem::path> bundled_fonts_dir() {
     std::error_code ec;
     const auto exe = std::filesystem::read_symlink(kSelfExe, ec);
-    if (ec) {
-        log_once(std::string("cannot read ") + kSelfExe + ": " + ec.message() + "; using system fonts");
-        return std::nullopt;
+    if (!ec) {
+        auto beside = exe.parent_path() / kFontsDirName;
+        if (std::filesystem::is_directory(beside, ec)) return beside;
+    } else {
+        log_once(std::string("cannot read ") + kSelfExe + ": " + ec.message());
     }
-    return exe.parent_path() / kFontsDirName;
+    // An installed build keeps its fonts under the data directory instead.
+    const std::filesystem::path installed = kInstalledFontsDir;
+    if (!installed.empty() && std::filesystem::is_directory(installed, ec)) return installed;
+    log_once("no bundled fonts beside the executable or at " + installed.string() +
+             "; using system fonts");
+    return std::nullopt;
 }
 
 }  // namespace flowd

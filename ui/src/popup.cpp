@@ -47,8 +47,9 @@ constexpr double kCaretOnS = 0.5;
 constexpr float kHighlightRadius = 3.0f;
 constexpr float kHighlightInsetY = 2.0f;
 constexpr int kHighlightMs = 600;
-// Auto-scroll: overlay.css masks from transparent at 14 px to opaque at 34 px,
-// measured from the card's top edge.
+// Auto-scroll: the top fade runs from transparent at 14 px to opaque at 34 px
+// from the card's top edge, taken from overlay.css (.popup .body.scrolled
+// mask-image) rather than design.md's "16 px".
 constexpr float kMaskClearY = 14.0f;
 constexpr float kMaskOpaqueY = 34.0f;
 // Enter translateY 6 -> 0, exit 0 -> 4 (design.md "States" 1 and 4).
@@ -75,11 +76,10 @@ constexpr float kChipIconGap = 4.0f;
 constexpr float kChipRadius = 6.0f;
 constexpr double kChipAlpha = 0.14;
 // The status and countdown icons are 14 px; the end group (elapsed, "·",
-// hint) keeps 6 px gaps and dims the dot to 60% (overlay.css .end, .sep).
+// hint) keeps kFooterEndGapPx gaps and dims the dot to 60% (overlay.css
+// .end, .sep).
 constexpr float kStatusIcon = 14.0f;
-constexpr float kEndGap = 6.0f;
 constexpr double kSepAlpha = 0.6;
-constexpr const char* kSep = "·";
 // design.md "Preview popup" → Finishing: loader-circle at 800 ms per turn.
 constexpr double kSpinPeriodS = 0.8;
 constexpr double kFullTurnDeg = 360.0;
@@ -206,10 +206,11 @@ Gtk::SizeRequestMode PopupCanvas::get_request_mode_vfunc() const {
 
 void PopupCanvas::measure_vfunc(Gtk::Orientation orientation, int, int& minimum, int& natural,
                                 int& minimum_baseline, int& natural_baseline) const {
-    // Fixed for a given max_lines: the card grows inside the surface, so the
-    // compositor never resizes it mid-animation (design.md "Motion" → GTK
-    // mapping). It spans the output so the card can centre anywhere on it.
-    const int w = owner_.output_width();
+    // Fixed for a given max_lines and output: the card grows inside the
+    // surface, so the compositor never resizes it mid-animation (design.md
+    // "Motion" → GTK mapping). Wide enough for the widest card and its
+    // shadow; apply_position slides it under the card.
+    const int w = popup_surface_w(owner_.output_width());
     minimum = natural = orientation == Gtk::Orientation::HORIZONTAL ? w : owner_.surface_h_;
     minimum_baseline = natural_baseline = -1;
 }
@@ -241,14 +242,15 @@ Popup::Popup(Backend backend, Tokens tokens, bool reduced_motion)
     pango_layout_set_wrap(text_, PANGO_WRAP_WORD_CHAR);
     measure_ = label_layout(w, "", kLabelPx);
     measure_tnum_ = footer_layout("", true);
-    sep_ = label_layout(w, kSep, kLabelPx);
+    sep_ = label_layout(w, kFooterSep, kLabelPx);
 
     switch (backend_) {
     case Backend::Wayland:
-        // Spans the output's width; the card sits kPopupPad above the
-        // surface's bottom edge, 52 px above the output's (design.md "Popup
-        // placement"). Click-through: the input region is set empty on show.
-        make_overlay_surface(*this, kNamespace, Edges::Left | Edges::Right | Edges::Bottom,
+        // The card sits kPopupPad above the surface's bottom edge, 52 px
+        // above the output's (design.md "Popup placement"); the left margin
+        // follows the card. Click-through: the input region is set empty on
+        // show.
+        make_overlay_surface(*this, kNamespace, Edges::Left | Edges::Bottom,
                              {.bottom = kPopupSurfaceBottom}, why_not_);
         break;
     case Backend::X11:
@@ -419,12 +421,12 @@ void Popup::show_now() {
             x11_ready_ = true;
         }
         // Placed before mapping, so it never flashes at the origin.
-        if (monitor_) place_x11_overlay(*this, monitor_, 0, kPopupSurfaceBottom);
+        apply_position();
         if (!show_x11_overlay(*this)) {
             why_not_ = "the X11 popup window failed its focus checks";
             return;
         }
-        if (monitor_) place_x11_overlay(*this, monitor_, 0, kPopupSurfaceBottom);
+        apply_position();
     } else {
         // Never present(): the surface must not ask for focus.
         set_visible(true);
@@ -576,9 +578,17 @@ void Popup::update_geometry(double now, bool fresh, const FooterInput& in) {
     text_natural_w_ = pixel_width(text_) + static_cast<int>(kCaretGap + kCaretW);
     int natural = text_natural_w_ + static_cast<int>(2 * kPadX);
     if (footer_on_) {
-        const TextMeasure m = footer_measure(in);
+        const TextMeasure m = footer_measure();
         const int row = footer_width(compose_footer(in, INT_MAX, m), m);
         natural = std::max(natural, row + static_cast<int>(kFootPadL + kFootPadR));
+    }
+
+    // The surface follows the centre, not the card's width, so a card
+    // growing mid-session never moves it; only a moved indicator does.
+    const int left = popup_surface_left(out_w, cx);
+    if (fresh || left != surface_left_) {
+        surface_left_ = left;
+        apply_position();
     }
 
     // Width first, since the line count depends on it.
@@ -605,32 +615,41 @@ void Popup::update_geometry(double now, bool fresh, const FooterInput& in) {
     update_footer(in);
 }
 
-int Popup::output_width() const {
-    if (!monitor_) return 0;
-    Gdk::Rectangle g;
-    monitor_->get_geometry(g);
-    return g.get_width();
-}
+int Popup::output_width() const { return output_w_; }
 
 void Popup::use_monitor(const Glib::RefPtr<Gdk::Monitor>& monitor) {
     if (!monitor) return;
-    const bool resized = !monitor_ || output_width() != [&monitor] {
-        Gdk::Rectangle g;
-        monitor->get_geometry(g);
-        return g.get_width();
-    }();
+    Gdk::Rectangle g;
+    monitor->get_geometry(g);
+    const bool resized = g.get_width() != output_w_;
     monitor_ = monitor;
+    output_w_ = g.get_width();
     monitor_gone_.disconnect();
-    // An unplugged output: fall back to whatever is left.
+    // An unplugged output: fall back to whatever is left. With nothing left,
+    // output_w_ keeps the old width, so a card on screen keeps its size
+    // instead of collapsing to nothing until it fades.
     monitor_gone_ = monitor->signal_invalidate().connect([this] {
         auto m = first_monitor(get_display());
         if (m == monitor_) m = {};
         monitor_ = {};
+        monitor_gone_.disconnect();
         if (m) use_monitor(m);
     });
     if (backend_ == Backend::Wayland && gtk_layer_is_layer_window(gobj()))
         gtk_layer_set_monitor(gobj(), monitor->gobj());
     if (resized) canvas_.queue_resize();
+}
+
+void Popup::apply_position() {
+    // The same frame as the indicator's: margins count from the output's
+    // left edge (on X11, its workarea's), in logical px of the output's
+    // geometry width, which is also the frame of the anchor it reports.
+    if (backend_ == Backend::Wayland) {
+        if (gtk_layer_is_layer_window(gobj()))
+            set_overlay_margins(*this, {.left = surface_left_, .bottom = kPopupSurfaceBottom});
+    } else if (backend_ == Backend::X11 && x11_ready_ && get_realized() && monitor_) {
+        place_x11_overlay(*this, monitor_, surface_left_, kPopupSurfaceBottom);
+    }
 }
 
 void Popup::apply_input_region() {
@@ -641,8 +660,9 @@ void Popup::apply_input_region() {
 }
 
 void Popup::on_canvas_allocated() {
-    if (backend_ == Backend::X11 && x11_ready_ && get_realized() && monitor_)
-        place_x11_overlay(*this, monitor_, 0, kPopupSurfaceBottom);
+    // X11 clamps the window inside the workarea by its size, so a resize
+    // moves it again.
+    if (backend_ == Backend::X11) apply_position();
     apply_input_region();
 }
 
@@ -661,19 +681,13 @@ PangoLayout* Popup::footer_layout(std::string_view text, bool tnum) {
     return l;
 }
 
-TextMeasure Popup::footer_measure(const FooterInput& in) {
-    const int sep_w = pixel_width(sep_);
-    const bool countdown = countdown_;
-    return [this, in, sep_w, countdown](std::string_view text) {
-        const bool clock = !in.elapsed.empty() && text == in.elapsed;
+TextMeasure Popup::footer_measure() {
+    return [this](FooterKind kind, std::string_view text) {
+        const bool clock = kind == FooterKind::Elapsed;
         PangoLayout* l = clock ? measure_tnum_ : measure_;
         pango_layout_set_text(l, text.data(), static_cast<int>(text.size()));
         int w = pixel_width(l);
-        if (clock && countdown) w += static_cast<int>(kStatusIcon + kEndGap);
-        // The "·" before the hint takes more than the plain gap. Counted even
-        // once the elapsed time is dropped, which errs toward dropping early.
-        if (!in.hint.empty() && !in.elapsed.empty() && text == in.hint)
-            w += sep_w + static_cast<int>(2 * kEndGap) - kFooterGapPx;
+        if (clock && countdown_) w += static_cast<int>(kStatusIcon + kFooterEndGapPx);
         return w;
     };
 }
@@ -697,7 +711,7 @@ void Popup::update_footer(const FooterInput& in) {
         return;
     }
 
-    const auto items = compose_footer(in, avail, footer_measure(in));
+    const auto items = compose_footer(in, avail, footer_measure());
     const bool others = std::any_of(items.begin(), items.end(), [](const FooterItem& i) {
         return i.kind != FooterKind::Status;
     });
@@ -713,7 +727,7 @@ void Popup::update_footer(const FooterInput& in) {
         case FooterKind::Status:
             return kStatusIconPx;
         case FooterKind::Elapsed:
-            return countdown_ ? kStatusIcon + kEndGap : 0.0;
+            return countdown_ ? kStatusIcon + kFooterEndGapPx : 0.0;
         case FooterKind::App:
         case FooterKind::Hint:
             break;
@@ -721,16 +735,15 @@ void Popup::update_footer(const FooterInput& in) {
         return 0.0;
     };
     const auto trail = [](FooterKind k) { return k == FooterKind::Mode ? kChipPadR : 0.0f; };
-    const auto gap_before = [](const std::vector<FooterRun>& g, FooterKind k, bool dot) {
-        if (g.empty()) return 0.0;
-        if (k == FooterKind::Hint && dot) return 0.0;  // the dot's gaps are its own
-        return static_cast<double>(kFooterGapPx);
+    const auto gap_before = [](const std::vector<FooterRun>& g) {
+        return g.empty() ? 0.0 : static_cast<double>(kFooterGapPx);
     };
     const int sep_w = pixel_width(sep_);
-    const bool dot = std::any_of(items.begin(), items.end(),
-                                 [](const FooterItem& i) { return i.kind == FooterKind::Elapsed; });
+    // The same spacing footer_width counts, so what compose_footer kept fits.
+    bool sep = false;
     const FooterItem* status = nullptr;
-    for (const FooterItem& item : items) {
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const FooterItem& item = items[i];
         if (item.kind == FooterKind::Status) {
             status = &item;
             continue;
@@ -740,8 +753,12 @@ void Popup::update_footer(const FooterInput& in) {
         double& gw = is_end ? end_w : left_w;
         PangoLayout* l = footer_layout(item.text, item.kind == FooterKind::Elapsed);
         const double w = pixel_width(l);
-        gw += gap_before(group, item.kind, dot);
-        if (item.kind == FooterKind::Hint && dot) gw += kEndGap + sep_w + kEndGap;
+        if (footer_sep_before(items, i)) {
+            sep = true;
+            gw += kFooterEndGapPx + sep_w + kFooterEndGapPx;
+        } else {
+            gw += gap_before(group);
+        }
         group.push_back({item.kind, l, gw + lead(item.kind), w});
         gw += lead(item.kind) + w + trail(item.kind);
     }
@@ -749,7 +766,7 @@ void Popup::update_footer(const FooterInput& in) {
         const bool alone = !others;
         auto& group = alone ? left : end;
         double& gw = alone ? left_w : end_w;
-        gw += gap_before(group, FooterKind::Status, false);
+        gw += gap_before(group);
         PangoLayout* l = footer_layout(status->text, false);
         // Ellipsized into what the other items leave (design.md: "A status
         // message is ellipsized last").
@@ -768,7 +785,7 @@ void Popup::update_footer(const FooterInput& in) {
     const double end_x = card_.w - kFootPadR - end_w;
     for (FooterRun& r : left) r.x += kFootPadL;
     for (FooterRun& r : end) {
-        if (r.kind == FooterKind::Hint && dot) sep_x_ = end_x + r.x - kEndGap - sep_w;
+        if (r.kind == FooterKind::Hint && sep) sep_x_ = end_x + r.x - kFooterEndGapPx - sep_w;
         r.x += end_x;
     }
     footer_runs_ = std::move(left);
@@ -845,7 +862,9 @@ void Popup::draw_at(GtkSnapshot* s, double now) {
 
     const double h = tl_[kAnimHeight].value(now);
     const double bottom = surface_h_ - kPopupPad + tl_[kAnimShift].value(now);
-    const graphene_rect_t card = rect(card_.x, bottom - h, card_.w, h);
+    // card_.x counts from the output's left edge; the surface starts at
+    // surface_left_.
+    const graphene_rect_t card = rect(card_.x - surface_left_, bottom - h, card_.w, h);
     const double footer_h = footer_on_ ? kPopupFooterH : 0.0;
     const double text_h = h - 2 * kPopupPadY - footer_h;
 
@@ -888,10 +907,11 @@ void Popup::draw_text(GtkSnapshot* s, graphene_rect_t box, graphene_rect_t clip,
     const double hl = tl_[kAnimHighlight].value(now);
     if (highlight_ && hl > 0.0) {
         const Rgba c = scaled(tokens_.primary_soft, hl);
-        for_each_piece(text_, *highlight_, [&](double x0, double x1, double y0, double y1, double) {
-            fill_rounded(s, rect(x0, y0 + kHighlightInsetY, x1 - x0, y1 - y0 - 2 * kHighlightInsetY),
-                         kHighlightRadius, c);
-        });
+        const auto piece = [&](double x0, double x1, double y0, double y1, double) {
+            const double h = y1 - y0 - 2 * kHighlightInsetY;
+            fill_rounded(s, rect(x0, y0 + kHighlightInsetY, x1 - x0, h), kHighlightRadius, c);
+        };
+        for_each_piece(text_, *highlight_, piece);
     }
 
     const GdkRGBA text_col = to_gdk(tokens_.text);
@@ -905,9 +925,10 @@ void Popup::draw_text(GtkSnapshot* s, graphene_rect_t box, graphene_rect_t clip,
     // Pango has no dotted underline, and its solid one sits too close.
     if (spec_.kind == TextKind::Zones) {
         const Rgba u = scaled(tokens_.text2, kUnderlineAlpha);
-        for_each_piece(text_, spec_.pending, [&](double x0, double x1, double, double, double base) {
+        const auto piece = [&](double x0, double x1, double, double, double base) {
             fill_rounded(s, rect(x0, base + kUnderlineOffset, x1 - x0, kUnderlinePx), 0, u);
-        });
+        };
+        for_each_piece(text_, spec_.pending, piece);
     }
 
     if (spec_.kind == TextKind::Zones && !spec_.live.empty()) {
@@ -957,8 +978,9 @@ void Popup::draw_footer(GtkSnapshot* s, graphene_rect_t card, double now) {
         switch (r.kind) {
         case FooterKind::Mode: {
             const double chip_x = x - kChipIconGap - kChipIcon - kChipPadL;
-            fill_rounded(s, rect(chip_x, cy - kChipH / 2, kChipPadL + kChipIcon + kChipIconGap + r.w + kChipPadR, kChipH),
-                         kChipRadius, scaled(tokens_.text2, kChipAlpha));
+            const double chip_w = kChipPadL + kChipIcon + kChipIconGap + r.w + kChipPadR;
+            fill_rounded(s, rect(chip_x, cy - kChipH / 2, chip_w, kChipH), kChipRadius,
+                         scaled(tokens_.text2, kChipAlpha));
             draw_icon(s, app_icon(footer_in_.mode), static_cast<float>(chip_x + kChipPadL),
                       static_cast<float>(cy - kChipIcon / 2), kChipIcon, tokens_.text);
             draw_line(s, r.layout, x, cy, tokens_.text);
@@ -971,7 +993,7 @@ void Popup::draw_footer(GtkSnapshot* s, graphene_rect_t card, double now) {
         case FooterKind::Elapsed:
             if (countdown_) {
                 // design.md "Recording": the countdown in warn, with a timer.
-                draw_icon(s, Icon::Timer, static_cast<float>(x - kEndGap - kStatusIcon),
+                draw_icon(s, Icon::Timer, static_cast<float>(x - kFooterEndGapPx - kStatusIcon),
                           static_cast<float>(cy - kStatusIcon / 2), kStatusIcon, tokens_.warn);
                 draw_line(s, r.layout, x, cy, tokens_.warn);
             } else {

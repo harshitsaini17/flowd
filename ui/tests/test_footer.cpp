@@ -10,16 +10,21 @@
 using namespace flowd;
 
 // 8 px per character keeps the arithmetic readable.
-static int eight(std::string_view s) { return int(s.size()) * 8; }
+static int eight(FooterKind, std::string_view s) { return int(s.size()) * 8; }
 
 TEST_CASE("footer: everything fits on a wide card") {
-    auto items = compose_footer({"prose", "firefox", "0:12", "Super+D to stop", std::nullopt}, 600, eight);
+    auto items =
+        compose_footer({"prose", "firefox", "0:12", "Super+D to stop", std::nullopt}, 600, eight);
     CHECK(items.size() == 4);
 }
 
 TEST_CASE("footer: drops the app id first, then elapsed, then the hint") {
     FooterInput in{"prose", "firefox", "0:12", "Super+D to stop", std::nullopt};
-    auto names = [](auto v) { std::vector<FooterKind> k; for (auto& i : v) k.push_back(i.kind); return k; };
+    auto names = [](auto v) {
+        std::vector<FooterKind> k;
+        for (auto& i : v) k.push_back(i.kind);
+        return k;
+    };
     CHECK(names(compose_footer(in, 260, eight)) ==
           std::vector{FooterKind::Mode, FooterKind::Elapsed, FooterKind::Hint});
     CHECK(names(compose_footer(in, 200, eight)) == std::vector{FooterKind::Mode, FooterKind::Hint});
@@ -39,7 +44,8 @@ TEST_CASE("footer: with no hotkey label there is no stop hint") {
 }
 
 TEST_CASE("footer: the mode chip stays even when nothing else fits") {
-    auto items = compose_footer({"prose", "firefox", "0:12", "Super+D to stop", std::nullopt}, 0, eight);
+    auto items =
+        compose_footer({"prose", "firefox", "0:12", "Super+D to stop", std::nullopt}, 0, eight);
     REQUIRE(items.size() == 1);
     CHECK(items[0].kind == FooterKind::Mode);
     CHECK_FALSE(items[0].ellipsize);
@@ -47,7 +53,36 @@ TEST_CASE("footer: the mode chip stays even when nothing else fits") {
 
 TEST_CASE("footer: row width counts the chip, the status icon and the gaps") {
     const std::vector<FooterItem> items{{FooterKind::Mode, "ab"}, {FooterKind::Status, "cd", true}};
-    CHECK(footer_width(items, eight) == 16 + kModeChipExtraPx + kFooterGapPx + 16 + kStatusIconPx);
+    CHECK(footer_width(items, eight) ==
+          16 + kModeChipExtraPx + kFooterGapPx + 16 + kStatusIconPx);
     CHECK(footer_width({}, eight) == 0);
     CHECK(footer_width(items, TextMeasure{}) == 0);
+}
+
+TEST_CASE("footer: the dot between elapsed time and hint is counted only while both show") {
+    // "·" is two bytes, so 16 px at eight per byte.
+    const int dot = 2 * kFooterEndGapPx + 16;
+    const std::vector<FooterItem> both{{FooterKind::Elapsed, "0:12"}, {FooterKind::Hint, "stop"}};
+    CHECK(footer_width(both, eight) == 32 + dot + 32);
+    CHECK(footer_sep_before(both, 1));
+    CHECK_FALSE(footer_sep_before(both, 0));
+
+    // Mode 68 + gap 8 + hint 120 = 196 exactly: with the elapsed time
+    // dropped, the hint fits without the dot's width counted against it.
+    FooterInput in{"prose", "firefox", "0:12", "Super+D to stop", std::nullopt};
+    auto items = compose_footer(in, 196, eight);
+    REQUIRE(items.size() == 2);
+    CHECK(items[1].kind == FooterKind::Hint);
+    CHECK_FALSE(footer_sep_before(items, 1));
+    CHECK(footer_width(items, eight) == 196);
+}
+
+TEST_CASE("footer: the measure is told which item it measures") {
+    std::vector<FooterKind> seen;
+    const TextMeasure m = [&seen](FooterKind k, std::string_view s) {
+        seen.push_back(k);
+        return int(s.size());
+    };
+    footer_width({{FooterKind::Mode, "a"}, {FooterKind::Elapsed, "0:01"}}, m);
+    CHECK(seen == std::vector{FooterKind::Mode, FooterKind::Elapsed});
 }

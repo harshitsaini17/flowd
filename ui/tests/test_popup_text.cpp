@@ -43,10 +43,9 @@ TEST_CASE("popup text: a correction highlights from the changed word to the end"
     CHECK(r->end == 29);
 }
 
-TEST_CASE("popup text: a shorter polished prefix is a correction") {
-    const auto r = correction_range("Move it to Friday no wait", "Move it to");
-    // Nothing of `after` changed, only its end: the highlight backs up to the
-    // start of the word the texts diverge in.
+TEST_CASE("popup text: a polished run cut back inside a word highlights that word") {
+    const auto r = correction_range("Move it to Friday no wait", "Move it t");
+    // The highlight backs up to the start of the word the texts diverge in.
     REQUIRE(r);
     CHECK(r->begin == 8);
 }
@@ -135,7 +134,8 @@ TEST_CASE("popup text: finishing crossfades the live run into pending") {
 }
 
 TEST_CASE("popup text: live-only updates and first text do not crossfade") {
-    CHECK_FALSE(crossfade(text_spec(Zones{"A.", "", "b"}, true), text_spec(Zones{"A.", "", "bc"}, true)));
+    CHECK_FALSE(crossfade(text_spec(Zones{"A.", "", "b"}, true),
+                          text_spec(Zones{"A.", "", "bc"}, true)));
     CHECK_FALSE(crossfade(text_spec(Placeholder{"Listening…", true}, true),
                           text_spec(Zones{"", "", "so"}, true)));
 }
@@ -147,4 +147,13 @@ TEST_CASE("popup text: a rewritten polished run is a correction in the joined te
     REQUIRE(r);
     CHECK(after.text.substr(r->begin, r->end - r->begin) == "Thursday.");
     CHECK_FALSE(correction(after, text_spec(Zones{"Move it to Thursday. And", "", ""}, true)));
+}
+
+TEST_CASE("popup text: dropping whole trailing words is no correction") {
+    CHECK_FALSE(correction_range("Move it to Friday.", "Move it to"));
+    CHECK_FALSE(correction_range("Move it to Friday.", "Move it to "));
+    // Cut inside a word: that word changed, so it is highlighted.
+    const auto r = correction_range("Move it to Friday.", "Move it to Fri");
+    REQUIRE(r);
+    CHECK(r->begin == 11);
 }

@@ -126,13 +126,17 @@ private:
     void apply_input_region();
     // Places the X11 window for a size the canvas has just been given.
     void on_canvas_allocated();
+    // The output's logical width; the last one known while no output is.
     int output_width() const;
     void use_monitor(const Glib::RefPtr<Gdk::Monitor>& monitor);
+    // Moves the surface so its left edge is at surface_left_.
+    void apply_position();
     // A footer label at the label size; tnum turns on tabular figures.
     PangoLayout* footer_layout(std::string_view text, bool tnum);
     // What each footer item's text measures, as compose_footer needs it:
-    // the Pango width, plus the timer icon drawn before a countdown.
-    TextMeasure footer_measure(const FooterInput& in);
+    // the Pango width (tabular figures for the clock), plus the timer icon
+    // drawn before a countdown.
+    TextMeasure footer_measure();
 
     // Drawing. box is the text area, clip the part of it text may show in.
     void draw(GtkSnapshot* s);
@@ -157,6 +161,10 @@ private:
     Glib::RefPtr<Gdk::Monitor> monitor_;          // the output shown on
     Glib::RefPtr<Gdk::Monitor> pending_monitor_;  // applied at the next show
     sigc::connection monitor_gone_;
+    int output_w_ = 0;  // monitor_'s width, kept if it goes away while shown
+    // The surface's left edge on the output (popup_surface_left); the card
+    // is drawn at card_.x - surface_left_ within it.
+    int surface_left_ = 0;
 
     // The text as laid out now, and the spec it was built from.
     TextSpec spec_;

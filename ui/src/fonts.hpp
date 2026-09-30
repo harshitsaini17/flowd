@@ -14,8 +14,9 @@ namespace flowd {
 // before the first layout is built.
 int register_fonts(const std::filesystem::path& dir);
 
-// <exe dir>/fonts, where the build copies the fonts (ADR 0013). The exe dir
-// comes from /proc/self/exe; nothing when that cannot be read.
+// <exe dir>/fonts, where the build copies the fonts (ADR 0013), with the exe
+// dir from /proc/self/exe. When that directory is missing, FLOWD_FONTS_DIR
+// (the installed data directory) instead; nothing when neither exists.
 std::optional<std::filesystem::path> bundled_fonts_dir();
 
 }  // namespace flowd
