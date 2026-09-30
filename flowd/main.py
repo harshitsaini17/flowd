@@ -260,26 +260,27 @@ def main(argv: list[str] | None = None) -> int:
     from flowd.cleanup import CleanupClient
     from flowd.control import AlreadyRunning
     from flowd.daemon import Daemon
-    from flowd.overlay_ipc import OverlayProcess
+    from flowd.ui_ipc import UiProcess
 
     engine = _load_stt(cfg)
     if engine is None:
         return EXIT_STT_LOAD
     capture = AudioCapture(cfg.audio)
     state_dir().mkdir(parents=True, exist_ok=True)
-    # Nothing is spawned here: the overlay starts on the first preview and dies
-    # with the daemon, so a user who never presses the hotkey never pays for a
-    # GTK process. `--replay` deliberately gets none — it exists to measure
-    # latency, and a window competing for cores would skew what it reports.
-    overlay = OverlayProcess(cfg.ui)
+    # flowd-ui dies with the daemon. `--replay` deliberately gets none: it
+    # exists to measure latency, and a window competing for cores would skew
+    # what it reports.
+    ui = UiProcess(cfg.ui, cfg.audio.max_session_s)
     daemon = Daemon(
         cfg=cfg,
         stt=engine,
         capture=capture,
-        overlay=overlay,
+        overlay=ui,
         cleanup=CleanupClient(cfg.llm),
         context=detect,
     )
+    ui.on_event = daemon.on_ui_event
+    ui.start()
     try:
         asyncio.run(daemon.run(runtime_dir() / "flowd.sock"))
     except AlreadyRunning as exc:

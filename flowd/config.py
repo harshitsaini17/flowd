@@ -387,11 +387,17 @@ def load_config(path: Path | None = None) -> Config:
 def ui_message(cfg: Config) -> dict[str, Any]:
     """The `ui` object of the `config` message `flowd-ui` receives on start and
     reload (ADR 0013), sent as `{"type": "config", "ui": ui_message(cfg)}`."""
+    return ui_fields(cfg.ui, cfg.audio.max_session_s)
+
+
+def ui_fields(ui: Ui, max_session_s: int) -> dict[str, Any]:
+    """`ui_message` from its two inputs, for callers that hold a `Ui` rather
+    than a whole `Config`."""
     msg: dict[str, Any] = {}
-    for field in fields(cfg.ui):
+    for field in fields(ui):
         if field.name not in _UI_DAEMON_ONLY:
-            msg[field.name] = getattr(cfg.ui, field.name)
-    msg["max_session_s"] = cfg.audio.max_session_s
+            msg[field.name] = getattr(ui, field.name)
+    msg["max_session_s"] = max_session_s
     return msg
 
 

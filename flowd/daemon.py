@@ -130,6 +130,9 @@ class Daemon:
         self.sleep = SleepDetector()
         # Opt-in audio capture for testing (`[logging] recordings_dir`).
         self.recorder: SessionRecorder | None = None
+        # Set by `run`, so events from other threads (flowd-ui's reader) can
+        # be handed to the loop the daemon lives on.
+        self.loop: asyncio.AbstractEventLoop | None = None
 
     # --- command handling -------------------------------------------------
 
@@ -728,6 +731,7 @@ class Daemon:
     async def run(self, socket_path: Path) -> None:
         from flowd.control import serve
 
+        self.loop = asyncio.get_running_loop()
         await self.load_startup_vocab()
         server = await serve(socket_path, self.handle)
         log.info("flowd listening on %s", socket_path)
@@ -753,6 +757,34 @@ class Daemon:
             # daemon does not leave a stale preview over the user's work.
             if self.overlay is not None:
                 self.overlay.stop()
+
+    def on_ui_event(self, event: dict[str, Any]) -> None:
+        """An event from flowd-ui (ADR 0013). Called on its reader thread, so
+        anything that touches the session hops to the loop first."""
+        kind = event.get("event")
+        if kind == "click":
+            loop = self.loop
+            if loop is None or loop.is_closed():
+                return
+            loop.call_soon_threadsafe(self._toggle_from_ui)
+        elif kind == "moved":
+            # flowd-ui stores the position itself; nothing to do here.
+            log.debug("indicator moved to %s on %s", event.get("x"), event.get("output"))
+
+    def _toggle_from_ui(self) -> None:
+        task = asyncio.ensure_future(self._toggle())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _toggle(self) -> None:
+        try:
+            reply = await self.handle({"cmd": "toggle"})
+        except Exception:
+            # A click has no one to report to, so a failure lands in the log.
+            log.exception("toggle from the indicator failed")
+            return
+        if not reply.get("ok"):
+            log.debug("indicator click: %s", reply.get("error"))
 
     def _exit_if_microphone_stuck(self) -> None:
         """ADR 0015: a stream that would not stop may hold the device until this

@@ -1049,3 +1049,32 @@ async def test_a_stuck_microphone_waits_for_the_session_to_finish(
     await d.handle({"cmd": "stop"})
     with pytest.raises(MicrophoneStuck):
         await asyncio.wait_for(task, timeout=2)
+
+
+async def test_an_indicator_click_toggles_on_the_loop() -> None:
+    """flowd-ui's reader thread calls `on_ui_event`; the toggle must run on the
+    daemon's loop, not on that thread."""
+    d = daemon(FakeSttEngine([]))
+    d.loop = asyncio.get_running_loop()
+    seen: list[dict[str, Any]] = []
+
+    async def handle(request: dict[str, Any]) -> dict[str, Any]:
+        seen.append(request)
+        return {"ok": True}
+
+    d.handle = handle  # type: ignore[method-assign]
+    thread = threading.Thread(target=d.on_ui_event, args=({"event": "click"},))
+    thread.start()
+    thread.join()
+    for _ in range(50):
+        if seen:
+            break
+        await asyncio.sleep(0.01)
+    assert seen == [{"cmd": "toggle"}]
+
+
+def test_ui_events_before_the_loop_starts_are_ignored() -> None:
+    d = daemon(FakeSttEngine([]))
+    d.on_ui_event({"event": "click"})
+    d.on_ui_event({"event": "moved", "x": 0.5, "output": "eDP-1"})
+    d.on_ui_event({"event": "whatever"})
