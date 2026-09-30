@@ -46,7 +46,7 @@ On Arch Linux with Hyprland or Sway:
 
 ```bash
 sudo pacman -S --needed uv pipewire pipewire-pulse portaudio llama-cpp \
-  wl-clipboard wtype gtk4 gtk4-layer-shell python-gobject
+  wl-clipboard wtype cmake gtkmm-4.0 gtk4-layer-shell
 git clone https://github.com/harshitsaini17/flowd
 cd flowd
 make install
