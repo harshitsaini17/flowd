@@ -77,6 +77,26 @@ TEST_CASE("indicator geometry: the surface spans the output, so it never moves")
     CHECK(indicator_surface_w(true, 300) == kWarnSurfaceW);
 }
 
+TEST_CASE("indicator geometry: a full-width surface stays at the left edge") {
+    // Also for one frame with a stale, wider allocation after a monitor
+    // switch: never a negative or off-output margin.
+    CHECK(full_width_surface_left(1844, 3840, 1920) == 0);
+    CHECK(full_width_surface_left(76, 1920, 1920) == 0);
+    // The narrow surface, used before the output is known and on X11 without
+    // a compositor, still centres on the pill.
+    CHECK(full_width_surface_left(960, kSurfaceW, 1920) == 960 - kSurfaceW / 2);
+    CHECK(full_width_surface_left(76, kWarnSurfaceW, 1920) == 0);
+}
+
+TEST_CASE("indicator geometry: the warning pill stays inside an output-wide surface") {
+    const int out = 1920;
+    const double pill = kWarnPillMaxW;
+    CHECK(pill_center_in_surface(10, pill, 0, out) - pill / 2 == doctest::Approx(kEdgeClampPx));
+    CHECK(pill_center_in_surface(1910, pill, 0, out) + pill / 2 ==
+          doctest::Approx(out - kEdgeClampPx));
+    CHECK(indicator_surface_w(false, 100) == kSurfaceW);
+}
+
 TEST_CASE("indicator geometry: a drag puts the pill under the pointer") {
     // Pressed at centre 1844 (the bottom-right corner); every event maps to
     // the pointer's movement on the output, whatever the frame.

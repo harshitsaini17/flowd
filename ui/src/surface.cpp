@@ -298,6 +298,10 @@ bool show_x11_overlay(Gtk::Window& win) {
     return win.get_visible() && x11_state(win).verified_xid == t->xid;
 }
 
+int x11_workarea_width(const Glib::RefPtr<Gdk::Monitor>& monitor) {
+    return workarea(monitor).w;
+}
+
 bool place_x11_overlay(Gtk::Window& win, const Glib::RefPtr<Gdk::Monitor>& monitor,
                        int left_margin, int bottom_margin) {
     const auto t = x_target(win);

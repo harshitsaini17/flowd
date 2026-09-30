@@ -566,7 +566,8 @@ Density is "comfortable": card padding 20–24, row padding 20 × 24, section ga
 - Layer: `OVERLAY`. Anchor: `LEFT | BOTTOM`, with the horizontal position set
   by where the pill is drawn inside an output-wide surface (see Components →
   Indicator → Dragging). Exclusive zone: `-1` (it never pushes windows up,
-  and it sits on the output edge even beside a bar that reserves space).
+  and it sits on the output edge even beside a bar that reserves space; a
+  bar on the bottom edge is drawn over).
   Namespace `flowd-indicator`.
 - Bottom margin **6 px** idle, measured from the output edge. The expanded
   pill grows **upward** from the same baseline, so the pointer never has to chase it.

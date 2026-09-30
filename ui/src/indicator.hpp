@@ -120,13 +120,19 @@ private:
     void set_fullscreen_hidden(bool hidden);
     // Shows or hides for the config and fullscreen state together.
     void update_visibility();
-    // Returns the surface to its narrow width once the wide pill has collapsed.
+    // Returns a pill-sized surface to its narrow width once the wide pill has
+    // collapsed.
     void narrow_if_done(double now);
     // Runs the reduced-motion meter on a 10 Hz timer while recording.
     void update_reduced_meter();
     bool on_reduced_meter();
     void show_now();
     int output_width() const;
+    // The width the surface spans: the output's (its workarea's on X11), or
+    // 0 when it must stay pill-sized (X11 without a compositor).
+    int spanned_width() const;
+    // Re-reads the saved position and re-sizes for the current monitor.
+    void place_on_monitor();
     std::string output_name() const;
     // Where the surface's left edge belongs on the output, for the width it
     // has now; placed_left_ is where apply_position last put it.
@@ -184,7 +190,7 @@ private:
     IndicatorLook look_ = IndicatorLook::Idle;
     // The last expanded look, drawn while the content fades out on collapse.
     IndicatorLook content_look_ = IndicatorLook::Hover;
-    bool wide_ = false;  // the surface is sized for the warning pill
+    bool wide_ = false;  // a pill-sized surface is sized for the warning pill
     bool clipping_ = false;
     bool started_ = false;
     bool fullscreen_hidden_ = false;
@@ -195,6 +201,7 @@ private:
     Glib::RefPtr<Gdk::Monitor> pending_monitor_;  // waiting for the fade-out
     sigc::connection monitor_switch_;
     sigc::connection monitor_gone_;
+    sigc::connection monitor_geometry_;
     double center_x_ = 0.0;
     int placed_left_ = 0;
 

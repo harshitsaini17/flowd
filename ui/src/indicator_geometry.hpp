@@ -36,17 +36,23 @@ struct PillRect {
     double x, y, w, h;
 };
 
-// The surface width. It spans the output (out_w, 0 when unknown), so it never
-// has to move or resize under a held pointer: compositors animate or delay
-// both, and a drag read against a moving surface lands in the wrong place.
-// Until the output is known it is the pill's width, wide while the warning
-// pill is shown or still collapsing.
+// The surface width. It spans the output (out_w), so it never has to move or
+// resize under a held pointer: compositors animate or delay both, and a drag
+// read against a moving surface lands in the wrong place. With out_w 0 (the
+// output unknown, or X11 without a compositor, where an output-wide window
+// would paint an opaque strip) it is the pill's width, wide while the
+// warning pill is shown or still collapsing.
 int indicator_surface_w(bool wide, int out_w);
 
 // The surface's left edge on an output out_w wide (0 when unknown), for a
 // pill centred on center_x. It is kept on the output, since a wide surface
 // near an edge would otherwise hang off it.
 int indicator_surface_left(double center_x, int surface_w, int out_w);
+
+// indicator_surface_left, except that a surface at least as wide as the
+// output is at its left edge. Its allocation can lag a monitor switch by a
+// frame, and a stale, wider width must still not put it off the output.
+int full_width_surface_left(double center_x, int surface_w, int out_w);
 
 // The pill centre inside the surface. A pill wider than the clamp allows at
 // center_x shifts inward so it stays kEdgeClampPx inside the output.

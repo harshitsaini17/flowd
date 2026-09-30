@@ -17,6 +17,11 @@ int indicator_surface_left(double center_x, int surface_w, int out_w) {
     return std::clamp(left, 0, out_w - surface_w);
 }
 
+int full_width_surface_left(double center_x, int surface_w, int out_w) {
+    if (out_w > 0 && surface_w >= out_w) return 0;
+    return indicator_surface_left(center_x, surface_w, out_w);
+}
+
 double pill_center_in_surface(double center_x, double pill_w, int surface_left, int out_w) {
     double cx = center_x;
     if (out_w > 0) {

@@ -155,7 +155,7 @@ void IndicatorCanvas::measure_vfunc(Gtk::Orientation orientation, int, int& mini
     // Fixed: the pill animates and moves inside the surface, which spans the
     // output, so the compositor never resizes or moves it (design.md
     // "Motion" → GTK mapping, "Indicator placement").
-    const int w = indicator_surface_w(owner_.wide_, owner_.output_width());
+    const int w = indicator_surface_w(owner_.wide_, owner_.spanned_width());
     minimum = natural = orientation == Gtk::Orientation::HORIZONTAL ? w : kSurfaceH;
     minimum_baseline = natural_baseline = -1;
 }
@@ -253,6 +253,7 @@ Indicator::~Indicator() {
     deadline_.disconnect();
     monitor_switch_.disconnect();
     monitor_gone_.disconnect();
+    monitor_geometry_.disconnect();
     reduced_meter_.disconnect();
     if (tick_id_) canvas_.remove_tick_callback(tick_id_);
     tick_id_ = 0;
@@ -425,8 +426,16 @@ void Indicator::use_monitor(const Glib::RefPtr<Gdk::Monitor>& monitor) {
     });
     if (backend_ == Backend::Wayland && gtk_layer_is_layer_window(gobj()))
         gtk_layer_set_monitor(gobj(), monitor->gobj());
+    // A resolution or scale change on the same output: the surface spans
+    // it, so it re-measures, and the saved fraction maps to the new width.
+    monitor_geometry_.disconnect();
+    monitor_geometry_ = monitor->property_geometry().signal_changed().connect(
+        [this] { place_on_monitor(); });
+    place_on_monitor();
+}
+
+void Indicator::place_on_monitor() {
     center_x_ = from_fraction(store_.get(output_name()), output_width());
-    // The surface spans the output, so a new output means a new width.
     canvas_.queue_resize();
     apply_position();
     apply_input_region();
@@ -439,6 +448,14 @@ int Indicator::output_width() const {
     return g.get_width();
 }
 
+int Indicator::spanned_width() const {
+    // Without a compositing manager X11 paints a window's transparent area
+    // opaque, so there the surface stays pill-sized and moves instead.
+    if (backend_ == Backend::X11 && !get_display()->is_composited()) return 0;
+    // On X11 the window is placed inside the workarea, so it spans that.
+    return backend_ == Backend::X11 && monitor_ ? x11_workarea_width(monitor_) : output_width();
+}
+
 std::string Indicator::output_name() const {
     if (!monitor_) return {};
     return monitor_->get_connector();
@@ -449,8 +466,8 @@ int Indicator::surface_left() const {
     // the wide warning before the output is known) lands with a later frame,
     // and the surface must stay where its current buffer's pill is drawn.
     const int w = canvas_.get_width() > 0 ? canvas_.get_width()
-                                          : indicator_surface_w(wide_, output_width());
-    return indicator_surface_left(center_x_, w, output_width());
+                                          : indicator_surface_w(wide_, spanned_width());
+    return full_width_surface_left(center_x_, w, spanned_width());
 }
 
 void Indicator::on_canvas_allocated() {
@@ -606,9 +623,9 @@ void Indicator::update_targets(double now) {
     if (l == IndicatorLook::WarningHover) w = warn_pill_w(warn_text_w_, model_.warn_blocking());
     if (!open) w = kIdleLineW;
     // Widen the surface before the pill grows (design.md "Warning"); it
-    // narrows again once the pill has shrunk, in on_tick. Only before the
-    // output is known: after that the surface already spans it.
-    if (w > kPillW && !wide_) {
+    // narrows again once the pill has shrunk, in on_tick. Only a pill-sized
+    // surface resizes: an output-wide one already has room.
+    if (w > kPillW && !wide_ && spanned_width() == 0) {
         wide_ = true;
         canvas_.queue_resize();
         apply_position();

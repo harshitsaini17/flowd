@@ -60,7 +60,7 @@ std::optional<std::string> display_mismatch(Backend backend);
 bool layer_shell_supported();
 
 // Makes win a layer surface: namespace ns, OVERLAY layer, keyboard mode NONE,
-// exclusive zone 0, the given anchors and margins. Call before win is
+// exclusive zone -1, the given anchors and margins. Call before win is
 // realized. Afterwards the result is read back, and when win is not a layer
 // surface or its keyboard mode is not NONE, why_not says so and this returns
 // false; the caller must then not show win (ADR 0003).
@@ -68,7 +68,7 @@ bool make_overlay_surface(Gtk::Window& win, const char* ns, Edges anchors, Margi
                           std::optional<std::string>& why_not);
 
 // Updates the margins of a window already set up by make_overlay_surface,
-// e.g. the indicator's left margin while it is dragged.
+// e.g. the popup's left margin as it follows the indicator.
 void set_overlay_margins(Gtk::Window& win, Margins margins);
 
 // X11 overlay windows. override-redirect keeps the window manager from ever
@@ -98,6 +98,10 @@ bool show_x11_overlay(Gtk::Window& win);
 // would place a layer surface, kept inside monitor's workarea. GTK4 has no
 // public move call, so this uses XMoveWindow. Returns false when win is not
 // realized on X11 or the X server reports an error.
+// The width of monitor's X11 workarea, in logical px (its geometry width on
+// any other backend).
+int x11_workarea_width(const Glib::RefPtr<Gdk::Monitor>& monitor);
+
 bool place_x11_overlay(Gtk::Window& win, const Glib::RefPtr<Gdk::Monitor>& monitor,
                        int left_margin, int bottom_margin);
 

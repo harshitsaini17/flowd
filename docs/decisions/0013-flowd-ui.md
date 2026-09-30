@@ -20,10 +20,14 @@ warning states.
 - Two layer surfaces, both `OVERLAY` layer, keyboard interactivity `NONE`,
   exclusive zone -1: they reserve no space, and they ignore the space other
   panels reserve, so surface x is output x on every compositor. With zone 0
-  a bar's reserved edge shifts the surface off where the pill is drawn.
+  a bar's reserved edge shifts the surface off where the pill is drawn. The
+  cost: with a bar on the bottom edge, the indicator and the popup draw over
+  it rather than above it.
   - `flowd-indicator`: always present when `[ui] indicator = true`. It spans
     the output's bottom edge and accepts pointer input only inside its input
-    region, so everything but the pill is click-through.
+    region, so everything but the pill is click-through. On X11 it spans the
+    monitor's workarea instead, and without a compositing manager, which
+    would paint its transparent area opaque, it stays pill-sized and moves.
   - `flowd-popup`: created on the first `show`, then unmapped (not
     destroyed) after the fade, with no tick while hidden. Reusing it avoids
     re-running surface creation and the focus checks on every dictation.
