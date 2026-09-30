@@ -7,7 +7,7 @@ import os
 import tomllib
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 APP = "flowd"
@@ -120,6 +120,9 @@ class Chunking:
 
 @dataclass(frozen=True, slots=True)
 class Llm:
+    #: spec 8.1: false means every session pastes rule-based text instead of
+    #: going through the LLM cleanup pass.
+    enabled: bool = True
     url: str = "http://127.0.0.1:8177"
     timeout_ms: int = 2000
     final_timeout_ms: int = 800
@@ -191,6 +194,14 @@ class Logging:
 
 
 @dataclass(frozen=True, slots=True)
+class Settings:
+    """The settings page (ADR 0014): loopback only, off removes the socket."""
+
+    enabled: bool = True
+    port: int = 8178
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     hotkey: Hotkey = Hotkey()
     audio: Audio = Audio()
@@ -202,6 +213,7 @@ class Config:
     inject: Inject = Inject()
     ui: Ui = Ui()
     logging: Logging = Logging()
+    settings: Settings = Settings()
     #: spec 8.1's three, plus the common Linux ids for each mode's apps.
     #: Matched case-insensitively (context.py); terminals default to code.
     modes: tuple[tuple[str, str], ...] = (
@@ -258,12 +270,15 @@ FADE_MS_RANGE = (0, 10_000)
 #: flowd-ui clamps its time limit to this range; capping it here keeps the
 #: daemon's auto-stop and the UI's countdown in agreement.
 MAX_SESSION_S_RANGE = (1, 3600)
+#: Below 1024 needs root, which a user service never has.
+SETTINGS_PORT_RANGE = (1024, 65535)
 #: Inclusive integer bounds, checked in whichever section the key appears
 #: (`max_lines` and `fade_ms` in both [ui] and the legacy [overlay]).
 _INT_RANGES = {
     "max_lines": MAX_LINES_RANGE,
     "fade_ms": FADE_MS_RANGE,
     "max_session_s": MAX_SESSION_S_RANGE,
+    "port": SETTINGS_PORT_RANGE,
 }
 _UNIT_FLOAT = {"threshold", "novel_word_max"}
 _POSITIVE_FLOAT = {"max_tokens_factor", "len_ratio_min", "len_ratio_max", "len_ratio_min_merged"}
@@ -335,6 +350,14 @@ def _validate(cfg: Config) -> None:
         raise ValueError(f"[ui] theme: must be one of {_VALID_THEMES}, got {cfg.ui.theme!r}")
     if not isinstance(cfg.ui.hotkey_label, str):
         raise ValueError("[ui] hotkey_label: must be a string")
+    # TOML strings would otherwise pass a positive-int-style check (there is
+    # none here), so bools need their own explicit type check.
+    for name, value in (
+        ("[llm] enabled", cfg.llm.enabled),
+        ("[settings] enabled", cfg.settings.enabled),
+    ):
+        if not isinstance(value, bool):
+            raise ValueError(f"{name}: must be true or false, got {value!r}")
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -342,7 +365,13 @@ def load_config(path: Path | None = None) -> Config:
     path = path or config_path()
     if not path.is_file():
         return Config()
-    raw = tomllib.loads(path.read_text())
+    return build_config(tomllib.loads(path.read_text()))
+
+
+def build_config(raw: dict[str, Any]) -> Config:
+    """Validate a decoded config table. Shared by `load_config` and the
+    settings page, so a value the page saves is one the daemon will load."""
+    raw = dict(raw)  # the [overlay] fold pops from it
 
     # [overlay] became [ui]; read it for one release so existing configs keep
     # working. Keys set in [ui] win.
@@ -382,6 +411,35 @@ def load_config(path: Path | None = None) -> Config:
     cfg = replace(defaults, **kwargs)
     _validate(cfg)
     return cfg
+
+
+#: Keys the running daemon cannot adopt on reload (design.md "Live vs
+#: restart"). Everything else is read through `Daemon.cfg` or pushed by the
+#: reload handler. [ui] is live: `configure` sends flowd-ui the new values.
+RESTART_KEYS = frozenset(
+    {
+        "audio.device",
+        "audio.sample_rate",
+        "audio.block_ms",
+        "audio.always_open",
+        "audio.preroll_ms",
+        "stt.model",
+        "stt.final_model",
+        "stt.max_uncommitted_words",
+        "vad.threshold",
+        "vad.commit_silence_ms",
+        "vad.tail_ms",
+        "vad.lag_allowance_ms",
+        "logging.level",
+        "settings.enabled",
+        "settings.port",
+    }
+)
+
+
+def applies(key: str) -> Literal["live", "restart"]:
+    """Whether a saved `section.key` takes effect on reload or needs a restart."""
+    return "restart" if key in RESTART_KEYS else "live"
 
 
 def ui_message(cfg: Config) -> dict[str, Any]:

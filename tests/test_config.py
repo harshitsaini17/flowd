@@ -1,3 +1,4 @@
+import tomllib
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from flowd import config
 from flowd.config import (
     Config,
     Stt,
+    applies,
+    build_config,
     load_config,
     reload_config,
     runtime_dir,
@@ -307,3 +310,47 @@ def test_overlay_only_values_reach_the_ui_message(tmp_path: Path) -> None:
     cfg = load_config(write_config(tmp_path, "[overlay]\nmax_lines = 5\nfade_ms = 0\n"))
     msg = ui_message(cfg)
     assert (msg["max_lines"], msg["fade_ms"]) == (5, 0)
+
+
+def test_settings_section_defaults() -> None:
+    cfg = Config()
+    assert cfg.settings.enabled is True
+    assert cfg.settings.port == 8178
+    assert cfg.llm.enabled is True
+
+
+def test_settings_port_out_of_range_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[settings]\nport = 80\n")
+    with pytest.raises(ValueError, match=r"\[settings\] port"):
+        load_config(path)
+
+
+def test_llm_enabled_must_be_bool(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[llm]\nenabled = "no"\n')
+    with pytest.raises(ValueError, match=r"\[llm\] enabled"):
+        load_config(path)
+
+
+def test_build_config_matches_load_config(tmp_path: Path) -> None:
+    text = '[hotkey]\nmode = "ptt"\n[overlay]\nmax_lines = 2\n[modes]\nobsidian = "default"\n'
+    path = tmp_path / "config.toml"
+    path.write_text(text)
+    assert build_config(tomllib.loads(text)) == load_config(path)
+
+
+def test_restart_map_covers_every_key() -> None:
+    from dataclasses import fields as dc_fields
+
+    for section in dc_fields(Config):
+        if section.name == "modes":
+            continue
+        for f in dc_fields(type(getattr(Config(), section.name))):
+            assert applies(f"{section.name}.{f.name}") in ("live", "restart")
+    assert applies("stt.model") == "restart"
+    assert applies("audio.device") == "restart"
+    assert applies("settings.port") == "restart"
+    assert applies("ui.max_lines") == "live"
+    assert applies("llm.timeout_ms") == "live"
+    assert applies("modes.obsidian") == "live"
