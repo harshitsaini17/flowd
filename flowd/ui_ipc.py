@@ -25,6 +25,7 @@ import logging
 import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -60,6 +61,9 @@ QUIT_GRACE_S = 1.0
 #: Exit codes from ADR 0013.
 EXIT_OK = 0
 EXIT_UNSUPPORTED = 3
+#: A SIGTERM is a normal end too (ADR 0013): 143 when it lands before
+#: flowd-ui installs its handler, `-SIGTERM` as `Popen` reports a death by it.
+_NORMAL_EXITS = frozenset({EXIT_OK, 128 + signal.SIGTERM, -signal.SIGTERM})
 
 #: Bytes waiting for the pipe beyond which the UI is taken to be hung. The pipe
 #: itself holds 64 KiB, so this is minutes of renders a live UI never leaves
@@ -188,6 +192,13 @@ class UiProcess:
         """Apply a reloaded config. A reload is also the one thing that lets a
         UI that reported `unsupported` be tried again (ADR 0013)."""
         with self._lock:
+            # Account for a child that already exited before clearing the
+            # flags, or an unreaped exit 3 would set `unsupported` again on
+            # the next `_ensure` and the reload would change nothing.
+            if self._proc is not None:
+                rc = self._proc.poll()
+                if rc is not None:
+                    self._reap(self._proc, rc)
             self._cfg = cfg
             self._max_session_s = max_session_s
             self._unsupported = False
@@ -204,7 +215,12 @@ class UiProcess:
         self.start()
 
     def stop(self) -> None:
-        """Shut the child down. Never starts one."""
+        """Shut the child down. Never starts one.
+
+        Blocking: it waits up to about 4 s for the child to exit (the quit
+        grace, then SIGTERM, then SIGKILL). Do not call it on the event loop
+        except at shutdown; anywhere else, run it in an executor.
+        """
         with self._lock:
             proc, self._proc = self._proc, None
             if proc is not None:
@@ -249,6 +265,9 @@ class UiProcess:
             if self._proc is not None and self._proc.poll() is not None:
                 self._reap(self._proc, self._proc.poll())
             self._failures = 0
+            # A new session: the last one's state is not worth replaying, and
+            # replaying it would send a second `show` ahead of this one.
+            self._state = None
             if self._ensure(immediate=True):
                 self._enqueue({"type": "show"})
 
@@ -299,6 +318,8 @@ class UiProcess:
         """Show a warning on the indicator, or clear it with `None`. Kept and
         replayed to a respawned UI."""
         with self._lock:
+            # An empty reason clears, and is sent as null so it reads that way.
+            reason = reason or None
             self._warn = (reason, blocking) if reason else None
             self._send({"type": "warn", "reason": reason, "blocking": blocking})
 
@@ -355,7 +376,10 @@ class UiProcess:
             reason, blocking = self._warn
             self._enqueue({"type": "warn", "reason": reason, "blocking": blocking})
         if self._state is not None and self._state[0] in _LIVE_STATES:
+            # A dictation is in progress, so the popup was up: bring it back
+            # before telling it the state.
             state, reason = self._state
+            self._enqueue({"type": "show"})
             self._enqueue({"type": "state", "state": state, "reason": reason})
         return self._proc is proc
 
@@ -374,8 +398,8 @@ class UiProcess:
             if not self._unsupported:
                 log.warning("flowd-ui is unsupported here; not restarting it until reload")
             self._unsupported = True
-        elif rc == EXIT_OK:
-            log.info("flowd-ui exited")
+        elif rc in _NORMAL_EXITS:
+            log.info("flowd-ui exited (%s)", rc)
         else:
             self._failures += 1
             log.warning("flowd-ui died (exit %s, %d/%d)", rc, self._failures, MAX_SPAWN_FAILURES)

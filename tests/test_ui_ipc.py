@@ -436,19 +436,77 @@ def test_exit_3_stops_all_spawns_until_reload() -> None:
     assert len(spawned) == 2
 
 
-def test_a_respawned_ui_gets_the_current_warning_and_state() -> None:
+def test_a_ui_respawned_mid_dictation_gets_the_warning_popup_and_state() -> None:
     clock = FakeClock()
     ui, spawned = counting_ui(clock=clock)
     ui.show()
     ui.warn("microphone busy", blocking=True)
     ui.state("recording")
     spawned[0].die(1)
-    ui.show()
-    assert messages(spawned[1])[:3] == [
+    ui.render(polished="", pending="", live="x")  # notices the death
+    clock.now += RESPAWN_BACKOFF_S + 1
+    ui.render(polished="", pending="", live="y")  # respawns
+    assert messages(spawned[1]) == [
         {"type": "config", "ui": ui_fields(Ui(), 300)},
         {"type": "warn", "reason": "microphone busy", "blocking": True},
+        {"type": "show"},
         {"type": "state", "state": "recording", "reason": ""},
+        {"type": "render", "polished": "", "pending": "", "live": "y"},
     ]
+
+
+def test_a_ui_respawned_at_idle_gets_no_popup() -> None:
+    clock = FakeClock()
+    ui, spawned = counting_ui(clock=clock)
+    ui.show()
+    ui.end("done", fade=True)
+    spawned[0].die(1)
+    ui.start()
+    clock.now += RESPAWN_BACKOFF_S + 1
+    ui.start()
+    assert types(spawned[1]) == ["config"]
+
+
+def test_a_new_session_does_not_replay_the_old_state() -> None:
+    ui, spawned = counting_ui()
+    ui.show()
+    ui.state("recording")
+    spawned[0].die(1)
+    ui.show()  # a new dictation: one show, no stale state
+    assert types(spawned[1]) == ["config", "show"]
+
+
+def test_an_empty_warning_is_sent_as_null() -> None:
+    ui, proc = ui_with_proc()
+    ui.show()
+    ui.warn("")
+    assert messages(proc)[-1] == {"type": "warn", "reason": None, "blocking": False}
+    assert ui._warn is None
+
+
+@pytest.mark.parametrize("rc", [143, -15])
+def test_sigterm_is_a_normal_end_not_a_crash(rc: int) -> None:
+    clock = FakeClock()
+    ui, spawned = counting_ui(clock=clock)
+    for _ in range(MAX_SPAWN_FAILURES + 2):
+        ui.render(polished="", pending="", live="x")
+        spawned[-1].die(rc)
+        ui.render(polished="", pending="", live="x")  # notices the exit
+        clock.now += RESPAWN_BACKOFF_S + 1
+    assert ui._failures == 0
+    ui.render(polished="", pending="", live="x")
+    assert len(spawned) == MAX_SPAWN_FAILURES + 3
+
+
+def test_configure_right_after_an_unreaped_exit_3_respawns() -> None:
+    """The exit is seen for the first time inside `configure`, which must
+    still clear the latch it would otherwise set."""
+    ui, spawned = counting_ui(Ui(indicator=True))
+    ui.start()
+    spawned[0].die(3)
+    ui.configure(Ui(indicator=True), 300)
+    assert ui.unsupported is False
+    assert len(spawned) == 2
 
 
 def test_a_cleared_warning_is_not_replayed() -> None:
@@ -660,3 +718,17 @@ def test_a_child_that_exits_is_seen_as_dead(
     proc.wait(timeout=2)
     ui.render(polished="", pending="", live="x")  # must not raise
     assert ui._failures >= 1
+
+
+def test_configure_after_unsupported_and_exit_3_spawns_again(
+    fake_ui: Callable[..., tuple[UiProcess, Path]],
+) -> None:
+    out = r'{"event":"unsupported","reason":"GNOME Wayland"}\n'
+    ui, _ = fake_ui(out=out, rc_after_out=3)
+    ui.start()
+    first = ui._proc
+    assert first is not None
+    assert wait_for(lambda: ui.unsupported)
+    first.wait(timeout=2)
+    ui.configure(Ui(), 300)  # the very next call
+    assert ui._proc is not None and ui._proc is not first

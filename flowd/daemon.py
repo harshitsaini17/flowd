@@ -738,6 +738,11 @@ class Daemon:
         block_s = self.cfg.audio.block_ms / 1000.0
         health = asyncio.create_task(self._health_loop()) if self.cleanup is not None else None
         try:
+            # Only once the socket is ours: a second flowd that loses the
+            # single-instance check must not flash a second indicator.
+            start_ui = getattr(self.overlay, "start", None)
+            if start_ui is not None:
+                start_ui()
             while True:
                 await self.pump()
                 await self._check_max_duration()

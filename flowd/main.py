@@ -280,7 +280,6 @@ def main(argv: list[str] | None = None) -> int:
         context=detect,
     )
     ui.on_event = daemon.on_ui_event
-    ui.start()
     try:
         asyncio.run(daemon.run(runtime_dir() / "flowd.sock"))
     except AlreadyRunning as exc:

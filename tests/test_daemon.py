@@ -70,6 +70,10 @@ class FakeOverlay:
         self.calls: list[str] = []
         self.visible = False
         self.stopped = False
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
 
     def show(self) -> None:
         self.visible = True
@@ -1078,3 +1082,44 @@ def test_ui_events_before_the_loop_starts_are_ignored() -> None:
     d.on_ui_event({"event": "click"})
     d.on_ui_event({"event": "moved", "x": 0.5, "output": "eDP-1"})
     d.on_ui_event({"event": "whatever"})
+
+
+async def test_the_ui_starts_only_once_the_socket_is_ours(tmp_path: Path) -> None:
+    d = daemon(FakeSttEngine([]))
+    socket_path = tmp_path / "flowd.sock"
+    task = asyncio.create_task(d.run(socket_path))
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    for _ in range(100):
+        if overlay.started:
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert overlay.started is True
+    assert overlay.stopped is True
+
+
+async def test_a_second_daemon_never_starts_a_ui(tmp_path: Path) -> None:
+    """Losing the single-instance check must not flash a second indicator."""
+    from flowd.control import AlreadyRunning
+
+    first = daemon(FakeSttEngine([]))
+    socket_path = tmp_path / "flowd.sock"
+    task = asyncio.create_task(first.run(socket_path))
+    for _ in range(100):
+        if socket_path.exists():
+            break
+        await asyncio.sleep(0.01)
+    second = daemon(FakeSttEngine([]))
+    try:
+        with pytest.raises(AlreadyRunning):
+            await second.run(socket_path)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    overlay = second.overlay
+    assert isinstance(overlay, FakeOverlay)
+    assert overlay.started is False
