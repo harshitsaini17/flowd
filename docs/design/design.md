@@ -1731,7 +1731,9 @@ A short bridge from these tokens to `flowd-ui` (ADR 0013). It's non-normative,
 but it records the constraints the design leans on.
 
 - **Surfaces.** Two layer surfaces: `flowd-indicator` (always present when
-  enabled) and `flowd-popup` (created on `show`, destroyed after fade), each
+  enabled) and `flowd-popup` (created on the first `show`, unmapped rather
+  than destroyed after the fade so surface creation and the focus checks
+  don't re-run every dictation, and without a tick while hidden), each
   with `gtk_layer_set_namespace()`, keyboard mode `NONE`, and the ADR 0003
   checks that the window really is a layer surface with that keyboard mode.
   They're separate because their input regions differ (popup: none) and the

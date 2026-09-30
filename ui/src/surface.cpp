@@ -8,6 +8,7 @@
 
 #include <iostream>
 #include <string>
+#include <string_view>
 
 #include "backend.hpp"
 
@@ -28,6 +29,8 @@ constexpr int kExclusiveZone = 0;
 // GDK_BACKEND values.
 constexpr const char* kGdkWayland = "wayland";
 constexpr const char* kGdkX11 = "x11";
+// GDK_DISABLE feature name (GTK >= 4.16; older GTK ignores the variable).
+constexpr const char* kGdkDisableGl = "gl";
 
 void log_error(const std::string& msg) { std::cerr << kLogPrefix << msg << '\n'; }
 
@@ -149,14 +152,17 @@ WorkArea workarea(const Glib::RefPtr<Gdk::Monitor>& monitor) {
 
 }  // namespace
 
-void apply_env_defaults() {
+void apply_env_defaults(Backend backend) {
     const auto renderer = renderer_default(read_env());
+    // A user-picked renderer may need GL, so GL is left alone then too.
     if (!renderer) return;
     if (!g_setenv("GSK_RENDERER", renderer->c_str(), FALSE))
         log_error("could not set GSK_RENDERER; GTK picks its default renderer");
+    if (backend == Backend::X11 && !g_setenv("GDK_DISABLE", kGdkDisableGl, FALSE))
+        log_error("could not set GDK_DISABLE; GDK may still load GL on X11");
 }
 
-void pin_gdk_backend(Backend backend) {
+std::optional<std::string> pin_gdk_backend(Backend backend) {
     const char* name = nullptr;
     switch (backend) {
     case Backend::Wayland:
@@ -166,12 +172,16 @@ void pin_gdk_backend(Backend backend) {
         name = kGdkX11;
         break;
     case Backend::Unsupported:
-        return;
+        return std::nullopt;
     }
     // Overwrites a user's GDK_BACKEND on purpose: the focus guarantees are
     // only checked for the backend chosen here.
+    std::optional<std::string> replaced;
+    const char* user = g_getenv("GDK_BACKEND");
+    if (user && *user && std::string_view(user) != name) replaced = user;
     if (!g_setenv("GDK_BACKEND", name, TRUE))
         log_error(std::string("could not set GDK_BACKEND=") + name);
+    return replaced;
 }
 
 std::optional<std::string> display_mismatch(Backend backend) {

@@ -135,6 +135,18 @@ int App::run() {
     // Nothing is added to the application, so it is held open instead; only
     // quit() or the end of stdin ends the loop.
     app_->hold();
+    // Before the loop starts, so a stop during GTK init or activation still
+    // ends the loop cleanly and the file flags are restored.
+    for (int sig : {SIGTERM, SIGINT}) {
+        signal_sources_.push_back(g_unix_signal_add(
+            sig,
+            [](gpointer self) -> gboolean {
+                static_cast<App*>(self)->quit(kExitOk);
+                // Kept, so the destructor's g_source_remove stays valid.
+                return G_SOURCE_CONTINUE;
+            },
+            this));
+    }
     const int rc = app_->run();
     popup_.reset();
     indicator_.reset();
@@ -164,12 +176,15 @@ void App::log(LogLevel level, std::string_view msg) const {
 void App::quit(int code) {
     if (quitting_) return;
     quitting_ = true;
-    exit_code_ = code;
+    // An unsupported exit stays one, whatever ends the loop after it.
+    if (exit_code_ != kExitUnsupported) exit_code_ = code;
     stdin_watch_.disconnect();
     app_->quit();
 }
 
 void App::unsupported(const std::string& why) {
+    // Set first: if the event meets a dead stdout, the EPIPE quit keeps it.
+    if (!quitting_) exit_code_ = kExitUnsupported;
     log(LogLevel::Error, "disabled: " + why);
     emit(encode_unsupported(why));
     quit(kExitUnsupported);
@@ -178,19 +193,6 @@ void App::unsupported(const std::string& why) {
 // ---- startup ----------------------------------------------------------------
 
 void App::on_activate() {
-    // Ends the loop cleanly, so the file flags are restored, when the daemon
-    // or a terminal stops us.
-    for (int sig : {SIGTERM, SIGINT}) {
-        signal_sources_.push_back(g_unix_signal_add(
-            sig,
-            [](gpointer self) -> gboolean {
-                static_cast<App*>(self)->quit(kExitOk);
-                // Kept, so the destructor's g_source_remove stays valid.
-                return G_SOURCE_CONTINUE;
-            },
-            this));
-    }
-
     setup_stdout();
     if (quitting_) return;
 
@@ -214,9 +216,9 @@ void App::on_activate() {
 
     if (!setup_stdin()) return;
 
-    // At idle priority, so a config already waiting on stdin (the daemon
-    // sends one first) is read before the indicator appears, and an
-    // `indicator = false` never shows it at all.
+    // At idle priority, so a config already waiting on stdin is usually read
+    // before the indicator appears. The daemon sends config first, but if it
+    // arrives later an `indicator = false` still destroys the indicator.
     Glib::signal_idle().connect_once([this] {
         if (!quitting_ && config_.indicator) ensure_indicator();
     });
@@ -373,7 +375,7 @@ bool App::flush_stdout() {
             if (errno == EPIPE) {
                 // SIGPIPE is ignored, so a gone daemon shows up here instead.
                 log(LogLevel::Info, "stdout closed");
-                quit(exit_code_ == kExitUnsupported ? kExitUnsupported : kExitOk);
+                quit(kExitOk);
             } else {
                 log(LogLevel::Error, errno_text("could not write to stdout"));
                 quit(kExitError);

@@ -1,5 +1,9 @@
+#include <fcntl.h>
 #include <glibmm/error.h>
 #include <signal.h>
+#include <unistd.h>
+
+#include <cerrno>
 
 #include <exception>
 #include <iostream>
@@ -36,7 +40,11 @@ std::optional<Args> parse_args(int argc, char** argv) {
         const std::string_view arg = argv[i];
         if (arg == "--version") {
             a.version = true;
-        } else if (arg == "--log-level" && i + 1 < argc) {
+        } else if (arg == "--log-level" && i + 1 == argc) {
+            log_line("missing value for --log-level");
+            log_line(kUsage);
+            return std::nullopt;
+        } else if (arg == "--log-level") {
             const auto level = parse_log_level(argv[++i]);
             if (!level) {
                 log_line(std::string("unknown log level: ") + argv[i]);
@@ -52,7 +60,26 @@ std::optional<Args> parse_args(int argc, char** argv) {
     return a;
 }
 
+constexpr int kFirstStdFd = 0;
+constexpr int kLastStdFd = 2;
+constexpr const char* kDevNull = "/dev/null";
+
+// A closed stdin, stdout or stderr would be the next fd GLib or Wayland
+// opens, and then protocol bytes or log lines would land in a socket. Each
+// closed one is filled with /dev/null first.
+void fill_closed_std_fds() {
+    for (int fd = kFirstStdFd; fd <= kLastStdFd; ++fd) {
+        if (fcntl(fd, F_GETFD) >= 0 || errno != EBADF) continue;
+        const int flags = fd == kFirstStdFd ? O_RDONLY : O_WRONLY;
+        const int got = open(kDevNull, flags);
+        // open returns the lowest free fd, which is this one; anything else
+        // means something else is off, and the fd is not kept.
+        if (got >= 0 && got != fd) close(got);
+    }
+}
+
 int run(int argc, char** argv) {
+    fill_closed_std_fds();
     // A daemon that dies mid-write must not kill the UI with SIGPIPE; the
     // write sees EPIPE instead and the UI exits cleanly.
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) log_line("could not ignore SIGPIPE");
@@ -76,8 +103,9 @@ int run(int argc, char** argv) {
     }
 
     // Both before GTK init: the renderer and the backend are read only then.
-    apply_env_defaults();
-    pin_gdk_backend(d.backend);
+    apply_env_defaults(d.backend);
+    if (auto replaced = pin_gdk_backend(d.backend); replaced && args->level >= LogLevel::Info)
+        log_line("GDK_BACKEND=" + *replaced + " overridden: " + d.reason);
 
     App app(d.backend, args->level);
     return app.run();

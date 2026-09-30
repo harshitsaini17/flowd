@@ -35,14 +35,35 @@ struct EnvGuard {
 
 TEST_CASE("surface: the cairo renderer is set only when the user chose none") {
     EnvGuard guard("GSK_RENDERER");
+    EnvGuard disable("GDK_DISABLE");
     REQUIRE(unsetenv("GSK_RENDERER") == 0);
-    apply_env_defaults();
+    REQUIRE(unsetenv("GDK_DISABLE") == 0);
+    apply_env_defaults(Backend::Wayland);
     REQUIRE(std::getenv("GSK_RENDERER") != nullptr);
     CHECK(std::strcmp(std::getenv("GSK_RENDERER"), kDefaultRenderer) == 0);
+    // GL stays available on Wayland.
+    CHECK(std::getenv("GDK_DISABLE") == nullptr);
 
     REQUIRE(setenv("GSK_RENDERER", "gl", 1) == 0);
-    apply_env_defaults();
+    apply_env_defaults(Backend::X11);
     CHECK(std::strcmp(std::getenv("GSK_RENDERER"), "gl") == 0);
+    // The user's GL renderer keeps GL.
+    CHECK(std::getenv("GDK_DISABLE") == nullptr);
+}
+
+TEST_CASE("surface: X11 with the cairo default also disables GL, unless the user set it") {
+    EnvGuard guard("GSK_RENDERER");
+    EnvGuard disable("GDK_DISABLE");
+    REQUIRE(unsetenv("GSK_RENDERER") == 0);
+    REQUIRE(unsetenv("GDK_DISABLE") == 0);
+    apply_env_defaults(Backend::X11);
+    REQUIRE(std::getenv("GDK_DISABLE") != nullptr);
+    CHECK(std::strcmp(std::getenv("GDK_DISABLE"), "gl") == 0);
+
+    REQUIRE(unsetenv("GSK_RENDERER") == 0);
+    REQUIRE(setenv("GDK_DISABLE", "vulkan", 1) == 0);
+    apply_env_defaults(Backend::X11);
+    CHECK(std::strcmp(std::getenv("GDK_DISABLE"), "vulkan") == 0);
 }
 
 TEST_CASE("surface: anchor edges combine and test independently") {

@@ -21,8 +21,10 @@ warning states.
   exclusive zone 0:
   - `flowd-indicator`: always present when `[ui] indicator = true`. Accepts
     pointer input only inside its input region.
-  - `flowd-popup`: created on `show`, destroyed after the fade. Empty input
-    region, fully click-through.
+  - `flowd-popup`: created on the first `show`, then unmapped (not
+    destroyed) after the fade, with no tick while hidden. Reusing it avoids
+    re-running surface creation and the focus checks on every dictation.
+    Empty input region, fully click-through.
 - ADR 0003 still holds: if a surface cannot be guaranteed never to take
   keyboard focus (GNOME Wayland), `flowd-ui` disables itself and logs why.
 - On X11 (GNOME on Xorg included) both surfaces are override-redirect
@@ -51,6 +53,17 @@ warning states.
   UI → daemon on stdout: `{"event":"click"}` (handled as `toggle`) and
   `{"event":"moved","x":0.42,"output":"eDP-1"}`. Unknown types are ignored in
   both directions.
+- Process contract. stdin and stdout are pipes owned by `flowd-ui`, which
+  sets `O_NONBLOCK` on both. Exit codes:
+  - 0: normal end: `quit`, stdin EOF, SIGTERM, or stdout closed.
+  - 1: crash or init failure, such as a display that will not open. The
+    daemon may respawn it.
+  - 3: unsupported, after writing
+    `{"event":"unsupported","reason":"…"}`. The daemon must not respawn it
+    until the config is reloaded. For `flowd-ui` this replaces ADR 0003's
+    "keep consuming stdin": it exits rather than idling on a pipe.
+- `GDK_BACKEND` is set from the backend decision before GTK starts, so a
+  session meant for Wayland never falls back to Xwayland.
 - Popup text is drawn with a Pango layout in a custom widget, not a
   `Gtk::Label`, so the three zones, the pending → polished crossfade and the
   self-correction highlight can be animated per run.
