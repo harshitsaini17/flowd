@@ -14,6 +14,10 @@ APP = "flowd"
 
 log = logging.getLogger(__name__)
 
+#: Set once the [overlay] deprecation has been logged, so a reload does not
+#: repeat it.
+_overlay_warned = False
+
 
 def _home() -> Path:
     return Path(os.environ.get("HOME") or Path.home())
@@ -233,7 +237,6 @@ _POSITIVE_INT = {
     "sample_rate",
     "block_ms",
     "preroll_ms",
-    "max_session_s",
     "commit_silence_ms",
     "tail_ms",
     "lag_allowance_ms",
@@ -247,8 +250,20 @@ _POSITIVE_INT = {
     "health_interval_s",
     "down_after_failures",
     "restore_delay_ms",
-    "max_lines",
-    "fade_ms",
+}
+#: The popup's line-count slider (design.md, settings page).
+MAX_LINES_RANGE = (1, 6)
+#: 0 means no hold: the popup fades at once. The ceiling is flowd-ui's own.
+FADE_MS_RANGE = (0, 10_000)
+#: flowd-ui clamps its time limit to this range; capping it here keeps the
+#: daemon's auto-stop and the UI's countdown in agreement.
+MAX_SESSION_S_RANGE = (1, 3600)
+#: Inclusive integer bounds, checked in whichever section the key appears
+#: (`max_lines` and `fade_ms` in both [ui] and the legacy [overlay]).
+_INT_RANGES = {
+    "max_lines": MAX_LINES_RANGE,
+    "fade_ms": FADE_MS_RANGE,
+    "max_session_s": MAX_SESSION_S_RANGE,
 }
 _UNIT_FLOAT = {"threshold", "novel_word_max"}
 _POSITIVE_FLOAT = {"max_tokens_factor", "len_ratio_min", "len_ratio_max", "len_ratio_min_merged"}
@@ -286,6 +301,12 @@ def _validate_section(section: Any, name: str) -> None:
             isinstance(value, bool) or not isinstance(value, int) or value <= 0
         ):
             raise ValueError(f"[{name}] {field.name}: must be a positive integer, got {value!r}")
+        if field.name in _INT_RANGES:
+            low, high = _INT_RANGES[field.name]
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise ValueError(
+                    f"[{name}] {field.name}: must be an integer from {low} to {high}, got {value!r}"
+                )
         if field.name in _UNIT_FLOAT:
             if not isinstance(value, int | float) or isinstance(value, bool):
                 raise ValueError(f"[{name}] {field.name}: must be a number, got {value!r}")
@@ -312,6 +333,8 @@ def _validate(cfg: Config) -> None:
         raise ValueError("[inject] order: must list at least one backend")
     if cfg.ui.theme not in _VALID_THEMES:
         raise ValueError(f"[ui] theme: must be one of {_VALID_THEMES}, got {cfg.ui.theme!r}")
+    if not isinstance(cfg.ui.hotkey_label, str):
+        raise ValueError("[ui] hotkey_label: must be a string")
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -323,11 +346,14 @@ def load_config(path: Path | None = None) -> Config:
 
     # [overlay] became [ui]; read it for one release so existing configs keep
     # working. Keys set in [ui] win.
+    global _overlay_warned
     legacy = raw.pop("overlay", None)
     if legacy is not None:
         if not isinstance(legacy, dict):
             raise ValueError("[overlay]: expected a table")
-        log.warning("[overlay] is deprecated; rename it to [ui]")
+        if not _overlay_warned:
+            log.warning("[overlay] is deprecated; rename it to [ui]")
+            _overlay_warned = True
         _build(Overlay, legacy, "overlay")  # same key checks as before
         ui = raw.get("ui", {})
         if not isinstance(ui, dict):

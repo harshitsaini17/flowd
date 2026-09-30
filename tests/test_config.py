@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from flowd import config
 from flowd.config import (
     Config,
     Stt,
@@ -175,6 +176,13 @@ def test_ui_defaults_match_spec() -> None:
     assert ui.hotkey_label == ""
 
 
+@pytest.fixture
+def overlay_not_yet_warned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The [overlay] warning is once per process; give each test a fresh one."""
+    monkeypatch.setattr(config, "_overlay_warned", False)
+
+
+@pytest.mark.usefixtures("overlay_not_yet_warned")
 def test_an_overlay_section_still_loads_into_ui(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -183,6 +191,7 @@ def test_an_overlay_section_still_loads_into_ui(
     assert "[overlay] is deprecated" in caplog.text
 
 
+@pytest.mark.usefixtures("overlay_not_yet_warned")
 def test_ui_keys_win_over_overlay_keys(tmp_path: Path) -> None:
     cfg = load_config(
         write_config(tmp_path, '[overlay]\nmax_lines = 6\n[ui]\nmax_lines = 2\ntheme = "dark"\n')
@@ -191,10 +200,12 @@ def test_ui_keys_win_over_overlay_keys(tmp_path: Path) -> None:
     assert cfg.ui.theme == "dark"
 
 
+@pytest.mark.usefixtures("overlay_not_yet_warned")
 def test_a_disabled_overlay_disables_the_ui(tmp_path: Path) -> None:
     assert load_config(write_config(tmp_path, "[overlay]\nenabled = false\n")).ui.enabled is False
 
 
+@pytest.mark.usefixtures("overlay_not_yet_warned")
 def test_an_overlay_section_keeps_its_old_key_checks(tmp_path: Path) -> None:
     """Only the three legacy keys were ever valid there; [ui]-only keys are not."""
     with pytest.raises(ValueError, match=r"\[overlay\]: unknown key"):
@@ -225,3 +236,74 @@ def test_the_ui_message_carries_display_settings_only() -> None:
         "hotkey_label",
         "max_session_s",
     }
+
+
+@pytest.mark.usefixtures("overlay_not_yet_warned")
+def test_the_overlay_deprecation_is_logged_once_per_process(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    path = write_config(tmp_path, "[overlay]\nmax_lines = 3\n")
+    load_config(path)
+    load_config(path)  # a reload
+    assert caplog.text.count("[overlay] is deprecated") == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        ("[ui]\nmax_lines = 7\n", "max_lines"),
+        ("[ui]\nfade_ms = -1\n", "fade_ms"),
+        ("[ui]\nfade_ms = 10001\n", "fade_ms"),
+        ("[ui]\nfade_ms = true\n", "fade_ms"),
+        ("[audio]\nmax_session_s = 0\n", "max_session_s"),
+        ("[audio]\nmax_session_s = 3601\n", "max_session_s"),
+    ],
+)
+def test_out_of_range_ui_and_session_values_are_refused(
+    tmp_path: Path, text: str, key: str
+) -> None:
+    section = text[1 : text.index("]")]
+    with pytest.raises(ValueError, match=rf"\[{section}\] {key}"):
+        load_config(write_config(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    ("text", "attr", "value"),
+    [
+        ("[ui]\nmax_lines = 1\n", ("ui", "max_lines"), 1),
+        ("[ui]\nmax_lines = 6\n", ("ui", "max_lines"), 6),
+        ("[ui]\nfade_ms = 0\n", ("ui", "fade_ms"), 0),  # no hold
+        ("[ui]\nfade_ms = 10000\n", ("ui", "fade_ms"), 10000),
+        ("[audio]\nmax_session_s = 1\n", ("audio", "max_session_s"), 1),
+        ("[audio]\nmax_session_s = 3600\n", ("audio", "max_session_s"), 3600),
+    ],
+)
+def test_range_bounds_are_accepted(
+    tmp_path: Path, text: str, attr: tuple[str, str], value: int
+) -> None:
+    cfg = load_config(write_config(tmp_path, text))
+    assert getattr(getattr(cfg, attr[0]), attr[1]) == value
+
+
+@pytest.mark.usefixtures("overlay_not_yet_warned")
+def test_a_bad_overlay_value_is_reported_against_overlay(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"\[overlay\] max_lines"):
+        load_config(write_config(tmp_path, "[overlay]\nmax_lines = 0\n"))
+
+
+@pytest.mark.usefixtures("overlay_not_yet_warned")
+def test_a_non_table_ui_next_to_overlay_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"\[ui\]: expected a table"):
+        load_config(write_config(tmp_path, "ui = 3\n[overlay]\nmax_lines = 3\n"))
+
+
+def test_hotkey_label_must_be_a_string(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"\[ui\] hotkey_label: must be a string"):
+        load_config(write_config(tmp_path, "[ui]\nhotkey_label = 5\n"))
+
+
+@pytest.mark.usefixtures("overlay_not_yet_warned")
+def test_overlay_only_values_reach_the_ui_message(tmp_path: Path) -> None:
+    cfg = load_config(write_config(tmp_path, "[overlay]\nmax_lines = 5\nfade_ms = 0\n"))
+    msg = ui_message(cfg)
+    assert (msg["max_lines"], msg["fade_ms"]) == (5, 0)

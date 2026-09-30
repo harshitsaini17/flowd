@@ -590,8 +590,9 @@ Density is "comfortable": card padding 20–24, row padding 20 × 24, section ga
 - Width: `min(640px, output_width − 32px)`, and it **shrinks to fit** content
   down to 280 px. The width only grows during a session and never shrinks
   mid-session, so text doesn't reflow under the user's eyes.
-- Height: content-driven, 1–4 lines of `popup-text` (22 px) plus padding:
-  14 + (22 × n) + 14, plus a 28 px footer if shown. Max 4 lines = 116 px + footer.
+- Height: content-driven, 1–6 lines of `popup-text` (22 px) plus padding:
+  14 + (22 × n) + 14, plus a 28 px footer if shown. The default 4 lines is
+  116 px + footer; the maximum 6 lines is 160 px + footer.
 
 ### Settings page
 
