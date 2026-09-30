@@ -55,7 +55,9 @@ warning states.
   both directions.
 - Process contract. stdin and stdout are pipes owned by `flowd-ui`, which
   sets `O_NONBLOCK` on both. Exit codes:
-  - 0: normal end: `quit`, stdin EOF, SIGTERM, or stdout closed.
+  - 0: normal end: `quit`, stdin EOF, SIGTERM, or stdout closed (a signal
+    that lands before start-up finishes installing its handlers ends the
+    process with 143).
   - 1: crash or init failure, such as a display that will not open. The
     daemon may respawn it.
   - 3: unsupported, after writing

@@ -138,6 +138,8 @@ also produces.
 
 Superseded for X11 by [0013](0013-flowd-ui.md), which gives X11 an
 override-redirect surface verified by read-back.
+For `flowd-ui`, 0013 also replaces "keeps consuming stdin" below: an
+unsupported surface emits `unsupported` and exits 3.
 
 GNOME Wayland (which does not implement `zwlr_layer_shell_v1`), X11, and any
 process the library could not be preloaded into are indistinguishable from here
