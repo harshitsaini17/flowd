@@ -29,6 +29,15 @@ _REPEAT_PENALTY = 1.05
 #: spec 5.5: "max_tokens = ceil(1.5 x raw tokens) + 16". The factor is config;
 #: the constant headroom is the spec's formula, not a tunable.
 _MAX_TOKENS_HEADROOM = 16
+#: Failures that mean the server could not be reached or dropped the
+#: connection, as opposed to answering badly. The UI says "cleanup offline"
+#: for these.
+_OFFLINE_EXCEPTIONS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+)
 #: Upper bound on what PROMPT_TEMPLATE adds around the raw text; it tokenizes
 #: to under ten tokens with LFM's tokenizer, so this over-reserves slightly.
 _PROMPT_OVERHEAD_TOKENS = 16
@@ -36,10 +45,12 @@ _PROMPT_OVERHEAD_TOKENS = 16
 
 @dataclass(frozen=True, slots=True)
 class CleanupResult:
-    """`text` is the model's output, or None with `error` saying why not."""
+    """`text` is the model's output, or None with `error` saying why not.
+    `offline` is set when the reason is that the server was unreachable."""
 
     text: str | None
     error: str | None = None
+    offline: bool = False
 
 
 class CleanupClient:
@@ -72,7 +83,7 @@ class CleanupClient:
     async def clean(self, raw: str, timeout_ms: int) -> CleanupResult:
         """Rewrite `raw`, or say why not, within `timeout_ms` in total."""
         if self.down:
-            return CleanupResult(None, "down")
+            return CleanupResult(None, "down", offline=True)
         try:
             # One budget for both calls: the user is waiting on the sum.
             async with asyncio.timeout(timeout_ms / 1000):
@@ -99,7 +110,11 @@ class CleanupClient:
         except (httpx.HTTPError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             # RuntimeError: the client was closed under us by `flowctl reload`.
             self._record_failure(exc)
-            return CleanupResult(None, f"error: {type(exc).__name__}")
+            return CleanupResult(
+                None,
+                f"error: {type(exc).__name__}",
+                offline=isinstance(exc, _OFFLINE_EXCEPTIONS),
+            )
         self._failures = 0
         content = reply.get("content")
         if not isinstance(content, str):

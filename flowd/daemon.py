@@ -81,9 +81,6 @@ WARN_CLEANUP_OFFLINE = "Cleanup offline, pasting as heard"
 #: which is the model doing its job.
 FALLBACK_SEVERITY = ("offline", "failed", "timeout", "rejected")
 
-#: Cleanup errors that mean the server could not be reached at all.
-_OFFLINE_ERRORS = frozenset({"down", "error: ConnectError", "error: ConnectTimeout"})
-
 #: How a discarded session ends on flowd-ui, by `_discard`'s reason. A
 #: suspend throws the words away just as a cancel does, so it reads the same.
 _DISCARD_OUTCOMES: dict[str, tuple[str, str]] = {
@@ -102,14 +99,13 @@ def _fallback_reason(result: CleanupResult) -> str:
     """flowd-ui's reason for one chunk that fell back after `result`.
 
     A result with text fell back because a guardrail rejected it; one without
-    says why in `error` (flowd/cleanup.py).
+    says why in `error` and `offline` (flowd/cleanup.py).
     """
     if result.text is not None:
         return "rejected"
-    error = result.error or ""
-    if error in _OFFLINE_ERRORS:
+    if result.offline:
         return "offline"
-    if error == "timeout":
+    if result.error == "timeout":
         return "timeout"
     # "too long", "error: no content", a server error: cleanup was reached
     # and did not help.
@@ -124,7 +120,9 @@ def worst_fallback(reasons: list[str]) -> str | None:
     return "failed" if reasons else None
 
 
-async def _no_llm(raw: str, *, context: str, merged: bool, timeout_ms: int) -> str | None:
+async def _no_llm(
+    raw: str, *, chunk_id: int, context: str, merged: bool, timeout_ms: int
+) -> str | None:
     """The polish for a mode that does not use the LLM: always its fallback."""
     return None
 
@@ -202,9 +200,12 @@ class Daemon:
         self.loop: asyncio.AbstractEventLoop | None = None
         # The meter's windows for the current session (made in `_begin`).
         self.levels = LevelWindows(cfg.audio.sample_rate)
-        # Why each of this session's chunks fell back, by the raw text the
-        # scheduler sent, so a chunk later merged away no longer counts.
-        self._fallback_reasons: dict[str, str] = {}
+        # Why each of this session's chunks fell back, by `Chunk.id`. A chunk
+        # merged away is no longer visible, so its reason no longer counts.
+        self._fallback_reasons: dict[int, str] = {}
+        # `_ui` call sites that have failed once, so a UI that keeps failing
+        # logs one warning per site and then drops to debug.
+        self._ui_failed: set[str] = set()
         # The two warning conditions `_sync_warning` chooses between, and
         # what it last sent, so a steady condition is not re-sent.
         self._mic_unavailable = False
@@ -335,6 +336,7 @@ class Daemon:
             self._notify(f"flowd: microphone unavailable ({exc})")
             return {"ok": False, "error": str(exc)}
         if self._mic_unavailable:
+            # Cleared only by an open that works; nothing polls the device.
             self._mic_unavailable = False
             self._sync_warning()
         self.metrics.mark("mic_open")
@@ -671,7 +673,23 @@ class Daemon:
         self._end_session(text="", reason="no speech", linger=True, outcome=outcome)
         return {"ok": True, "reason": "no speech"}
 
-    async def _polish(self, raw: str, *, context: str, merged: bool, timeout_ms: int) -> str | None:
+    async def _polish(
+        self, raw: str, *, chunk_id: int, context: str, merged: bool, timeout_ms: int
+    ) -> str | None:
+        reasons = self._fallback_reasons  # this session's, even after a cancel
+        try:
+            return await self._polish_chunk(
+                raw, chunk_id=chunk_id, context=context, merged=merged, timeout_ms=timeout_ms
+            )
+        except Exception:
+            # The scheduler logs it and falls back; the popup must say so too,
+            # or a chunk pasted as heard would read as "Pasted".
+            reasons[chunk_id] = "failed"
+            raise
+
+    async def _polish_chunk(
+        self, raw: str, *, chunk_id: int, context: str, merged: bool, timeout_ms: int
+    ) -> str | None:
         """The LLM's rewrite of one chunk if it passes spec 7.4, else None.
 
         Called by the scheduler. Every None with a cleanup client configured is
@@ -683,7 +701,6 @@ class Daemon:
         metrics = self.metrics
         if self.cleanup is None or metrics is None:
             return None
-        sent = raw  # the scheduler's key for this chunk, before replacements
         raw = apply_replacements(raw, self.vocab.replace)
         result = await self.cleanup.clean(raw, timeout_ms)
         if self.metrics is not metrics:
@@ -693,7 +710,7 @@ class Daemon:
         if result.text is None:
             metrics.count("fallbacks")
             metrics.error(f"llm: {result.error}")
-            self._fallback_reasons[sent] = _fallback_reason(result)
+            self._fallback_reasons[chunk_id] = _fallback_reason(result)
             return None
         failed = guardrails.check(
             raw,
@@ -709,11 +726,8 @@ class Daemon:
             log.info("cleanup output failed guardrail check %d; using fallback", failed)
             metrics.fail(failed)
             metrics.count("fallbacks")
-            self._fallback_reasons[sent] = _fallback_reason(result)
+            self._fallback_reasons[chunk_id] = _fallback_reason(result)
             return None
-        # A chunk polished on a retry (a merge re-sends the same words) is no
-        # longer a fallback.
-        self._fallback_reasons.pop(sent, None)
         return result.text
 
     def _session_fallback(self, visible: list[Chunk], *, abandoned: bool) -> str | None:
@@ -729,7 +743,7 @@ class Daemon:
         for chunk in visible:
             if chunk.state != "FALLBACK":
                 continue
-            reason = self._fallback_reasons.get(chunk.raw)
+            reason = self._fallback_reasons.get(chunk.id)
             if reason is None and abandoned:
                 reason = "timeout"
             if reason is not None:
@@ -876,16 +890,26 @@ class Daemon:
     def _ui(self, send: Callable[[OverlayLike], None]) -> None:
         """Tell flowd-ui something, if there is one. A UI failure never costs
         a dictation (ADR 0003), so nothing it raises reaches the session.
-
-        At debug: `UiProcess` does not raise, and a fake or a broken pipe that
-        does would otherwise log once per level frame, 20 times a second.
         """
         if self.overlay is None:
             return
         try:
             send(self.overlay)
         except Exception:
-            log.debug("message to flowd-ui failed", exc_info=True)
+            # Each lambda literal has its own code object, so this names the
+            # call site.
+            code = getattr(send, "__code__", None)
+            site = f"{code.co_filename}:{code.co_firstlineno}" if code else repr(send)
+            self._log_ui_failure(site, "message to flowd-ui failed")
+
+    def _log_ui_failure(self, site: str, message: str) -> None:
+        """Warn the first time a call site fails, then log at debug: a broken
+        UI would otherwise log once per level frame, 20 times a second."""
+        if site in self._ui_failed:
+            log.debug("%s (%s)", message, site, exc_info=True)
+            return
+        self._ui_failed.add(site)
+        log.warning("%s (%s); later failures here log at debug", message, site, exc_info=True)
 
     def _send_levels(self, pcm: np.ndarray) -> None:
         """The meter's frames for one block. Direct rather than through `_ui`,
@@ -898,7 +922,7 @@ class Daemon:
             for rms_db, peak_db in self.levels.feed(pcm):
                 overlay.level(rms_db, peak_db)
         except Exception:
-            log.debug("level to flowd-ui failed", exc_info=True)
+            self._log_ui_failure("level", "level to flowd-ui failed")
 
     def _configure_ui(self, cfg: Config) -> None:
         """Push a reloaded `[ui]`. Blocking when it turns the UI off."""
@@ -951,7 +975,8 @@ class Daemon:
                 if self.session is None:
                     # Brings back an indicator that died at idle. Cheap: a
                     # poll of the child, and `UiProcess` keeps its own
-                    # respawn backoff.
+                    # respawn backoff. A UI that exits cleanly is respawned
+                    # too, once per backoff interval, by design.
                     self._start_ui()
                 await asyncio.sleep(block_s if self.session is not None else 0.2)
         finally:

@@ -19,7 +19,7 @@ class FakePolish:
         self.gates: list[asyncio.Event] = []
 
     async def __call__(
-        self, raw: str, *, context: str, merged: bool, timeout_ms: int
+        self, raw: str, *, chunk_id: int, context: str, merged: bool, timeout_ms: int
     ) -> str | None:
         self.calls.append({"raw": raw, "context": context, "merged": merged, "timeout": timeout_ms})
         if self.hold:
@@ -225,7 +225,9 @@ async def test_cancel_stops_the_inflight_request_and_ignores_later_commits() -> 
 
 
 async def test_a_polish_that_raises_falls_back_instead_of_stranding_the_session() -> None:
-    async def boom(raw: str, *, context: str, merged: bool, timeout_ms: int) -> str | None:
+    async def boom(
+        raw: str, *, chunk_id: int, context: str, merged: bool, timeout_ms: int
+    ) -> str | None:
         raise RuntimeError("unexpected")
 
     session = Session(id="s")

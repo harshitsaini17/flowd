@@ -25,13 +25,6 @@ def test_an_empty_block_yields_nothing() -> None:
     assert LevelWindows(16000).feed(np.empty(0, np.float32)) == []
 
 
-def test_reset_drops_the_carried_tail() -> None:
-    w = LevelWindows(16000)
-    w.feed(np.ones(500, np.float32))
-    w.reset()
-    assert w.feed(np.zeros(300, np.float32)) == []
-
-
 def test_a_window_spanning_two_blocks_measures_both() -> None:
     """The carried tail counts: half a window at full scale, half silent."""
     w = LevelWindows(16000)

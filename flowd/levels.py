@@ -23,7 +23,11 @@ def _db(values: np.ndarray) -> list[float]:
 
 
 class LevelWindows:
-    """Splits mono float32 PCM into 50 ms windows of `(rms_db, peak_db)`."""
+    """Splits mono float32 PCM into 50 ms windows of `(rms_db, peak_db)`.
+
+    One per session: the daemon makes a fresh one at each start, so no tail
+    carries from one dictation into the next.
+    """
 
     def __init__(self, sample_rate: int) -> None:
         self._size = max(1, round(sample_rate * WINDOW_S))
@@ -44,7 +48,3 @@ class LevelWindows:
         rms = np.sqrt(np.mean(np.square(windows, dtype=np.float64), axis=1))
         peak = np.max(np.abs(windows), axis=1)
         return list(zip(_db(rms), _db(peak), strict=True))
-
-    def reset(self) -> None:
-        """Drop the carried tail, so a new session does not start with the last."""
-        self._carry = np.empty(0, dtype=np.float32)

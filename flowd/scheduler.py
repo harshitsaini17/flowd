@@ -31,8 +31,11 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 class Polish(Protocol):
     def __call__(
-        self, raw: str, *, context: str, merged: bool, timeout_ms: int
+        self, raw: str, *, chunk_id: int, context: str, merged: bool, timeout_ms: int
     ) -> Awaitable[str | None]: ...
+
+    # `chunk_id` is the chunk's `Chunk.id`, unique within the session, so the
+    # caller can attach what it learns to that chunk.
 
 
 class Scheduler:
@@ -167,7 +170,11 @@ class Scheduler:
     async def _run(self, chunk: Chunk, version: int, context: str, merged: bool) -> None:
         try:
             text = await self._polish(
-                chunk.raw, context=context, merged=merged, timeout_ms=self._budget_ms()
+                chunk.raw,
+                chunk_id=chunk.id,
+                context=context,
+                merged=merged,
+                timeout_ms=self._budget_ms(),
             )
         except asyncio.CancelledError:
             raise

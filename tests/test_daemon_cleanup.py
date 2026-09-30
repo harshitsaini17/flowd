@@ -28,9 +28,12 @@ FALLBACK = "So I think we should ship the release on friday."
 class FakeCleanup:
     """Stands in for `CleanupClient`; `gate` holds `clean` open until set."""
 
-    def __init__(self, text: str | None = LONG_CLEAN, error: str | None = None) -> None:
+    def __init__(
+        self, text: str | None = LONG_CLEAN, error: str | None = None, offline: bool = False
+    ) -> None:
         self.text = text
         self.error = error
+        self.offline = offline
         self.down = False
         self.calls: list[tuple[str, int]] = []
         self.health_checks = 0
@@ -41,7 +44,7 @@ class FakeCleanup:
         self.calls.append((raw, timeout_ms))
         if self.gate is not None:
             await self.gate.wait()
-        return CleanupResult(self.text, self.error)
+        return CleanupResult(self.text, self.error, self.offline)
 
     async def check_health(self) -> bool:
         self.health_checks += 1
@@ -386,7 +389,7 @@ async def test_a_guardrail_rejection_reports_fallback_rejected() -> None:
 
 
 async def test_a_down_llm_reports_fallback_offline() -> None:
-    cleanup = FakeCleanup(text=None, error="down")
+    cleanup = FakeCleanup(text=None, error="down", offline=True)
     cleanup.down = True
     d = make(LONG_RAW, cleanup, [])
     d._notify = lambda message: None  # type: ignore[method-assign]
@@ -506,9 +509,10 @@ async def test_cleanup_going_down_mid_session_warns_after_the_paste() -> None:
 @pytest.mark.parametrize(
     ("result", "reason"),
     [
-        (CleanupResult(None, "down"), "offline"),
-        (CleanupResult(None, "error: ConnectError"), "offline"),
-        (CleanupResult(None, "error: ConnectTimeout"), "offline"),
+        (CleanupResult(None, "down", offline=True), "offline"),
+        (CleanupResult(None, "error: ConnectError", offline=True), "offline"),
+        # The error text alone does not make it offline; the client decides.
+        (CleanupResult(None, "error: ConnectError"), "failed"),
         (CleanupResult(None, "timeout"), "timeout"),
         (CleanupResult(None, "too long"), "failed"),
         (CleanupResult(None, "error: no content"), "failed"),
@@ -542,3 +546,99 @@ def test_a_session_reports_its_most_severe_fallback(reasons: list[str], shown: s
     from flowd.daemon import worst_fallback
 
     assert worst_fallback(reasons) == shown
+
+
+def refusing(exc: Exception) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httpx.ConnectError("connection refused"),
+        httpx.ReadError("connection reset"),
+        httpx.RemoteProtocolError("server disconnected"),
+    ],
+)
+async def test_a_client_that_cannot_reach_the_server_reports_offline(exc: Exception) -> None:
+    from flowd.daemon import _fallback_reason
+
+    client = CleanupClient(Llm(), transport=refusing(exc))
+    result = await client.clean(LONG_RAW, 1000)
+    await client.aclose()
+    assert result.offline is True
+    assert _fallback_reason(result) == "offline"
+
+
+async def test_a_server_error_is_not_offline() -> None:
+    from flowd.daemon import _fallback_reason
+
+    client = CleanupClient(
+        Llm(), transport=httpx.MockTransport(lambda request: httpx.Response(500))
+    )
+    result = await client.clean(LONG_RAW, 1000)
+    await client.aclose()
+    assert result.offline is False
+    assert _fallback_reason(result) == "failed"
+
+
+async def test_a_down_client_reports_offline() -> None:
+    client = CleanupClient(Llm())
+    client.down = True
+    result = await client.clean(LONG_RAW, 1000)
+    await client.aclose()
+    assert result.offline is True
+
+
+async def test_a_session_against_an_unreachable_server_reports_fallback_offline() -> None:
+    client = CleanupClient(Llm(), transport=refusing(httpx.ConnectError("refused")))
+    d = make(LONG_RAW, client, [])
+    d._notify = lambda message: None  # type: ignore[method-assign]
+    await dictate(d)
+    await client.aclose()
+    assert ui_states(d)[-1] == ("fallback", "offline")
+
+
+async def test_a_polish_that_raises_reports_fallback_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import flowd.daemon
+
+    def boom(*args: Any, **kwargs: Any) -> int | None:
+        raise RuntimeError("guardrail bug")
+
+    monkeypatch.setattr(flowd.daemon.guardrails, "check", boom)
+    injected: list[str] = []
+    d = make(LONG_RAW, FakeCleanup(), injected)
+    await dictate(d)
+    assert injected == [FALLBACK]
+    assert ui_states(d)[-1] == ("fallback", "failed")
+
+
+async def test_a_ui_failure_warns_once_per_call_site(caplog: pytest.LogCaptureFixture) -> None:
+    class Broken(FakeOverlay):
+        def state(self, state: str, reason: str = "") -> None:
+            raise BrokenPipeError
+
+        def level(self, rms_db: float, peak_db: float) -> None:
+            raise BrokenPipeError
+
+    d = make(LONG_RAW, None, [])
+    d.overlay = Broken()
+    d.capture = FakeCapture([np.zeros(1600, dtype=np.float32)] * 3)
+    d.stt = FakeSttEngine([[], [], [Committed(LONG_RAW)]])
+    with caplog.at_level("DEBUG", logger="flowd.daemon"):
+        await d.handle({"cmd": "start"})
+        for _ in range(3):
+            await d.pump()
+        await d.handle({"cmd": "stop"})
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "flowd-ui" in r.message]
+    debugs = [r for r in caplog.records if r.levelname == "DEBUG" and "flowd-ui" in r.message]
+    # One warning for levels, one per distinct state call site; repeats at debug.
+    assert len([r for r in warnings if "level" in r.message]) == 1
+    assert any("level" in r.message for r in debugs)
+    sites = [r.message for r in warnings if "message to flowd-ui" in r.message]
+    assert len(sites) == len(set(sites))
