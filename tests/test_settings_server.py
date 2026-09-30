@@ -270,3 +270,9 @@ async def test_body_up_to_the_limit_is_read_whole(server) -> None:
     payload = {"text": "a" * (200 * 1024)}
     _, _, body = await raw(server, *req(server, "PATCH", body=json.dumps(payload).encode()))
     assert json.loads(body)["body"] == payload
+
+
+async def test_overlong_static_path_is_404(server) -> None:
+    # A segment longer than NAME_MAX makes stat() raise ENAMETOOLONG.
+    status, _, _ = await raw(server, *req(server, path="/" + "a" * 300 + ".html", token=None))
+    assert status == 404

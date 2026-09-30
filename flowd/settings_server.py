@@ -356,11 +356,12 @@ class SettingsServer:
         if "\x00" in rel:
             return None
         root = self._web_root.resolve()
+        # An over-long segment makes stat() raise ENAMETOOLONG, so the checks sit in the try.
         try:
             candidate = (root / rel).resolve()
+            if not candidate.is_relative_to(root) or not candidate.is_file():
+                return None
         except (OSError, RuntimeError):
-            return None
-        if not candidate.is_relative_to(root) or not candidate.is_file():
             return None
         return candidate
 
