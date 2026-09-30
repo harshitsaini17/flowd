@@ -10,6 +10,8 @@
 #
 # FLOWD_LLM_THREADS overrides the llama-server thread count (default: physical
 # cores minus two, spec 4).
+# FLOWD_UI_BUILD=0 skips building flowd-ui, the indicator and preview popup;
+# dictation works without it.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,7 +26,7 @@ DRY_RUN=0
 case "${1:-}" in
   "") ;;
   --dry-run) DRY_RUN=1 ;;
-  -h | --help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h | --help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
   *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
 esac
 
@@ -67,9 +69,6 @@ if ((${#missing[@]})); then
 else
   echo "    all present"
 fi
-if ! has_lib libgtk4-layer-shell.so; then
-  echo "    note: gtk4-layer-shell not found; flowd runs without the preview overlay"
-fi
 
 # --- 2. Python environment and models ----------------------------------------
 step "Installing flowd into $REPO_ROOT/.venv"
@@ -80,6 +79,19 @@ run uv pip install --python "$REPO_ROOT/.venv/bin/python" -e "$REPO_ROOT"
 
 step "Fetching models (about 1.1 GB the first time; verified against models.lock)"
 run "$REPO_ROOT/scripts/fetch_models.sh"
+
+# Not fatal either way: without flowd-ui there is no indicator or preview, and
+# dictation works the same.
+step "Building flowd-ui"
+if [[ "${FLOWD_UI_BUILD:-1}" != 0 ]] && command -v cmake >/dev/null 2>&1 &&
+  command -v g++ >/dev/null 2>&1 &&
+  pkg-config --exists gtkmm-4.0 gtk4-layer-shell-0 2>/dev/null; then
+  run cmake -S "$REPO_ROOT/ui" -B "$REPO_ROOT/build/ui" -DCMAKE_BUILD_TYPE=Release
+  run cmake --build "$REPO_ROOT/build/ui" -j
+else
+  echo "    note: flowd-ui not built (needs cmake gtkmm-4.0 gtk4-layer-shell); flowd runs without the indicator"
+  echo "    On Arch Linux: sudo pacman -S --needed cmake gtkmm-4.0 gtk4-layer-shell"
+fi
 
 # --- 3. systemd units ---------------------------------------------------------
 cores="$(lscpu -p=Core 2>/dev/null | grep -v '^#' | sort -u | wc -l)"

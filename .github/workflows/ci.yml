@@ -35,3 +35,18 @@ jobs:
       # every hotkey press.
       - run: uv run mypy flowd flowctl eval
       - run: uv run pytest -q
+
+  # Ubuntu's gtkmm is older than 4.22 and its LTS releases have no
+  # gtk4-layer-shell, so CI builds and tests only the GTK-free core. The
+  # windows themselves are checked by hand (scripts/check_ui_focus.py).
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify vendored headers
+        run: cd ui/third_party && sha256sum -c SHA256SUMS
+      - name: Build and test the GTK-free core
+        run: |
+          cmake -S ui -B build/ui -DFLOWD_UI_CORE_ONLY=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/ui -j
+          ctest --test-dir build/ui --output-on-failure

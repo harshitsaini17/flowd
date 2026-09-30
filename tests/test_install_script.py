@@ -66,3 +66,14 @@ def test_an_unknown_option_is_refused(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "unknown option" in result.stderr
+
+
+def test_the_ui_build_is_planned_or_explained(tmp_path: Path) -> None:
+    out = dry_run(tmp_path)
+    assert "would run: cmake -S" in out or "flowd-ui not built" in out
+
+
+def test_skipping_the_ui_build_is_not_fatal(tmp_path: Path) -> None:
+    out = dry_run(tmp_path, FLOWD_UI_BUILD="0")
+    assert "flowd-ui not built" in out
+    assert "Writing systemd units" in out
