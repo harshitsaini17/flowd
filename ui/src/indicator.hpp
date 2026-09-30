@@ -78,6 +78,9 @@ public:
 
     // The pill centre on its output, in logical px, for the popup's anchor.
     double center_x() const { return center_x_; }
+    // The output the indicator is on, or null before start(); the popup
+    // shows on the same one.
+    const Glib::RefPtr<Gdk::Monitor>& monitor() const { return monitor_; }
     // Called whenever the meter's clipping state changes.
     void set_on_clipping(std::function<void(bool)> fn) { on_clipping_ = std::move(fn); }
 

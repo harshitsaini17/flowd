@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "backend.hpp"
 #include "placement.hpp"
 
 // The GTK side of backend.hpp: turning a Gtk::Window into a surface that can
@@ -39,6 +40,17 @@ struct Margins {
 // run before Gtk::Application is created: GTK picks its renderer when the
 // first surface is realized and reads the variable only then.
 void apply_env_defaults();
+
+// Sets GDK_BACKEND to the backend choose_backend() picked, so GDK opens the
+// display the surface code expects (with both WAYLAND_DISPLAY and DISPLAY
+// set, GDK's own order could differ). Call before GTK init; Unsupported
+// leaves it alone.
+void pin_gdk_backend(Backend backend);
+
+// Why GDK's default display is not the kind backend needs, or nothing when it
+// is. Call after GTK init: a mismatch means the focus checks would run
+// against the wrong windowing system.
+std::optional<std::string> display_mismatch(Backend backend);
 
 // True when the running compositor offers wlr-layer-shell. Needs an open
 // display, so call it after GTK init.

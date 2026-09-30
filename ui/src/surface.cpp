@@ -11,6 +11,8 @@
 
 #include "backend.hpp"
 
+#include <gdk/wayland/gdkwayland.h>
+
 // Xlib last: it defines macros such as None, Bool and Status that clash with
 // C++ headers included after it.
 #include <gdk/x11/gdkx.h>
@@ -22,6 +24,10 @@ namespace {
 constexpr const char* kLogPrefix = "flowd-ui: ";
 // ADR 0013: an overlay never reserves space; windows keep their full size.
 constexpr int kExclusiveZone = 0;
+
+// GDK_BACKEND values.
+constexpr const char* kGdkWayland = "wayland";
+constexpr const char* kGdkX11 = "x11";
 
 void log_error(const std::string& msg) { std::cerr << kLogPrefix << msg << '\n'; }
 
@@ -148,6 +154,40 @@ void apply_env_defaults() {
     if (!renderer) return;
     if (!g_setenv("GSK_RENDERER", renderer->c_str(), FALSE))
         log_error("could not set GSK_RENDERER; GTK picks its default renderer");
+}
+
+void pin_gdk_backend(Backend backend) {
+    const char* name = nullptr;
+    switch (backend) {
+    case Backend::Wayland:
+        name = kGdkWayland;
+        break;
+    case Backend::X11:
+        name = kGdkX11;
+        break;
+    case Backend::Unsupported:
+        return;
+    }
+    // Overwrites a user's GDK_BACKEND on purpose: the focus guarantees are
+    // only checked for the backend chosen here.
+    if (!g_setenv("GDK_BACKEND", name, TRUE))
+        log_error(std::string("could not set GDK_BACKEND=") + name);
+}
+
+std::optional<std::string> display_mismatch(Backend backend) {
+    GdkDisplay* d = gdk_display_get_default();
+    if (!d) return "no display is open";
+    switch (backend) {
+    case Backend::Wayland:
+        if (GDK_IS_WAYLAND_DISPLAY(d)) return std::nullopt;
+        return "GDK opened a non-Wayland display for the Wayland backend";
+    case Backend::X11:
+        if (GDK_IS_X11_DISPLAY(d)) return std::nullopt;
+        return "GDK opened a non-X11 display for the X11 backend";
+    case Backend::Unsupported:
+        break;
+    }
+    return "no backend is usable";
 }
 
 bool layer_shell_supported() { return gtk_layer_is_supported(); }

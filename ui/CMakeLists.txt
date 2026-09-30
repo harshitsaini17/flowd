@@ -57,6 +57,7 @@ set(FLOWD_CORE_TESTS
   tests/test_backend.cpp
   tests/test_indicator_geometry.cpp
   tests/test_output_events.cpp
+  tests/test_line_splitter.cpp
 )
 add_executable(flowd-ui-tests tests/main.cpp ${FLOWD_CORE_TESTS})
 target_link_libraries(flowd-ui-tests PRIVATE flowd-ui-core)
@@ -69,7 +70,8 @@ endif()
 # --- flowd-ui: the GTK program -----------------------------------------------
 find_package(PkgConfig REQUIRED)
 # gtk4-layer-shell first, so its NEEDED entry precedes libwayland-client's
-# (the build checks this with readelf). That order is what lets it work without LD_PRELOAD.
+# (the layer-shell-link-order test checks this with readelf). That order is
+# what lets it work without LD_PRELOAD.
 pkg_check_modules(FLOWD_GTK REQUIRED IMPORTED_TARGET gtk4-layer-shell-0 gtkmm-4.0 gtk4-x11 x11)
 
 # The GTK widgets and surfaces, shared by the program and the GTK tests.
@@ -91,6 +93,8 @@ target_compile_definitions(flowd-ui-gtk PRIVATE FLOWD_FONTS_DIR="${FLOWD_FONTS_D
 
 set(FLOWD_GTK_SOURCES
   # GTK program sources
+  src/main.cpp
+  src/app.cpp
 )
 if(FLOWD_GTK_SOURCES)
   add_executable(flowd-ui ${FLOWD_GTK_SOURCES})
@@ -105,6 +109,29 @@ if(FLOWD_GTK_SOURCES)
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/assets/fonts
             $<TARGET_FILE_DIR:flowd-ui>/fonts)
+
+  # With no display there is nothing to draw on: the program says so on
+  # stdout and exits 3 before GTK init, which needs no compositor to test.
+  add_test(NAME exits-without-display
+    COMMAND ${CMAKE_COMMAND} -E env --unset=WAYLAND_DISPLAY --unset=DISPLAY
+            $<TARGET_FILE:flowd-ui>)
+  set_tests_properties(exits-without-display PROPERTIES
+    PASS_REGULAR_EXPRESSION "\"event\":\"unsupported\"")
+  # PASS_REGULAR_EXPRESSION ignores the exit code, so it is checked apart.
+  add_test(NAME exits-without-display-code
+    COMMAND sh -c "env -u WAYLAND_DISPLAY -u DISPLAY \"$1\" </dev/null >/dev/null 2>&1; test $? -eq 3"
+            sh $<TARGET_FILE:flowd-ui>)
+
+  # gtk4-layer-shell must be loaded before libwayland-client to intercept
+  # GTK's surface creation without LD_PRELOAD (ADR 0003).
+  find_program(FLOWD_READELF readelf)
+  if(FLOWD_READELF)
+    add_test(NAME layer-shell-link-order
+      COMMAND ${CMAKE_COMMAND} -DREADELF=${FLOWD_READELF} -DBINARY=$<TARGET_FILE:flowd-ui>
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_link_order.cmake)
+  else()
+    message(STATUS "readelf not found; skipping the layer-shell link-order test")
+  endif()
 endif()
 
 set(FLOWD_GTK_TESTS
