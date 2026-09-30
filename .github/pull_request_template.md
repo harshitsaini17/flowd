@@ -17,7 +17,7 @@ in the pull request.
 
 For a bug fix: which test fails without the fix?
 
-For anything touching audio, injection or the overlay, the suite cannot reach
+For anything touching audio, injection or `flowd-ui`, the suite cannot reach
 the hardware. Say what you ran by hand, on what compositor and session type,
 and what you saw.
 

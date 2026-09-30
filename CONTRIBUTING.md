@@ -98,21 +98,21 @@ Three hard rules:
   measured against one, and a test that races `time.monotonic` will fail on
   someone else's slower runner.
 
-One property resists all of that: whether the overlay takes keyboard focus. Only
-a compositor can answer it, and the answer is what stands between a preview and
-a window that swallows the dictation (spec 5.8,
-[ADR 0003](docs/decisions/0003-overlay-focus.md)). It lives in
-`scripts/check_overlay_focus.py` instead — run by hand on a layer-shell
-compositor, with a window focused, when you touch the overlay:
+One property resists all of that: whether the indicator or popup takes
+keyboard focus. Only a compositor can answer it, and the answer is what stands
+between a preview and a window that swallows the dictation (spec 5.8,
+[ADR 0003](docs/decisions/0003-overlay-focus.md),
+[ADR 0013](docs/decisions/0013-flowd-ui.md)). It lives in
+`scripts/check_ui_focus.py` instead — run by hand on a layer-shell compositor,
+with a window focused, after `make ui`, when you touch `flowd-ui`:
 
 ```bash
-uv run python scripts/check_overlay_focus.py
+uv run python scripts/check_ui_focus.py
 ```
 
-Add to it rather than trusting the unit suite there. `tests/test_overlay_ipc.py`
-proves the daemon writes well-formed protocol and
-`tests/test_overlay_process.py` proves the child parses it, and both pass
-whether or not the window behaves.
+Add to it rather than trusting the unit suites there. `tests/test_ui_ipc.py`
+proves the daemon writes well-formed protocol and `make ui-test` proves the
+UI core parses it, and both pass whether or not the windows behave.
 
 Name tests for the behaviour they pin, not the function they call:
 `test_silent_session_returns_to_idle`, not `test_finalize_2`. When a test exists

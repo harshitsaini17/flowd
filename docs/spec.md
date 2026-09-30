@@ -136,7 +136,7 @@ flowchart LR
 
 ### Threads inside flowd
 
-1. **Main (asyncio):** control socket, state machine, scheduler, HTTP client to `llama-server`, overlay IPC.
+1. **Main (asyncio):** control socket, state machine, scheduler, HTTP client to `llama-server`, `flowd-ui` IPC.
 2. **Audio callback (PortAudio):** copies frames into a lock-free ring buffer only. No other work happens on this thread.
 3. **STT worker:** reads audio, runs VAD and Moonshine, and emits `Partial` and `Committed` events to the main loop.
 4. **Injector:** runs clipboard and key-sending subprocesses so the main loop never blocks.
@@ -147,13 +147,13 @@ Queues are bounded. If the STT queue exceeds 2 s of audio, log a warning, but ne
 
 | State | Event | Next state | Action |
 | --- | --- | --- | --- |
-| IDLE | start | RECORDING | Open mic, create session, detect app context, show overlay |
+| IDLE | start | RECORDING | Open mic, create session, detect app context, show the popup |
 | RECORDING | stop | FINALIZING | Flush audio tail, commit the live partial, send the final chunk |
-| RECORDING | cancel | IDLE | Discard session, hide overlay, inject nothing |
-| RECORDING | max duration reached | FINALIZING | Same as stop; overlay shows "time limit" |
+| RECORDING | cancel | IDLE | Discard session, hide the popup, inject nothing |
+| RECORDING | max duration reached | FINALIZING | Same as stop; the popup shows "time limit" |
 | FINALIZING | all chunks resolved or final timeout | INJECTING | Join text |
 | FINALIZING | cancel | IDLE | Discard |
-| INJECTING | done or failed | IDLE | Hide overlay, record metrics, store as last result |
+| INJECTING | done or failed | IDLE | Hide the popup, record metrics, store as last result |
 | Any | fatal error | IDLE | Notify the user, log, release the mic |
 
 In FINALIZING and INJECTING, a `start` command is ignored and logged. A `start` within 200 ms of the previous command is debounced.
@@ -329,7 +329,7 @@ def on_llm_result(chunk_id, version, text):
         chunk.polished, chunk.state = text, "DONE"
     else:
         chunk.polished, chunk.state = basic_clean(chunk.raw), "FALLBACK"
-    overlay.render(session)
+    ui.render(session)
     maybe_dispatch(final=finalizing)
 ```
 
@@ -349,7 +349,7 @@ On a timeout or HTTP error, treat the chunk as failed: use fallback text, then c
 3. Call `maybe_dispatch(final=True)`. The minimum chunk size is ignored.
 4. Wait until all chunks are resolved or `final_timeout_ms` (800) expires. Any chunk still unresolved at timeout uses fallback text.
 5. **Join:** concatenate polished and fallback texts in chunk order. Then normalise with code, not the LLM: single spaces, no space before punctuation, capitalise sentence starts, and end with terminal punctuation if missing.
-6. Inject, then hide the overlay.
+6. Inject, then hide the popup.
 
 ### 6.6 Optional full-rewrite mode
 
@@ -533,7 +533,7 @@ flowd/
 │   ├── joiner.py
 │   ├── context.py
 │   ├── inject/               # base.py, clipboard.py, wtype.py, ydotool.py, xdotool.py
-│   ├── overlay_ipc.py        # flowd-ui child process and protocol
+│   ├── ui_ipc.py             # flowd-ui child process and protocol
 │   ├── settings_server.py    # loopback HTTP server for the settings page
 │   └── metrics.py
 ├── ui/                       # flowd-ui, C++ (CMake)
@@ -561,9 +561,9 @@ Every row below needs either an automated test or a logged manual check before t
 
 | Scenario | Detection | Required behaviour |
 | --- | --- | --- |
-| No speech at all | No VAD speech frames in the session | Inject nothing; overlay shows "No speech" for 1 s |
+| No speech at all | No VAD speech frames in the session | Inject nothing; the popup shows "No speech" for 1 s |
 | Very short utterance | Total words < `short_bypass_words` | Skip the LLM; inject `basic_clean` text |
-| Very long dictation | Session reaches `max_session_s` | Auto-stop, finalize and inject; overlay notes the limit |
+| Very long dictation | Session reaches `max_session_s` | Auto-stop, finalize and inject; the popup notes the limit |
 | Cancel | `flowctl cancel` or cancel hotkey | Discard everything; inject nothing; release the mic |
 | Start pressed while finalizing | State is FINALIZING or INJECTING | Ignore and log; do not queue |
 | Double press | Two commands within `debounce_ms` | Treat as one |
@@ -606,14 +606,14 @@ Every row below needs either an automated test or a logged manual check before t
 | `ydotool` without `ydotoold` or uinput access | Command error | Next backend; README explains setup |
 | Password field | Not detectable | Documented risk; transcripts are never logged by default |
 
-### 9.5 Process and overlay
+### 9.5 Process and flowd-ui
 
 | Scenario | Detection | Required behaviour |
 | --- | --- | --- |
 | Second daemon started | Socket already bound and responsive | New instance exits with "already running" |
 | Stale socket file | Bind fails, connect fails | Remove the stale file and bind |
-| Overlay crashes | Child exit | Continue without the overlay; respawn on the next session |
-| Overlay would take focus | Backend can't guarantee no focus (GNOME Wayland) | Disable the overlay and log why |
+| `flowd-ui` crashes | Child exit | Continue without it, never ending the session; respawn with backoff, and at once on the next session |
+| `flowd-ui` would take focus | Backend can't guarantee no focus (GNOME Wayland) | `flowd-ui` disables itself, logs why and exits 3; not restarted until a reload |
 | Config invalid on reload | Validation error | Keep the old config; `flowctl reload` returns the error |
 
 ## 10. Performance budgets, logging and observability
@@ -625,7 +625,7 @@ Measure every stage of every session . Budgets are pass/fail gates, and reported
 | Stage | Metric | Budget |
 | --- | --- | --- |
 | Hotkey → mic open | `t_mic_open − t_cmd` | ≤ 100 ms |
-| Speech → first partial in overlay | Speech onset to first render | ≤ 300 ms |
+| Speech → first partial in the popup | Speech onset to first render | ≤ 300 ms |
 | Commit → chunk polished (during recording) | `t_resolved − t_committed` | p50 ≤ 400 ms |
 | Release → last chunk committed | STT finalize | ≤ 300 ms |
 | Release → all chunks resolved | Final LLM call | ≤ 500 ms (hard cap `final_timeout_ms`) |
@@ -812,7 +812,7 @@ Run through this list before tagging a release.
 - [ ] No network calls at runtime (check with `ss -tp` or a firewall log during a session).
 - [ ] No transcript or audio written by default.
 - [ ] The clipboard is restored, and non-text clipboard contents are never overwritten.
-- [ ] The overlay never takes focus.
+- [ ] Neither the indicator nor the popup ever takes focus.
 
 **Robustness**
 

@@ -58,14 +58,16 @@ here in the same commit.
 | `ydotool` without `ydotoold` | `test_inject.py::test_ydotool_needs_the_ydotoold_socket`; setup is in the README. |
 | Password field | Not detectable; documented in the README. `test_metrics.py::test_record_excludes_transcript_by_default`, `test_daemon.py::test_transcripts_are_not_logged_by_default` |
 
-## 9.5 Process and overlay
+## 9.5 Process and flowd-ui
 
 | Scenario | Covered by |
 | --- | --- |
 | Second daemon started | `test_control.py::test_second_daemon_refuses_to_start`, `::test_busy_daemon_still_blocks_a_second_daemon`. Manual, 2026-09-27: a second `flowd` printed "already running" and exited 1. |
 | Stale socket file | `test_control.py::test_stale_socket_is_removed_and_rebound` |
-| Overlay crashes | `test_overlay_ipc.py::test_dead_child_is_respawned_on_next_show`, `::test_broken_pipe_is_swallowed`. Manual, 2026-09-27: killing the overlay mid-session left dictation working, and the next session respawned it. |
-| Overlay would take focus | `test_overlay_process.py::test_overlay_disables_itself_when_layer_shell_is_unavailable`, `::test_overlay_becomes_a_layer_surface_that_refuses_focus` |
+| `flowd-ui` crashes | Never ends a session. `test_daemon.py::test_a_ui_that_raises_on_every_call_never_costs_a_dictation`, `::test_levels_to_a_dead_ui_do_not_stop_the_session`, `test_ui_ipc.py::test_a_crashing_ui_is_respawned_up_to_the_limit`, `::test_a_ui_respawned_mid_dictation_gets_the_warning_popup_and_state`, `::test_broken_pipe_is_swallowed` |
+| Indicator clicked while finishing | Ignored. `test_daemon.py::test_a_click_while_finishing_is_ignored` |
+| GNOME Wayland | `flowd-ui` disables itself with a logged reason and exits 3; it is not restarted until a reload. `ui/tests/test_backend.cpp` ("GNOME on Wayland is disabled with a reason"), `test_ui_ipc.py::test_unsupported_event_and_exit_3_stop_all_further_spawns` |
+| A fullscreen window on the indicator's output | The pill hides until the window leaves fullscreen. `ui/tests/test_output_events.cpp` (Hyprland and Sway fullscreen events) |
 | `flowd-ui` would take focus (ADR 0013) | Pending. Manual: click the indicator and drag it on Hyprland, Sway, KDE and X11; the paste still lands in the original app. GNOME Wayland disables `flowd-ui` with a logged reason. |
 | Settings API reached from another origin (ADR 0014) | Pending: tests for a missing or wrong token, a foreign `Host`, a foreign `Origin`, and a stale etag (`409`). |
 | Config invalid on reload | `test_daemon.py::test_reload_with_bad_config_keeps_old`, `test_config.py::test_reload_keeps_old_config_on_error`. Manual, 2026-09-27: a bad `block_ms` was rejected by `flowctl reload` and the old config stayed. |
@@ -73,7 +75,7 @@ here in the same commit.
 ## Resource budget (spec 12)
 
 `scripts/idle_check.py` measures idle anonymous memory and CPU across the
-daemon, the overlay and `llama-server`. Manual, 2026-09-27, 60 s idle:
+daemon, `flowd-ui` and `llama-server`. Manual, 2026-09-27, 60 s idle:
 455 MB anon (budget 900), 0.33 % CPU (budget 1 %). That was before ADR 0011
 added Parakeet; the budget is now 1,600 MB, and the daemon alone measured
 about 1,140 MB anon idle with both models loaded (2026-09-28). The 24 h soak is

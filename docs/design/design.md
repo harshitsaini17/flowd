@@ -418,8 +418,8 @@ important thing on screen, then it gets out of the way.
    editable. Engineering numbers (percentiles, fallback rate) stay accurate but
    live behind "Performance details".
 
-**Where the overlay can't exist.** On GNOME Wayland (no `wlr-layer-shell`) the
-overlay disables itself rather than risk stealing focus. The settings header
+**Where the indicator can't exist.** On GNOME Wayland (no `wlr-layer-shell`)
+`flowd-ui` disables itself rather than risk stealing focus. The settings header
 then shows a `warn` badge, "Preview unavailable on GNOME Wayland", linking to
 the reason. Dictation still works, and the design never pretends otherwise.
 
@@ -563,25 +563,31 @@ Density is "comfortable": card padding 20–24, row padding 20 × 24, section ga
 
 ### Indicator placement
 
-- Layer: `OVERLAY`. Anchor: `BOTTOM` only (horizontal position via left margin
-  after a drag; see Components → Indicator → Dragging). Exclusive zone: `0`
-  (it never pushes windows up). Namespace `flowd-indicator`.
+- Layer: `OVERLAY`. Anchor: `LEFT | BOTTOM`, with the horizontal position set
+  by the left margin (see Components → Indicator → Dragging). Exclusive zone:
+  `0` (it never pushes windows up). Namespace `flowd-indicator`.
 - Bottom margin **6 px** idle, measured from the output edge. The expanded
   pill grows **upward** from the same baseline, so the pointer never has to chase it.
 - Hit area: the idle line is 8 px tall but its input region is a **120 × 20 px**
   invisible strip centered on it (`Gdk.Surface.set_input_region`). That makes
   it hoverable without pixel hunting while staying small visually. The surface
   itself is sized 144 × 54 (the 120 × 36 pill plus 12 px of shadow room on
-  each side) so the expansion has room without a resize. Everything
-  outside the input region is click-through.
+  each side) so the expansion has room without a resize; it grows to 384 × 54
+  only for the warning pill, and spans the output's full width only while a
+  drag is in progress. Everything outside the input region is click-through.
 - Horizontal position is stored as a fraction of output width (0–1, default
   0.5) in `$XDG_STATE_HOME/flowd/indicator.json`, so it survives resolution
   changes. One per output name.
 
 ### Popup placement
 
-- Namespace `flowd-popup`, layer `OVERLAY`, anchor `BOTTOM`, keyboard `NONE`,
-  input region **empty** (fully click-through; it's read-only).
+- Namespace `flowd-popup`, layer `OVERLAY`, anchor `LEFT | BOTTOM`, keyboard
+  `NONE`, input region **empty** (fully click-through; it's read-only).
+- The surface is `min(output_width, 688px)` wide (the widest 640 px card plus
+  24 px of shadow room on each side) and a fixed height set by `max_lines`, so
+  it never resizes mid-session; the card is drawn and animated inside it. Its
+  left margin is placed around the widest card the indicator's centre could
+  get, so a card growing during a session never moves the surface.
 - Horizontally centered on the indicator's x, clamped so the card stays
   ≥ 16 px inside the output edges.
 - Vertical gap: **10 px** between the pill's top edge (expanded, 36 px tall)
@@ -863,7 +869,7 @@ A degraded-but-working condition. It overlays whichever base state is current.
   14 px in `warn`, then the reason in `label` `text`, e.g.
   - "Cleanup offline, pasting as heard"
   - "Microphone unavailable: USB Audio unplugged"
-  - "Preview unavailable on this compositor" (settings-only; the overlay isn't
+  - "Preview unavailable on this compositor" (settings-only; `flowd-ui` isn't
     running in that case)
   The mic button stays at the left and clicking it still starts dictation,
   except when the mic itself is the problem. Then the icon is `mic-off` in
@@ -890,10 +896,11 @@ A degraded-but-working condition. It overlays whichever base state is current.
   focus by design); dragging back is the undo, and Settings → Hotkey &
   activation → "Reset indicator position" restores center.
 - **Implementation note.** A layer surface can't be moved by the compositor
-  on drag, so the drag updates the left margin with `LEFT | BOTTOM` anchors
-  every frame. Wayland keeps delivering pointer events to the surface the
-  button was pressed on until release, so the input region doesn't need to
-  grow during the move. The indicator stays on its output; the per-output
+  on drag. Past the drag threshold the indicator surface widens to the full
+  output width (left margin 0) and the pill is drawn at the pointer inside it,
+  so the surface never moves under the pointer; on release it shrinks back to
+  144 px with its left margin at the new place. Wayland keeps delivering
+  pointer events to the surface the button was pressed on until release. The indicator stays on its output; the per-output
   position is the way to place it on another.
 - Reduced motion: no scale, no settle animation; ticks still show.
 
@@ -1578,8 +1585,8 @@ Two groups, backed by `vocab.toml`.
 
 - **Theme** · segmented: System | Light | Dark (applies to the page, indicator
   and popup together).
-- **Popup lines** · slider 1–6, default 4, discrete ticks. Requires overlay
-  restart (the page offers "Restart preview" instead of the full restart).
+- **Popup lines** · slider 1–6, default 4, discrete ticks. Requires a
+  `flowd-ui` restart (the page offers "Restart preview" instead of the full restart).
 - **Fade after paste** · slider 300–3000 ms, step 100, default 1000.
 - **Show mode and app in popup** · toggle, default on.
 - **Desktop notification when finished** · toggle, default off. Sends
@@ -1666,7 +1673,7 @@ Chromium) and an expert review of the built page.
   element (`:focus-visible`), 3 px in high contrast. On the mobile nav sheet,
   focus is trapped inside while open.
 - **Announcements.** One polite live region for "Saved"/"Copied"/reorder moves,
-  one assertive region for save errors. The overlay isn't announced, since
+  one assertive region for save errors. The popup isn't announced, since
   it's a transient visual preview of text the user is speaking; the pasted text
   lands in their app, where their screen reader already is. If the user needs
   status by voice, Settings → Appearance lets them enable `notify-send` on
@@ -1715,7 +1722,7 @@ Chromium) and an expert review of the built page.
 - Don't use 12 px radius, or 4 px on a card or button.
 - Don't add decorative 3D objects or gradients. Decoration has no
   place in an OSD or a settings page.
-- Don't take keyboard focus from any overlay surface, for any reason. No text
+- Don't take keyboard focus from the indicator or popup, for any reason. No text
   fields, no buttons that need Enter, no "click to copy" in the popup.
 - Don't animate live partial text; only the caret.
 - Don't use gradients, glows, or color on the idle indicator. It has to be
@@ -1751,7 +1758,7 @@ but it records the constraints the design leans on.
   part of its text.
 - **Level meter.** A `Gtk::DrawingArea` with a tick callback and a one-pole
   low-pass per bar (τ ≈ 50 ms). Redrawn only while recording.
-- **Replacing the current overlay.** `overlay/flowd_overlay.py` uses
+- **What it replaced.** The Python overlay this design replaced used
   `rgba(20,20,24,.88)`, 12 px radius, 15 px text and `#9ad2ff` for live. This
   design keeps the 15 px size and the three-zone model and replaces the
   colors and radius with tokens; `#9ad2ff` becomes `live`.

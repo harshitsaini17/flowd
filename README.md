@@ -2,8 +2,9 @@
 
 Local, offline, streaming dictation for Linux.
 
-Press a hotkey, speak, and watch the text appear live in a small overlay. When
-you release, the transcript is typed into whatever window you had focused.
+Press a hotkey, speak, and watch the text appear live in a small popup above
+the indicator, a pill at the bottom of the screen. When you release, the
+transcript is typed into whatever window you had focused.
 
 Everything runs on your machine. flowd makes no network calls at runtime, has no
 telemetry and no update check, and writes neither audio nor transcript text to
@@ -16,7 +17,7 @@ flowd is under active development. What works today:
 | | |
 |---|---|
 | Hotkey → speak → text lands in the focused window | **works** |
-| Live preview overlay while you speak | **works** |
+| Indicator pill and live preview popup while you speak | **works** |
 | Streaming transcription with incremental commits | **works** |
 | Per-session latency metrics (`flowctl stats`) | **works** |
 | LLM cleanup of filler words, punctuation and casing | **works** — chunked, while you speak |
@@ -96,20 +97,22 @@ On Arch Linux:
 
 ```bash
 sudo pacman -S --needed pipewire pipewire-pulse portaudio llama-cpp \
-  wl-clipboard wtype ydotool xclip xdotool gtk4 gtk4-layer-shell python-gobject
+  wl-clipboard wtype ydotool xclip xdotool cmake gtkmm-4.0 gtk4-layer-shell
 ```
 
 The package is `llama-cpp` from `extra`, not `llama.cpp` from the AUR.
 
 Not all of these are needed at once. `wl-clipboard` and `wtype` are the Wayland
 path; `xclip` and `xdotool` are the X11 path; `ydotool` is a fallback for
-applications that ignore the other two. `gtk4`, `gtk4-layer-shell` and
-`python-gobject` are only for the preview overlay, which flowd disables cleanly
-if they are missing.
+applications that ignore the other two. `cmake`, `gtkmm-4.0` and
+`gtk4-layer-shell` are optional: they build `flowd-ui`, the indicator and
+preview popup. Without them the installer skips it, and dictation works the
+same with no indicator.
 
 On other distributions the names differ but the set does not: PipeWire (or
 PulseAudio), PortAudio, llama.cpp, the clipboard and typing tools for your
-session type, and GTK4 with the layer-shell library.
+session type, and, for the indicator, CMake, a C++ compiler, gtkmm 4 and the
+gtk4-layer-shell library.
 
 ## Manual install
 
@@ -169,7 +172,7 @@ goes away. `flowd-llm` starts with it.
 
 flowd needs your compositor's environment. Without `WAYLAND_DISPLAY`/`DISPLAY`
 it cannot reach the clipboard, cannot type into a window, and cannot show the
-overlay — it starts and then fails at every injection. Most compositors import
+indicator — it starts and then fails at every injection. Most compositors import
 these into the user manager at login. If yours does not, add the
 `import-environment` line to its startup config, before anything starts flowd.
 On Hyprland:
@@ -238,12 +241,13 @@ gsettings set org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$pa
   binding '<Super>d'
 ```
 
-On GNOME under Wayland the preview overlay is **disabled**, and flowd logs why
-when it starts. GNOME's compositor does not implement `wlr-layer-shell`, the
-protocol that lets a window promise never to take keyboard focus. An overlay
-that might take focus would steal it from the window you are dictating into, and
-your text would land in the overlay instead of your editor. Dictation itself
-works normally; you just do not get the live preview. GNOME under X11 is fine.
+On GNOME under Wayland the indicator and preview popup are **disabled**, and
+flowd logs why when it starts. GNOME's compositor does not implement
+`wlr-layer-shell`, the protocol that lets a window promise never to take
+keyboard focus. A popup that might take focus would steal it from the window you
+are dictating into, and your text would land in the popup instead of your
+editor. Dictation itself works normally; you just do not get the indicator or
+the live preview. GNOME under X11 is fine.
 
 **X11, any window manager** — with `sxhkd`:
 
@@ -322,9 +326,20 @@ order = ["clipboard", "wtype", "ydotool", "xdotool"]
 "kiro" = "code"
 "firefox" = "default"
 
-[overlay]
-enabled = true
+[ui]
+enabled = true         # false: no indicator and no popup
+indicator = true       # the pill at the bottom edge; false shows the popup only while dictating
+theme = "system"       # or "light", "dark"
+max_lines = 4          # lines of text in the popup (1-6)
+fade_ms = 1000         # how long the popup stays after the text is typed
+footer = true          # mode and app under the text
+notify_on_finish = false
+hotkey_label = ""      # shown in hints, e.g. "Super D"
 ```
+
+The `[ui]` section used to be called `[overlay]`. flowd still reads
+`[overlay]` for one more release and logs that it is deprecated; rename it to
+`[ui]`.
 
 `flowctl reload` applies a changed config without restarting. A config that
 fails validation is rejected and the running one is kept, so a typo cannot take
@@ -386,10 +401,17 @@ not the microphone you meant.
 active, the two are looking at different sockets — usually because the service
 started without `XDG_RUNTIME_DIR`. Re-run the `import-environment` step.
 
-**The overlay is missing.** On GNOME/Wayland this is deliberate; see the
-hotkeys section. Elsewhere, check that `gtk4-layer-shell` and `python-gobject`
-are installed, and look for the overlay's reason in the log. The overlay is a
-separate process on purpose: if it crashes, dictation keeps working.
+**The indicator is missing.** On GNOME/Wayland this is deliberate; see the
+hotkeys section. Elsewhere, check that `flowd-ui` was built (`make ui` puts it
+in `build/ui/flowd-ui`), and look for its reason in the log:
+
+```bash
+journalctl --user -u flowd | grep flowd-ui
+```
+
+flowd looks for the binary in `$FLOWD_UI` first, then `build/ui/flowd-ui` in
+this checkout, then `flowd-ui` on `PATH`. `flowd-ui` is a separate process on
+purpose: if it crashes, dictation keeps working.
 
 **Text arrives without cleanup.** You get fillers and lowercase names when the
 model is not answering, and a desktop notification says so once per dictation.
@@ -422,7 +444,7 @@ cancels it, by design. By the time you resume, the words are stale and focus
 may be somewhere else, so pasting them would be a guess.
 
 **Measuring idle cost.** `scripts/idle_check.py` samples memory and CPU of the
-daemon, the overlay and `llama-server` for a minute and checks them against the
+daemon, `flowd-ui` and `llama-server` for a minute and checks them against the
 budget (1,600 MB anonymous memory, 1 % CPU; ADR 0011). `scripts/idle_check.py --soak 24`
 samples every 30 minutes for a day and flags memory growth or a restarted
 process.

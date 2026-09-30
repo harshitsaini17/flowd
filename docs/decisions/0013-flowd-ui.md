@@ -85,3 +85,30 @@ warning states.
   checked by hand, listed in `docs/edge-cases.md`.
 - `[overlay]` config keys move to `[ui]`; `[overlay]` is still read for one
   release.
+
+## Notes from building it
+
+- Fonts are the design page's woff2 files (`docs/design/assets/fonts`),
+  copied next to the binary at build time and registered with Pango
+  directly; there is no TTF copy. An installed build falls back to
+  `FLOWD_FONTS_DIR` (default `<datadir>/flowd/fonts`), then to the system
+  font.
+- The GSK renderer defaults to cairo unless `GSK_RENDERER` is set: GL and
+  Vulkan map several MB of driver state each. On X11, GDK creates a GL context
+  even for cairo, so `flowd-ui` also sets `GDK_DISABLE=gl` there, which took
+  anonymous memory from 36 MB to about 20 MB. Measured anonymous memory is
+  about 20 MB on both Wayland and X11, against the 40 MB target; an idle
+  indicator on Hyprland, before its first popup, measured 10 MB.
+- X11 is supported as the Decision describes: override-redirect windows with
+  `input=False`, both read back from the X server before showing.
+  `GDK_BACKEND` is pinned from the backend decision; the exit codes are the
+  ones under "Process contract" above.
+- Two protocol additions. `warn` carries `"blocking": true` when the
+  microphone itself is the problem, which makes the indicator show `mic-off`
+  and ignore clicks. On stdout, `{"event":"unsupported","reason":"…"}` joins
+  `click` and `moved`; it is written just before exit 3 (see "Process
+  contract"), so the daemon logs the reason and stops respawning.
+- `state.reason` is a code (`offline`, `timeout`, `mic_lost`,
+  `paste_failed`, ...), not text. `flowd-ui` owns the wording and falls back
+  to a generic line for a code it does not know. `warn.reason` is still sent
+  as the text to show.
