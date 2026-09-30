@@ -172,3 +172,109 @@ TEST_CASE("popup: deadlines follow the phase and nothing is due when hidden") {
     p.advance(2.1);
     CHECK_FALSE(p.next_deadline());
 }
+
+TEST_CASE("popup: the listening placeholder is marked, no speech is not") {
+    PopupModel p;
+    p.on_show(0);
+    CHECK(std::get<Placeholder>(p.content()).listening);
+    p.on_state({UiState::NoSpeech, ""}, 1.0);
+    CHECK_FALSE(std::get<Placeholder>(p.content()).listening);
+}
+
+TEST_CASE("popup: a warning shows in the footer while recording only") {
+    PopupModel p;
+    p.on_warn(std::string("Cleanup offline, pasting as heard"));
+    p.on_show(0);
+    REQUIRE(p.status());
+    CHECK(p.status()->text == "Cleanup offline, pasting as heard");
+    CHECK(p.status()->icon == Icon::TriangleAlert);
+    CHECK(p.status()->tone == Tone::Warn);
+    p.on_state({UiState::Finishing, ""}, 1.0);
+    CHECK(p.status()->text == "Finishing");
+}
+
+TEST_CASE("popup: a warning keeps the footer up with the footer setting off") {
+    PopupModel p; UiConfig c; c.footer = false; p.on_config(c);
+    p.on_show(0);
+    CHECK_FALSE(p.footer_visible());
+    p.on_warn(std::string("Cleanup offline, pasting as heard"));
+    CHECK(p.footer_visible());
+    p.on_warn(std::nullopt);
+    CHECK_FALSE(p.footer_visible());
+}
+
+TEST_CASE("popup: the clipping hint outranks a warning, which returns after it") {
+    PopupModel p;
+    p.on_show(0);
+    p.on_warn(std::string("Cleanup offline, pasting as heard"));
+    p.set_clipping(true, 1.0);
+    CHECK(p.status()->text == "Too loud, move back a little");
+    p.advance(3.1);
+    CHECK(p.status()->text == "Cleanup offline, pasting as heard");
+}
+
+TEST_CASE("popup: an empty warning reason clears it") {
+    PopupModel p;
+    p.on_show(0);
+    p.on_warn(std::string("x"));
+    p.on_warn(std::string(""));
+    CHECK_FALSE(p.status());
+}
+
+TEST_CASE("popup: footer while recording has mode, app, clock and stop hint") {
+    PopupModel p; UiConfig c; c.hotkey_label = "Super+D"; p.on_config(c);
+    p.on_meta({"prose", "kitty", "Super D"});
+    p.on_show(0);
+    const auto f = p.footer(1.5);
+    CHECK(f.mode == "prose");
+    CHECK(f.app == "kitty");
+    CHECK(f.elapsed == "0:01");
+    CHECK(f.hint == "Super+D to stop");
+    CHECK_FALSE(f.status);
+}
+
+TEST_CASE("popup: the stop hint falls back to meta, and is absent with neither") {
+    PopupModel p;
+    p.on_meta({"prose", "kitty", "Super D"});
+    p.on_show(0);
+    CHECK(p.footer(0).hint == "Super D to stop");
+    p.on_meta({"prose", "kitty", ""});
+    CHECK(p.footer(0).hint.empty());
+}
+
+TEST_CASE("popup: the countdown replaces the elapsed time") {
+    PopupModel p; UiConfig c; c.max_session_s = 300; p.on_config(c);
+    p.on_show(0);
+    CHECK(p.footer(291.0).elapsed == "0:09 left");
+}
+
+TEST_CASE("popup: finishing keeps mode and app but drops the clock and hint") {
+    PopupModel p; UiConfig c; c.hotkey_label = "Super+D"; p.on_config(c);
+    p.on_meta({"prose", "kitty", ""});
+    p.on_show(0);
+    p.on_state({UiState::Finishing, ""}, 2.0);
+    const auto f = p.footer(2.5);
+    CHECK(f.mode == "prose");
+    CHECK(f.elapsed.empty());
+    CHECK(f.hint.empty());
+    CHECK(*f.status == "Finishing");
+}
+
+TEST_CASE("popup: a terminal outcome stands alone in the footer") {
+    PopupModel p;
+    p.on_meta({"prose", "kitty", ""});
+    p.on_show(0);
+    p.on_state({UiState::Done, ""}, 2.0);
+    const auto f = p.footer(2.5);
+    CHECK(f.mode.empty());
+    CHECK(f.app.empty());
+    CHECK(*f.status == "Pasted into kitty");
+}
+
+TEST_CASE("popup: the footer is empty when hidden") {
+    PopupModel p;
+    p.on_meta({"prose", "kitty", ""});
+    const auto f = p.footer(0);
+    CHECK(f.mode.empty());
+    CHECK_FALSE(f.status);
+}

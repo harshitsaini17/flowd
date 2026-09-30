@@ -44,3 +44,10 @@ TEST_CASE("footer: the mode chip stays even when nothing else fits") {
     CHECK(items[0].kind == FooterKind::Mode);
     CHECK_FALSE(items[0].ellipsize);
 }
+
+TEST_CASE("footer: row width counts the chip, the status icon and the gaps") {
+    const std::vector<FooterItem> items{{FooterKind::Mode, "ab"}, {FooterKind::Status, "cd", true}};
+    CHECK(footer_width(items, eight) == 16 + kModeChipExtraPx + kFooterGapPx + 16 + kStatusIconPx);
+    CHECK(footer_width({}, eight) == 0);
+    CHECK(footer_width(items, TextMeasure{}) == 0);
+}

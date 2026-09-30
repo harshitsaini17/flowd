@@ -20,6 +20,11 @@ constexpr float kIconStroke = 1.75f;
 constexpr int kLabelPx = 13;
 constexpr double kLabelTrackingEm = 0.02;
 
+// Makes every flowd window's background transparent, so only what the widgets
+// draw shows; the rest of each surface is shadow room. Installs once per
+// process, on the default display.
+void install_window_css();
+
 GdkRGBA to_gdk(const Rgba& c, double alpha_scale = 1.0);
 
 // design.md "Glass material": the glass fill, a 1 px inner edge in `border`,
@@ -34,6 +39,11 @@ void fill_rounded(GtkSnapshot* s, graphene_rect_t r, float radius, Rgba c);
 // Strokes icon i into the size x size square at (x, y). Paths are parsed once
 // and kept for the life of the process.
 void draw_icon(GtkSnapshot* s, Icon i, float x, float y, float size, Rgba c);
+
+// A new layout for text in Inter at size_px, weight 400 (design.md
+// "Typography": one weight), with no tracking and no attributes. The caller
+// owns it (g_object_unref).
+PangoLayout* text_layout(GtkWidget* w, std::string_view text, int size_px);
 
 // A new layout for text in Inter at size_px, weight 400 (design.md
 // "Typography": one weight), with the label tracking. The caller owns it

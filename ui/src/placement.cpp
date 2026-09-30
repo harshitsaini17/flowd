@@ -88,4 +88,9 @@ CardRect popup_card(int output_w, double center_x, int lines, bool footer, int p
     return {x, kCardBottomAboveEdge, w, h};
 }
 
+int popup_surface_h(int max_lines) {
+    const int n = std::max(kPopupMinLines, max_lines);
+    return kPopupPad + kPopupPadY + kPopupLineH * n + kPopupPadY + kPopupFooterH + kPopupPad;
+}
+
 }  // namespace flowd

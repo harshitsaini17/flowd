@@ -34,6 +34,11 @@ int row_width(const std::vector<FooterItem>& items, const TextMeasure& measure) 
 
 }  // namespace
 
+int footer_width(const std::vector<FooterItem>& items, const TextMeasure& measure) {
+    if (!measure) return 0;
+    return row_width(items, measure);
+}
+
 std::vector<FooterItem> compose_footer(const FooterInput& in, int avail_px, const TextMeasure& measure) {
     std::vector<FooterItem> items;
     if (!in.mode.empty()) items.push_back({FooterKind::Mode, in.mode});

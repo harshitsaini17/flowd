@@ -1,5 +1,9 @@
 #include "draw.hpp"
 
+#include <gdkmm/display.h>
+#include <gtkmm/cssprovider.h>
+#include <gtkmm/styleprovider.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -16,6 +20,7 @@ constexpr int kRegularWeight = 400;
 // design.md "Glass material": 1 px edges; dark mode's outer edge is black 50%.
 constexpr float kEdgePx = 1.0f;
 constexpr Rgba kDarkOuterEdge{0.0, 0.0, 0.0, 0.5};
+constexpr const char* kWindowCss = "window { background: none; }";
 
 GskRoundedRect rounded(graphene_rect_t r, float radius) {
     GskRoundedRect rr;
@@ -43,6 +48,18 @@ const std::vector<GskPath*>& icon_paths(Icon i) {
 }
 
 }  // namespace
+
+void install_window_css() {
+    static bool done = false;
+    if (done) return;
+    auto display = Gdk::Display::get_default();
+    if (!display) return;
+    done = true;
+    auto css = Gtk::CssProvider::create();
+    css->load_from_string(kWindowCss);
+    Gtk::StyleProvider::add_provider_for_display(display, css,
+                                                 GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
 
 GdkRGBA to_gdk(const Rgba& c, double alpha_scale) {
     return GdkRGBA{static_cast<float>(c.r), static_cast<float>(c.g), static_cast<float>(c.b),
@@ -99,7 +116,7 @@ void draw_icon(GtkSnapshot* s, Icon i, float x, float y, float size, Rgba c) {
     gsk_stroke_free(stroke);
 }
 
-PangoLayout* label_layout(GtkWidget* w, std::string_view text, int size_px) {
+PangoLayout* text_layout(GtkWidget* w, std::string_view text, int size_px) {
     const std::string str(text);
     PangoLayout* layout = gtk_widget_create_pango_layout(w, str.c_str());
     PangoFontDescription* fd = pango_font_description_from_string(kFontFamily);
@@ -107,6 +124,11 @@ PangoLayout* label_layout(GtkWidget* w, std::string_view text, int size_px) {
     pango_font_description_set_absolute_size(fd, size_px * PANGO_SCALE);
     pango_layout_set_font_description(layout, fd);
     pango_font_description_free(fd);
+    return layout;
+}
+
+PangoLayout* label_layout(GtkWidget* w, std::string_view text, int size_px) {
+    PangoLayout* layout = text_layout(w, text, size_px);
 
     PangoAttrList* attrs = pango_attr_list_new();
     pango_attr_list_insert(attrs, pango_attr_letter_spacing_new(static_cast<int>(

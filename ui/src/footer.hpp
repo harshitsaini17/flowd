@@ -23,6 +23,8 @@ struct FooterItem {
     std::string text;
     // Only a status is ever ellipsized; everything else fits whole or drops.
     bool ellipsize = false;
+
+    bool operator==(const FooterItem&) const = default;
 };
 
 struct FooterInput {
@@ -34,6 +36,8 @@ struct FooterInput {
     // compositor binding.
     std::string hint;
     std::optional<std::string> status;
+
+    bool operator==(const FooterInput&) const = default;
 };
 
 // Width in logical px of a run of footer text.
@@ -47,6 +51,10 @@ constexpr int kModeChipExtraPx = 5 + 12 + 4 + 7;
 // design.md "Preview popup" → States: the status icon is 14 px, 8 px before
 // its text.
 constexpr int kStatusIconPx = 14 + kFooterGapPx;
+
+// Width of a composed row: each item with what the widget draws around its
+// text, plus the gaps between items. The card uses it for its natural width.
+int footer_width(const std::vector<FooterItem>& items, const TextMeasure& measure);
 
 // Items in order: mode chip, app id, elapsed time, stop hint, then a status
 // if there is one. When avail_px runs out they drop as app id first, then

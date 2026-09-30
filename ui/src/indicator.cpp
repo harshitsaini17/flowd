@@ -4,9 +4,7 @@
 #include <gdkmm/surface.h>
 #include <glibmm/main.h>
 #include <gtk4-layer-shell.h>
-#include <gtkmm/cssprovider.h>
 #include <gtkmm/snapshot.h>
-#include <gtkmm/styleprovider.h>
 
 #include <algorithm>
 #include <cmath>
@@ -23,9 +21,6 @@ namespace flowd {
 namespace {
 
 constexpr const char* kNamespace = "flowd-indicator";
-// A transparent window, so only the pill is drawn; the rest of the surface
-// is shadow room and click-through.
-constexpr const char* kWindowCss = "window { background: none; }";
 
 // design.md "Indicator" → Idle / Hover / Warning: overall opacity per look.
 constexpr double kIdleOpacity = 0.35;
@@ -112,18 +107,6 @@ bool expanded(IndicatorLook l) {
     return l != IndicatorLook::Idle && l != IndicatorLook::Warning;
 }
 
-void install_css_once() {
-    static bool done = false;
-    if (done) return;
-    auto display = Gdk::Display::get_default();
-    if (!display) return;
-    done = true;
-    auto css = Gtk::CssProvider::create();
-    css->load_from_string(kWindowCss);
-    Gtk::StyleProvider::add_provider_for_display(display, css,
-                                                 GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-}
-
 graphene_rect_t rect(double x, double y, double w, double h) {
     return GRAPHENE_RECT_INIT(static_cast<float>(x), static_cast<float>(y),
                               static_cast<float>(w), static_cast<float>(h));
@@ -199,7 +182,9 @@ Indicator::Indicator(Backend backend, PositionStore& store, Tokens tokens, bool 
       on_click_(std::move(on_click)),
       on_moved_(std::move(on_moved)),
       canvas_(*this) {
-    install_css_once();
+    // A transparent window, so only the pill is drawn; the rest of the
+    // surface is shadow room and click-through.
+    install_window_css();
     set_decorated(false);
     set_resizable(false);
     set_focusable(false);

@@ -4,6 +4,7 @@
 #include <string>
 #include <variant>
 
+#include "footer.hpp"
 #include "icons.hpp"
 #include "protocol.hpp"
 
@@ -38,6 +39,9 @@ struct Status {
 // A one-line note in text-2 instead of the transcript ("Listening…").
 struct Placeholder {
     std::string text;
+    // "Listening…": italic, with its ellipsis dots appearing in sequence
+    // (design.md "States" 1). Other placeholders are upright and static.
+    bool listening = false;
 };
 // The three streaming zones (design.md "The three text zones").
 struct Zones {
@@ -77,6 +81,10 @@ public:
     // Without a terminal state, fade holds fade_ms and hide exits at once.
     void on_fade(double now);
     void on_hide(double now);
+    // design.md "Warning" → Recording + warning: a degraded-but-working
+    // condition the footer carries while recording. nullopt clears it. Like
+    // meta and config it outlives a session, since it describes the daemon.
+    void on_warn(std::optional<std::string> reason);
     // Fires every timer due at or before now. A non-finite now is ignored.
     void advance(double now);
     // The meter's clipping flag. A rising edge while recording shows the
@@ -97,6 +105,10 @@ public:
     // hold ending, the hint expiring, the elapsed clock ticking over), or
     // nothing when the popup is hidden.
     std::optional<double> next_deadline() const;
+    // What the footer row holds right now (design.md "Preview popup" →
+    // Anatomy and States): mode and app always, the clock and stop hint
+    // only while recording, and a terminal outcome on its own.
+    FooterInput footer(double now) const;
 
 private:
     // Recording until the first Finishing, TimeLimit or terminal state.
@@ -120,6 +132,7 @@ private:
     std::optional<Status> time_limit_;  // kept until the outcome replaces it
     bool clipping_ = false;
     std::optional<double> clip_until_;
+    std::optional<std::string> warning_;
 };
 
 }  // namespace flowd

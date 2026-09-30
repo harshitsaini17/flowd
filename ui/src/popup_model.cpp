@@ -50,6 +50,8 @@ constexpr std::string_view kTimeLimitPrefix = "Time limit reached (";
 constexpr std::string_view kTimeLimitSuffix = ")";
 constexpr std::string_view kCountdownSuffix = " left";
 constexpr std::string_view kPastedIntoPrefix = "Pasted into ";
+// design.md "Preview popup" → Anatomy: "Super D to stop".
+constexpr std::string_view kStopHintSuffix = " to stop";
 
 constexpr std::array kOutcomes = {
     // design.md "States" 4: "Pasted into {app}"; plain "Pasted" when the app
@@ -130,7 +132,7 @@ void PopupModel::on_show(double now) {
     shown_at_ = now;
     exit_at_.reset();
     stopped_at_.reset();
-    content_ = Placeholder{std::string(kListening)};
+    content_ = Placeholder{std::string(kListening), true};
     outcome_.reset();
     terminal_ = false;
     finishing_ = false;
@@ -148,7 +150,7 @@ void PopupModel::on_render(const Render& r) {
     if (const auto* p = std::get_if<Placeholder>(&content_); p != nullptr && p->text != kListening) return;
     if (r.polished.empty() && r.pending.empty() && r.live.empty()) {
         // No words yet: keep listening rather than draw an empty card.
-        if (live()) content_ = Placeholder{std::string(kListening)};
+        if (live()) content_ = Placeholder{std::string(kListening), true};
         return;
     }
     content_ = Zones{r.polished, r.pending, r.live};
@@ -238,6 +240,15 @@ void PopupModel::on_hide(double now) {
     start_exit(now_);
 }
 
+void PopupModel::on_warn(std::optional<std::string> reason) {
+    // An empty reason says nothing, so it clears like null does.
+    if (!reason || reason->empty()) {
+        warning_.reset();
+        return;
+    }
+    warning_ = std::move(*reason);
+}
+
 void PopupModel::advance(double now) {
     if (!std::isfinite(now)) return;
     now_ = std::max(now_, now);
@@ -298,6 +309,10 @@ std::optional<Status> PopupModel::status() const {
     // design.md does not name an icon for the clipping hint; it is a warn-level
     // nudge, so it reuses the warning's triangle.
     if (clip_until_) return Status{Icon::TriangleAlert, Tone::Warn, std::string(kTooLoud)};
+    // The warning is lasting, so a passing clipping hint outranks it and it
+    // returns once the hint expires. Only while recording: afterwards the
+    // outcome says what happened (design.md "Warning").
+    if (warning_ && live()) return Status{Icon::TriangleAlert, Tone::Warn, *warning_};
     return std::nullopt;
 }
 
@@ -317,6 +332,27 @@ std::optional<std::string> PopupModel::countdown(double now) const {
     const double remaining = config_.max_session_s - elapsed_s(now);
     if (remaining > kCountdownS) return std::nullopt;
     return format_clock(remaining) + std::string(kCountdownSuffix);
+}
+
+FooterInput PopupModel::footer(double now) const {
+    FooterInput in;
+    if (phase_ == PopupPhase::Hidden) return in;
+    const std::optional<Status> st = status();
+    if (st) in.status = st->text;
+    // A terminal outcome stands alone (design.md "States" 4-9 list only the
+    // status); without one, the row still names the mode and app.
+    if (terminal_ && st) return in;
+    in.mode = meta_.mode;
+    in.app = meta_.app;
+    if (!live()) return in;
+    // design.md "Recording": the countdown replaces the elapsed time.
+    const auto left = countdown(now);
+    in.elapsed = left ? *left : format_clock(elapsed_s(now));
+    // The label typed in Settings wins; the daemon's meta hotkey is the
+    // fallback. Neither means no hint, never a guessed binding.
+    const std::string& key = config_.hotkey_label.empty() ? meta_.hotkey : config_.hotkey_label;
+    if (!key.empty()) in.hint = key + std::string(kStopHintSuffix);
+    return in;
 }
 
 std::optional<double> PopupModel::next_deadline() const {

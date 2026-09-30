@@ -27,6 +27,7 @@ set(FLOWD_CORE_SOURCES
   src/motion.cpp
   src/indicator_model.cpp
   src/popup_model.cpp
+  src/popup_text.cpp
   src/footer.cpp
   src/theme.cpp
   src/icons.cpp
@@ -50,6 +51,7 @@ set(FLOWD_CORE_TESTS
   tests/test_motion.cpp
   tests/test_indicator_model.cpp
   tests/test_popup_model.cpp
+  tests/test_popup_text.cpp
   tests/test_footer.cpp
   tests/test_theme.cpp
   tests/test_backend.cpp
@@ -76,6 +78,8 @@ set(FLOWD_GTK_LIB_SOURCES
   src/draw.cpp
   src/outputs.cpp
   src/indicator.cpp
+  src/fonts.cpp
+  src/popup.cpp
 )
 add_library(flowd-ui-gtk STATIC ${FLOWD_GTK_LIB_SOURCES})
 target_link_libraries(flowd-ui-gtk PUBLIC flowd-ui-core PkgConfig::FLOWD_GTK)
@@ -102,9 +106,13 @@ set(FLOWD_GTK_TESTS
   # tests that need GTK (e.g. icon path parsing)
   tests/test_icons_parse.cpp
   tests/test_surface.cpp
+  tests/test_popup.cpp
 )
 if(FLOWD_GTK_TESTS)
   add_executable(flowd-ui-gtk-tests tests/main.cpp ${FLOWD_GTK_TESTS})
   target_link_libraries(flowd-ui-gtk-tests PRIVATE flowd-ui-gtk)
+  # The design page's fonts, which the build ships next to the binary.
+  target_compile_definitions(flowd-ui-gtk-tests PRIVATE
+    FLOWD_TEST_FONTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/assets/fonts")
   add_test(NAME gtk COMMAND flowd-ui-gtk-tests)
 endif()

@@ -79,4 +79,15 @@ struct CardRect {
 // card only grows; natural_w is the width the content wants.
 CardRect popup_card(int output_w, double center_x, int lines, bool footer, int prev_w, int natural_w);
 
+// The popup surface's fixed height: the tallest card (max_lines of text and
+// the footer) plus kPopupPad of shadow room above and below. It depends only
+// on config, so the surface never resizes mid-session; the card animates
+// inside it (design.md "Motion" → GTK mapping).
+int popup_surface_h(int max_lines);
+
+// The popup surface's bottom margin: the card's bottom edge sits
+// kCardBottomAboveEdge above the output edge, and kPopupPad of shadow room
+// lies below the card inside the surface.
+constexpr int kPopupSurfaceBottom = kCardBottomAboveEdge - kPopupPad;
+
 }  // namespace flowd
