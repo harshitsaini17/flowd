@@ -10,9 +10,10 @@ import numpy as np
 import pytest
 
 from flowd.audio import MicrophoneStuck
-from flowd.config import Config, Hotkey, Inject
+from flowd.config import Config, Hotkey, Inject, Ui
 from flowd.daemon import Daemon
 from flowd.inject.base import InjectResult
+from flowd.state import Event as MachineEvent
 from flowd.state import State
 from flowd.stt import Committed, Event, FakeSttEngine, Partial
 
@@ -65,27 +66,64 @@ class FakeCapture:
 
 
 class FakeOverlay:
+    """Records what the daemon tells flowd-ui.
+
+    `calls` keeps the show/fade/hide lifecycle alone, so the older assertions
+    on it still read as they did; `events` has every protocol call in order.
+    """
+
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
         self.calls: list[str] = []
+        self.events: list[tuple[Any, ...]] = []
         self.visible = False
         self.stopped = False
         self.started = False
+        self.starts = 0
 
     def start(self) -> None:
         self.started = True
+        self.starts += 1
+
+    def state(self, state: str, reason: str = "") -> None:
+        self.events.append(("state", state, reason))
+
+    def end(self, state: str, reason: str = "", *, fade: bool) -> None:
+        self.state(state, reason)
+        if fade:
+            self.fade()
+        else:
+            self.hide()
+
+    def level(self, rms_db: float, peak_db: float) -> None:
+        self.events.append(("level", rms_db, peak_db))
+
+    def meta(self, mode: str, app: str, hotkey: str) -> None:
+        self.events.append(("meta", mode, app, hotkey))
+
+    def warn(self, reason: str | None, *, blocking: bool = False) -> None:
+        self.events.append(("warn", reason, blocking))
+
+    def configure(self, cfg: Ui, max_session_s: int) -> None:
+        self.events.append(("configure", cfg, max_session_s))
+
+    def states(self) -> list[tuple[str, str]]:
+        return [(e[1], e[2]) for e in self.events if e[0] == "state"]
 
     def show(self) -> None:
         self.visible = True
         self.calls.append("show")
+        self.events.append(("show",))
 
     def hide(self) -> None:
         self.visible = False
         self.calls.append("hide")
+        self.events.append(("hide",))
 
     def fade(self) -> None:
         self.visible = False
         self.calls.append("fade")
+        self.events.append(("fade",))
 
     def render(self, **zones: str) -> None:
         self.messages.append(dict(zones))
@@ -1123,3 +1161,311 @@ async def test_a_second_daemon_never_starts_a_ui(tmp_path: Path) -> None:
     overlay = second.overlay
     assert isinstance(overlay, FakeOverlay)
     assert overlay.started is False
+
+
+# --- flowd-ui protocol (ADR 0013) -------------------------------------------
+
+
+def overlay_of(d: Daemon) -> FakeOverlay:
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    return overlay
+
+
+async def test_a_session_reports_recording_finishing_done() -> None:
+    d = daemon(FakeSttEngine([[Committed("some words here now")]]))
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    overlay = overlay_of(d)
+    assert overlay.states() == [("recording", ""), ("finishing", ""), ("done", "")]
+    # `show` first, since it clears the UI's state; the outcome before the fade.
+    lifecycle = [e[0] for e in overlay.events if e[0] in ("show", "state", "fade", "hide")]
+    assert lifecycle == ["show", "state", "state", "state", "fade"]
+    assert "idle" not in [s for s, _ in overlay.states()]
+
+
+async def test_recording_sends_meta_with_the_app_and_hotkey_label() -> None:
+    from flowd.context import AppContext
+
+    cfg = Config(ui=Ui(hotkey_label="Super D"))
+    d = daemon(FakeSttEngine([]), cfg=cfg)
+    d.context = lambda c: AppContext("kitty", "code", True)
+    await d.handle({"cmd": "start"})
+    assert ("meta", "code", "kitty", "Super D") in overlay_of(d).events
+
+
+async def test_meta_for_an_unknown_app_sends_an_empty_name() -> None:
+    d = daemon(FakeSttEngine([]))
+    await d.handle({"cmd": "start"})
+    assert ("meta", "default", "", "") in overlay_of(d).events
+
+
+async def test_pump_sends_levels_while_recording_only() -> None:
+    capture = FakeCapture([np.zeros(1600, dtype=np.float32) for _ in range(3)])
+    d = daemon(FakeSttEngine([[], [], []]), capture=capture)
+    await d.pump()  # idle: nothing read, nothing sent
+    assert not any(e[0] == "level" for e in overlay_of(d).events)
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    levels = [e for e in overlay_of(d).events if e[0] == "level"]
+    assert levels == [("level", -90.0, -90.0)] * 2  # 100 ms at 16 kHz: two windows
+    await d.handle({"cmd": "stop"})
+    await d.pump()
+    assert len([e for e in overlay_of(d).events if e[0] == "level"]) == 2
+
+
+async def test_levels_to_a_dead_ui_do_not_stop_the_session() -> None:
+    class DeadPipe(FakeOverlay):
+        def level(self, rms_db: float, peak_db: float) -> None:
+            raise BrokenPipeError
+
+    injected: list[str] = []
+    d = daemon(FakeSttEngine([[Committed("still typed")]]), injected=injected)
+    d.overlay = DeadPipe()
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    assert injected == ["Still typed."]
+
+
+async def test_a_ui_that_raises_on_every_call_never_costs_a_dictation() -> None:
+    class Broken(FakeOverlay):
+        def __getattribute__(self, name: str) -> Any:
+            if name in {"show", "state", "meta", "render", "end", "fade", "hide"}:
+                raise RuntimeError("ui gone")
+            return super().__getattribute__(name)
+
+    injected: list[str] = []
+    d = daemon(FakeSttEngine([[Committed("still typed")]]), injected=injected)
+    d.overlay = Broken()
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    reply = await d.handle({"cmd": "stop"})
+    assert reply["ok"] is True
+    assert injected == ["Still typed."]
+
+
+async def test_a_failed_paste_reports_paste_failed() -> None:
+    def failing_inject(text: str, inject_cfg: Inject, **kwargs: Any) -> InjectResult:
+        return InjectResult(ok=False, error="no backend")
+
+    d = daemon(FakeSttEngine([[Committed("kept anyway")]]))
+    d.inject = failing_inject
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    overlay = overlay_of(d)
+    assert overlay.states()[-1] == ("error", "paste_failed")
+    assert overlay.calls[-1] == "fade"
+
+
+async def test_a_lost_mic_reports_mic_lost() -> None:
+    capture = LosableCapture()
+    d = daemon(FakeSttEngine([[Committed("keep what i said")]]), capture)
+    d._notify = lambda message: None  # type: ignore[method-assign]
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    capture.failed = "audio stream ended"
+    await d.pump()
+    await asyncio.gather(*d._background)
+    assert overlay_of(d).states()[-1] == ("error", "mic_lost")
+
+
+async def test_a_lost_mic_with_nothing_heard_reports_mic_lost_empty() -> None:
+    capture = LosableCapture()
+    d = daemon(FakeSttEngine([]), capture)
+    d._notify = lambda message: None  # type: ignore[method-assign]
+    await d.handle({"cmd": "start"})
+    capture.failed = "audio stream ended"
+    await d.pump()
+    await asyncio.gather(*d._background)
+    assert overlay_of(d).states()[-1] == ("error", "mic_lost_empty")
+
+
+async def test_cancel_reports_cancelled_and_still_hides() -> None:
+    d = daemon(FakeSttEngine([[Committed("discard me")]]))
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "cancel"})
+    overlay = overlay_of(d)
+    assert overlay.states()[-1] == ("cancelled", "")
+    assert overlay.events[-2:] == [("state", "cancelled", ""), ("hide",)]
+    assert overlay.calls[-1] == "hide"
+
+
+async def test_a_failing_decode_reports_dictation_failed() -> None:
+    d = daemon(ExplodingSttEngine())
+    d._notify = lambda message: None  # type: ignore[method-assign]
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    assert overlay_of(d).states()[-1] == ("error", "dictation_failed")
+
+
+async def test_a_suspend_reports_cancelled() -> None:
+    from flowd.suspend import SleepDetector
+
+    clocks = {"mono": 0.0, "boot": 0.0}
+    d = daemon(FakeSttEngine([[Committed("before the lid closed")], []]))
+    d.sleep = SleepDetector(monotonic=lambda: clocks["mono"], boottime=lambda: clocks["boot"])
+    await d.handle({"cmd": "start"})
+    clocks["boot"] += 120
+    await d.pump()
+    assert overlay_of(d).states()[-1] == ("cancelled", "")
+
+
+async def test_no_speech_reports_nospeech() -> None:
+    d = daemon(FakeSttEngine([]))
+    await d.handle({"cmd": "start"})
+    await d.handle({"cmd": "stop"})
+    overlay = overlay_of(d)
+    assert overlay.states()[-1] == ("nospeech", "")
+    assert overlay.calls[-1] == "fade"
+
+
+async def test_the_time_limit_reports_timelimit_before_finishing() -> None:
+    cfg = Config(hotkey=Hotkey(debounce_ms=0))
+    clock = Clock(step=0.0)
+    d = daemon(FakeSttEngine([[Committed("ran out of time")]]), cfg=cfg, clock=clock)
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    clock.now += cfg.audio.max_session_s + 1
+    await d._check_max_duration()
+    assert overlay_of(d).states() == [
+        ("recording", ""),
+        ("timelimit", ""),
+        ("finishing", ""),
+        ("done", ""),
+    ]
+
+
+async def test_a_mic_that_will_not_open_warns_and_blocks() -> None:
+    class FlakyCapture(FakeCapture):
+        broken = True
+
+        def start(self) -> None:
+            if self.broken:
+                raise OSError("device busy")
+            super().start()
+
+    capture = FlakyCapture()
+    d = daemon(FakeSttEngine([]), capture=capture)
+    d._notify = lambda message: None  # type: ignore[method-assign]
+    await d.handle({"cmd": "start"})
+    overlay = overlay_of(d)
+    assert overlay.states() == [("error", "mic_unavailable")]
+    assert overlay.calls == ["show", "hide"]
+    assert ("warn", "Microphone unavailable", True) in overlay.events
+
+    capture.broken = False
+    await d.handle({"cmd": "start"})
+    assert overlay.events[-1] != ("warn", "Microphone unavailable", True)
+    assert ("warn", None, False) in overlay.events
+
+
+async def test_reload_pushes_the_new_ui_config(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[ui]\nhotkey_label = "Super D"\n\n[audio]\nmax_session_s = 120\n')
+    d = daemon(FakeSttEngine([]))
+    d.config_file = path
+    d.vocab_file = tmp_path / "vocab.toml"
+    assert (await d.handle({"cmd": "reload"}))["ok"] is True
+    configured = [e for e in overlay_of(d).events if e[0] == "configure"]
+    assert configured == [("configure", d.cfg.ui, d.cfg.audio.max_session_s)]
+    assert d.cfg.ui.hotkey_label == "Super D"
+
+
+async def test_a_bad_reload_leaves_the_ui_config_alone(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[ui]\nmax_lines = 0\n")
+    d = daemon(FakeSttEngine([]))
+    d.config_file = path
+    assert (await d.handle({"cmd": "reload"}))["ok"] is False
+    assert not any(e[0] == "configure" for e in overlay_of(d).events)
+
+
+async def test_a_click_while_finishing_is_ignored() -> None:
+    """design.md "Finishing": a late click must not start a session over an
+    unfinished paste."""
+    d = daemon(FakeSttEngine([[Committed("some words here now")]]))
+    d.loop = asyncio.get_running_loop()
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    d.machine.handle(MachineEvent.STOP)  # finalizing, as while the LLM finishes
+    assert d.machine.state is State.FINALIZING
+    d.on_ui_event({"event": "click"})
+    await asyncio.gather(*d._background)
+    await asyncio.sleep(0)
+    await asyncio.gather(*d._background)
+    assert d.machine.state is State.FINALIZING
+    assert overlay_of(d).calls == ["show"]
+
+
+async def test_a_click_at_idle_starts_a_session() -> None:
+    d = daemon(FakeSttEngine([]))
+    d.loop = asyncio.get_running_loop()
+    d.on_ui_event({"event": "click"})
+    for _ in range(50):
+        if d.machine.state is State.RECORDING:
+            break
+        await asyncio.sleep(0.01)
+    assert d.machine.state is State.RECORDING
+    assert overlay_of(d).states() == [("recording", "")]
+
+
+async def test_a_ui_that_will_not_start_does_not_stop_the_daemon(tmp_path: Path) -> None:
+    class Unstartable(FakeOverlay):
+        def start(self) -> None:
+            super().start()
+            raise OSError("no display")
+
+    d = daemon(FakeSttEngine([]))
+    d.overlay = Unstartable()
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    await asyncio.sleep(0.3)
+    assert not task.done()
+    assert (await d.handle({"cmd": "status"}))["state"] == "idle"
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def test_the_idle_loop_brings_back_a_ui_that_died(tmp_path: Path) -> None:
+    """`start` again from the idle loop; `UiProcess` rate-limits the respawn."""
+    d = daemon(FakeSttEngine([]))
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    await asyncio.sleep(0.5)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert overlay_of(d).starts >= 2
+
+
+async def test_the_idle_loop_does_not_start_the_ui_mid_session(tmp_path: Path) -> None:
+    capture = FakeCapture([np.zeros(1600, dtype=np.float32) for _ in range(50)])
+    d = daemon(FakeSttEngine([[] for _ in range(50)]), capture=capture)
+    await d.handle({"cmd": "start"})
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    await asyncio.sleep(0.05)  # past the one `start` once the socket is up
+    before = overlay_of(d).starts
+    await asyncio.sleep(0.3)
+    after = overlay_of(d).starts
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert before == after == 1
+
+
+@pytest.mark.parametrize(
+    ("reason", "outcome"),
+    [
+        ("cancelled", ("cancelled", "")),
+        ("suspended", ("cancelled", "")),
+        ("fatal error", ("error", "dictation_failed")),
+        ("something new", ("cancelled", "")),
+    ],
+)
+def test_discard_reasons_map_to_the_popup_outcomes(reason: str, outcome: tuple[str, str]) -> None:
+    from flowd.daemon import discard_outcome
+
+    assert discard_outcome(reason) == outcome

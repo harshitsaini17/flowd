@@ -254,7 +254,8 @@ class UiProcess:
     # --- daemon → UI messages ---
 
     def show(self) -> None:
-        """Start a session's preview.
+        """Start a session's preview. Call before `state()` for a new
+        session: it clears the stored state, so a state sent first is lost.
 
         Also the moment to forgive crashes: the user may have fixed whatever
         was wrong, and a daemon that runs for weeks should not stay UI-less

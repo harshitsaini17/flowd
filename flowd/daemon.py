@@ -17,17 +17,18 @@ import numpy as np
 
 from flowd import guardrails
 from flowd.audio import MicrophoneStuck
-from flowd.cleanup import CleanupClient
-from flowd.config import Config, config_path, reload_config, state_dir
+from flowd.cleanup import CleanupClient, CleanupResult
+from flowd.config import Config, Ui, config_path, reload_config, state_dir
 from flowd.context import AppContext
 from flowd.inject import inject_text as real_inject
 from flowd.inject.base import InjectResult
 from flowd.joiner import stitch
+from flowd.levels import LevelWindows
 from flowd.metrics import SessionMetrics, read_records, summarise, write_record
 from flowd.modes import Style, finish, style_for
 from flowd.recordings import SessionRecorder
 from flowd.scheduler import Scheduler
-from flowd.session import Session
+from flowd.session import Chunk, Session
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
 from flowd.suspend import SleepDetector
@@ -50,11 +51,77 @@ class Capture(Protocol):
 
 
 class OverlayLike(Protocol):
+    """What the daemon tells flowd-ui (ADR 0013); `UiProcess` in production."""
+
+    def start(self) -> None: ...
     def show(self) -> None: ...
     def hide(self) -> None: ...
     def fade(self) -> None: ...
     def render(self, **zones: str) -> None: ...
+    def state(self, state: str, reason: str = "") -> None: ...
+    def end(self, state: str, reason: str = "", *, fade: bool) -> None: ...
+    def level(self, rms_db: float, peak_db: float) -> None: ...
+    def meta(self, mode: str, app: str, hotkey: str) -> None: ...
+    def warn(self, reason: str | None, *, blocking: bool = False) -> None: ...
+    def configure(self, cfg: Ui, max_session_s: int) -> None: ...
     def stop(self) -> None: ...
+
+
+#: The indicator's warnings (design.md "Warning"). One slot on the UI side, so
+#: the daemon picks which one shows: the microphone first, since it blocks
+#: dictation, where a down LLM only degrades it.
+WARN_MIC_UNAVAILABLE = "Microphone unavailable"
+WARN_CLEANUP_OFFLINE = "Cleanup offline, pasting as heard"
+
+#: flowd-ui's fallback reasons (ui/src/popup_model.cpp `kOutcomes`), most
+#: severe first. A session's chunks fall back one by one and can do so for
+#: different reasons, but the popup has room for one: it reports the most
+#: severe. A server problem outranks a problem with this text, since it will
+#: hit the next dictation too, and a timeout outranks a guardrail rejection,
+#: which is the model doing its job.
+FALLBACK_SEVERITY = ("offline", "failed", "timeout", "rejected")
+
+#: Cleanup errors that mean the server could not be reached at all.
+_OFFLINE_ERRORS = frozenset({"down", "error: ConnectError", "error: ConnectTimeout"})
+
+#: How a discarded session ends on flowd-ui, by `_discard`'s reason. A
+#: suspend throws the words away just as a cancel does, so it reads the same.
+_DISCARD_OUTCOMES: dict[str, tuple[str, str]] = {
+    "cancelled": ("cancelled", ""),
+    "suspended": ("cancelled", ""),
+    "fatal error": ("error", "dictation_failed"),
+}
+
+
+def discard_outcome(reason: str) -> tuple[str, str]:
+    """flowd-ui's `(state, reason)` for a session `_discard`ed with `reason`."""
+    return _DISCARD_OUTCOMES.get(reason, ("cancelled", ""))
+
+
+def _fallback_reason(result: CleanupResult) -> str:
+    """flowd-ui's reason for one chunk that fell back after `result`.
+
+    A result with text fell back because a guardrail rejected it; one without
+    says why in `error` (flowd/cleanup.py).
+    """
+    if result.text is not None:
+        return "rejected"
+    error = result.error or ""
+    if error in _OFFLINE_ERRORS:
+        return "offline"
+    if error == "timeout":
+        return "timeout"
+    # "too long", "error: no content", a server error: cleanup was reached
+    # and did not help.
+    return "failed"
+
+
+def worst_fallback(reasons: list[str]) -> str | None:
+    """The one reason to show for a session, by `FALLBACK_SEVERITY`."""
+    for reason in FALLBACK_SEVERITY:
+        if reason in reasons:
+            return reason
+    return "failed" if reasons else None
 
 
 async def _no_llm(raw: str, *, context: str, merged: bool, timeout_ms: int) -> str | None:
@@ -133,6 +200,15 @@ class Daemon:
         # Set by `run`, so events from other threads (flowd-ui's reader) can
         # be handed to the loop the daemon lives on.
         self.loop: asyncio.AbstractEventLoop | None = None
+        # The meter's windows for the current session (made in `_begin`).
+        self.levels = LevelWindows(cfg.audio.sample_rate)
+        # Why each of this session's chunks fell back, by the raw text the
+        # scheduler sent, so a chunk later merged away no longer counts.
+        self._fallback_reasons: dict[str, str] = {}
+        # The two warning conditions `_sync_warning` chooses between, and
+        # what it last sent, so a steady condition is not re-sent.
+        self._mic_unavailable = False
+        self._warning: tuple[str | None, bool] = (None, False)
 
     # --- command handling -------------------------------------------------
 
@@ -167,6 +243,8 @@ class Daemon:
             # and change nothing. Every other config value is read live through
             # `self.cfg`; this is the one that has to be pushed.
             self.machine.set_debounce_ms(new_cfg.hotkey.debounce_ms)
+            # Off the loop: turning the UI off stops it, which waits for it.
+            await asyncio.to_thread(self._configure_ui, new_cfg)
             return {"ok": True}
 
         event = {
@@ -211,6 +289,8 @@ class Daemon:
             else AppContext(None, "default", False)
         )
         self.style = style_for(self.app.mode)
+        self._fallback_reasons = {}
+        self.levels = LevelWindows(self.cfg.audio.sample_rate)
         # `started_at` takes the injected clock, not `time.monotonic`: the
         # session's age is compared against `self.clock()` in
         # `_check_max_duration`, and two different time bases there would make
@@ -246,16 +326,29 @@ class Daemon:
             self.session = None
             self.metrics = None
             self.scheduler = None
+            # Shown, not only stated: the popup is how the user learns why the
+            # press did nothing, and it holds the error by itself.
+            self._ui(lambda o: o.show())
+            self._ui(lambda o: o.end("error", "mic_unavailable", fade=False))
+            self._mic_unavailable = True
+            self._sync_warning()
             self._notify(f"flowd: microphone unavailable ({exc})")
             return {"ok": False, "error": str(exc)}
+        if self._mic_unavailable:
+            self._mic_unavailable = False
+            self._sync_warning()
         self.metrics.mark("mic_open")
         self.sleep.arm()
         where = self.cfg.logging.recordings_dir
         self.recorder = (
             SessionRecorder(Path(where).expanduser(), self.cfg.audio.sample_rate) if where else None
         )
-        if self.overlay is not None:
-            self.overlay.show()
+        # `show` first: it starts a new session on the UI, clearing the last
+        # one's state, so a state sent before it would be lost.
+        self._ui(lambda o: o.show())
+        self._ui(lambda o: o.state("recording"))
+        app, hotkey = self.app, self.cfg.ui.hotkey_label
+        self._ui(lambda o: o.meta(app.mode, app.app_id or "", hotkey))
         return {"ok": True, "session": session_id}
 
     def _recording(self) -> bool:
@@ -282,6 +375,9 @@ class Daemon:
         pcm = self.capture.read()
         if self.recorder is not None:
             self.recorder.add(pcm)
+        # Here rather than in the capture callback, which must never wait on
+        # anything; a block costs microseconds (flowd/levels.py).
+        self._send_levels(pcm)
         # Read before feeding what is left, so the last audio the device
         # delivered still reaches the transcript.
         lost = getattr(self.capture, "failed", None)
@@ -367,11 +463,12 @@ class Daemon:
         visible = self.session.visible_chunks()
         polished = " ".join(c.text for c in visible if c.resolved)
         pending = " ".join([c.raw for c in visible if not c.resolved] + self.session.pending_raw)
-        self.overlay.render(
-            polished=polished,
-            pending=pending,
-            live=self.session.live_partial if live is None else live,
-        )
+        zones = {
+            "polished": polished,
+            "pending": pending,
+            "live": self.session.live_partial if live is None else live,
+        }
+        self._ui(lambda o: o.render(**zones))
 
     async def load_startup_vocab(self) -> None:
         """Apply vocab.toml before the first session.
@@ -403,9 +500,13 @@ class Daemon:
         async with self._stt_lock:
             await asyncio.to_thread(set_keyterms, vocab.terms)
 
-    async def _finalize(self, note: str | None = None, rewrite: bool = False) -> dict[str, Any]:
+    async def _finalize(
+        self, note: str | None = None, rewrite: bool = False, *, mic_lost: bool = False
+    ) -> dict[str, Any]:
         """Flush, clean, join and inject. `note` is a status line for the final
         frame — the auto-stop reason, which the user needs beside their text.
+        `mic_lost` ends the session on flowd-ui as a lost microphone rather than
+        as a paste, since the text is only what was heard before the loss.
 
         Painted here rather than by the caller because it has to be the *last*
         render before the fade: the events from `stt.finalize()` each trigger a
@@ -419,6 +520,9 @@ class Daemon:
         # session, so without this one neither delta can be computed at all.
         self.metrics.mark("released")
         self.capture.stop()
+        if note == "time limit":
+            self._ui(lambda o: o.state("timelimit"))
+        self._ui(lambda o: o.state("finishing"))
         # Same worker and same lock as `feed`: `finalize` runs the model over
         # whatever audio is still undecoded (anywhere from ~10 ms to ~850 ms on
         # a Ryzen 5 5600H, growing with backlog and CPU contention)
@@ -440,7 +544,7 @@ class Daemon:
         session, scheduler = self.session, self.scheduler
         assert scheduler is not None
         if not session.pending_raw and not session.chunks:
-            return self._no_speech()
+            return self._no_speech(mic_lost=mic_lost)
         # spec 6.5 steps 3-4: only the last chunk should still need the LLM.
         await scheduler.flush(self.cfg.llm.final_timeout_ms)
         # `cancelled` as well as the identity check: `_discard` cancels the
@@ -460,6 +564,7 @@ class Daemon:
             self.metrics.count("fallbacks", scheduler.abandoned)
             self.metrics.error("llm: deadline")
         visible = session.visible_chunks()
+        fallback = self._session_fallback(visible, abandoned=scheduler.abandoned > 0)
         self.last_raw = " ".join(c.raw for c in visible)
         final = finish(
             stitch([(c.raw, c.text) for c in visible], sentence=self.style.sentence), self.style
@@ -468,7 +573,7 @@ class Daemon:
         if not final:
             # Only fillers ("um, uh"): cleaning left nothing, and injecting an
             # empty string would still paste over the user's selection.
-            return self._no_speech()
+            return self._no_speech(mic_lost=mic_lost)
         rewrite_status: str | None = None
         if rewrite:
             final, rewrite_status = await self._rewrite(final)
@@ -492,7 +597,18 @@ class Daemon:
         if self.recorder is not None:
             self.recorder.save(session.id, self.last_raw, final)
             self.recorder = None
-        self._end_session(text=final, reason=None)
+        if not result.ok:
+            # Checked first: nothing landed, so "pasted what was heard" and
+            # "pasted as heard" would both be false.
+            outcome = ("error", "paste_failed")
+        elif mic_lost:
+            outcome = ("error", "mic_lost")
+        elif fallback is not None:
+            outcome = ("fallback", fallback)
+        else:
+            outcome = ("done", "")
+        self._end_session(text=final, reason=None, outcome=outcome)
+        self._sync_warning()
         if self.cleanup is not None and self.cleanup.down:
             # spec 9.3: once per session, and only after the text is in: the
             # user's words matter more than the news that cleanup is degraded.
@@ -538,7 +654,7 @@ class Daemon:
         metrics.count("rewrite_accepted")
         return finish(result.text, self.style), "accepted"
 
-    def _no_speech(self) -> dict[str, Any]:
+    def _no_speech(self, *, mic_lost: bool = False) -> dict[str, Any]:
         """spec 9.1: no speech at all means inject nothing."""
         self._show_status("No speech")
         self.recorder = None
@@ -551,7 +667,8 @@ class Daemon:
         # `linger` even though there is no text: spec 9.1 asks for "No
         # speech" to stay up for a second, and the default would hide it in
         # the same tick it was rendered.
-        self._end_session(text="", reason="no speech", linger=True)
+        outcome = ("error", "mic_lost_empty") if mic_lost else ("nospeech", "")
+        self._end_session(text="", reason="no speech", linger=True, outcome=outcome)
         return {"ok": True, "reason": "no speech"}
 
     async def _polish(self, raw: str, *, context: str, merged: bool, timeout_ms: int) -> str | None:
@@ -566,6 +683,7 @@ class Daemon:
         metrics = self.metrics
         if self.cleanup is None or metrics is None:
             return None
+        sent = raw  # the scheduler's key for this chunk, before replacements
         raw = apply_replacements(raw, self.vocab.replace)
         result = await self.cleanup.clean(raw, timeout_ms)
         if self.metrics is not metrics:
@@ -575,6 +693,7 @@ class Daemon:
         if result.text is None:
             metrics.count("fallbacks")
             metrics.error(f"llm: {result.error}")
+            self._fallback_reasons[sent] = _fallback_reason(result)
             return None
         failed = guardrails.check(
             raw,
@@ -590,8 +709,32 @@ class Daemon:
             log.info("cleanup output failed guardrail check %d; using fallback", failed)
             metrics.fail(failed)
             metrics.count("fallbacks")
+            self._fallback_reasons[sent] = _fallback_reason(result)
             return None
+        # A chunk polished on a retry (a merge re-sends the same words) is no
+        # longer a fallback.
+        self._fallback_reasons.pop(sent, None)
         return result.text
+
+    def _session_fallback(self, visible: list[Chunk], *, abandoned: bool) -> str | None:
+        """flowd-ui's fallback reason for the finished session, or None.
+
+        Only chunks the LLM was asked for count. A mode without the LLM, a
+        session under `short_bypass_words` and a daemon without a cleanup
+        client all resolve chunks with basic cleanup too, but nothing fell
+        back there, so they report `done`. A fallen-back chunk with no recorded
+        reason was cut off by the release deadline.
+        """
+        reasons: list[str] = []
+        for chunk in visible:
+            if chunk.state != "FALLBACK":
+                continue
+            reason = self._fallback_reasons.get(chunk.raw)
+            if reason is None and abandoned:
+                reason = "timeout"
+            if reason is not None:
+                reasons.append(reason)
+        return worst_fallback(reasons)
 
     async def _device_lost(self, reason: str) -> None:
         """spec 9.2: finalize with the text so far, inject it, then notify.
@@ -604,7 +747,7 @@ class Daemon:
             return
         assert self.metrics is not None
         self.metrics.error(f"audio: {reason}")
-        await self._finalize(note="microphone lost")
+        await self._finalize(note="microphone lost", mic_lost=True)
         self._notify_later(f"flowd: microphone lost ({reason}); kept the text so far")
 
     def _notify_later(self, message: str) -> None:
@@ -676,15 +819,24 @@ class Daemon:
             # clean history of a tool nobody can use. An empty `text` keeps
             # whatever `flowctl last` already held (spec 5.7): cancelling this
             # session does not erase the previous one.
-            self._end_session(text="", reason=reason)
+            self._end_session(text="", reason=reason, outcome=discard_outcome(reason))
             return
         # No metrics to write: the microphone never opened, and `_begin` has
         # already reported and cleared that failure.
-        if self.overlay is not None:
-            self.overlay.hide()
+        state, why = discard_outcome(reason)
+        self._ui(lambda o: o.end(state, why, fade=False))
         self.session = None
 
-    def _end_session(self, text: str, reason: str | None, linger: bool | None = None) -> None:
+    def _end_session(
+        self,
+        text: str,
+        reason: str | None,
+        linger: bool | None = None,
+        *,
+        outcome: tuple[str, str],
+    ) -> None:
+        """Log the session and end it on flowd-ui with `outcome`, its
+        `(state, reason)` from `kOutcomes` in ui/src/popup_model.cpp."""
         assert self.metrics is not None
         if text:
             self.last_text = text
@@ -699,18 +851,19 @@ class Daemon:
                 write_record(self.last_record, path)
             except OSError as exc:
                 log.warning("could not write metrics: %s", exc)
-        if self.overlay is not None:
-            # A successful dictation fades, so the user sees what landed in the
-            # window; one with nothing to show goes at once (spec 6.1).
-            #
-            # `linger` overrides that default for the case where there is no text
-            # but there *is* something to read: spec 9.1 wants "No speech" up for
-            # a second, and inferring the choice from `text` alone hid it, since
-            # the message and the teardown went out in the same tick.
-            if linger if linger is not None else bool(text):
-                self.overlay.fade()
-            else:
-                self.overlay.hide()
+        # A successful dictation fades, so the user sees what landed in the
+        # window; one with nothing to show goes at once (spec 6.1).
+        #
+        # `linger` overrides that default for the case where there is no text
+        # but there *is* something to read: spec 9.1 wants "No speech" up for
+        # a second, and inferring the choice from `text` alone hid it, since
+        # the message and the teardown went out in the same tick.
+        #
+        # `end` sends the state before the fade or hide: flowd-ui holds an
+        # outcome only if it knows it before the popup is told to go.
+        fade = linger if linger is not None else bool(text)
+        state, why = outcome
+        self._ui(lambda o: o.end(state, why, fade=fade))
         self.session = None
         self.metrics = None
         self.scheduler = None
@@ -718,8 +871,57 @@ class Daemon:
     # --- helpers ----------------------------------------------------------
 
     def _show_status(self, message: str) -> None:
-        if self.overlay is not None:
-            self.overlay.render(polished="", pending="", live=message)
+        self._ui(lambda o: o.render(polished="", pending="", live=message))
+
+    def _ui(self, send: Callable[[OverlayLike], None]) -> None:
+        """Tell flowd-ui something, if there is one. A UI failure never costs
+        a dictation (ADR 0003), so nothing it raises reaches the session.
+
+        At debug: `UiProcess` does not raise, and a fake or a broken pipe that
+        does would otherwise log once per level frame, 20 times a second.
+        """
+        if self.overlay is None:
+            return
+        try:
+            send(self.overlay)
+        except Exception:
+            log.debug("message to flowd-ui failed", exc_info=True)
+
+    def _send_levels(self, pcm: np.ndarray) -> None:
+        """The meter's frames for one block. Direct rather than through `_ui`,
+        as it runs 20 times a second; `UiProcess.level` drops frames while the
+        UI is down or behind, so this never waits on it."""
+        overlay = self.overlay
+        if overlay is None:
+            return
+        try:
+            for rms_db, peak_db in self.levels.feed(pcm):
+                overlay.level(rms_db, peak_db)
+        except Exception:
+            log.debug("level to flowd-ui failed", exc_info=True)
+
+    def _configure_ui(self, cfg: Config) -> None:
+        """Push a reloaded `[ui]`. Blocking when it turns the UI off."""
+        if self.overlay is None:
+            return
+        try:
+            self.overlay.configure(cfg.ui, cfg.audio.max_session_s)
+        except Exception:
+            log.exception("could not apply the new [ui] settings to flowd-ui")
+
+    def _sync_warning(self) -> None:
+        """Show whichever warning applies now, or clear it (design.md "Warning")."""
+        if self._mic_unavailable:
+            warning: tuple[str | None, bool] = (WARN_MIC_UNAVAILABLE, True)
+        elif self.cleanup is not None and self.cleanup.down:
+            warning = (WARN_CLEANUP_OFFLINE, False)
+        else:
+            warning = (None, False)
+        if warning == self._warning:
+            return
+        self._warning = warning
+        reason, blocking = warning
+        self._ui(lambda o: o.warn(reason, blocking=blocking))
 
     def _notify(self, message: str) -> None:
         """Desktop notification; failure to notify is never fatal."""
@@ -740,13 +942,17 @@ class Daemon:
         try:
             # Only once the socket is ours: a second flowd that loses the
             # single-instance check must not flash a second indicator.
-            start_ui = getattr(self.overlay, "start", None)
-            if start_ui is not None:
-                start_ui()
+            self._start_ui()
+            self._sync_warning()
             while True:
                 await self.pump()
                 await self._check_max_duration()
                 self._exit_if_microphone_stuck()
+                if self.session is None:
+                    # Brings back an indicator that died at idle. Cheap: a
+                    # poll of the child, and `UiProcess` keeps its own
+                    # respawn backoff.
+                    self._start_ui()
                 await asyncio.sleep(block_s if self.session is not None else 0.2)
         finally:
             if health is not None:
@@ -761,7 +967,19 @@ class Daemon:
             # closes, but only once it notices; telling it to quit means the
             # daemon does not leave a stale preview over the user's work.
             if self.overlay is not None:
-                self.overlay.stop()
+                try:
+                    self.overlay.stop()
+                except Exception:
+                    log.exception("could not stop flowd-ui")
+
+    def _start_ui(self) -> None:
+        if self.overlay is None:
+            return
+        try:
+            self.overlay.start()
+        except Exception:
+            # A UI failure never costs a dictation (ADR 0003).
+            log.exception("could not start flowd-ui")
 
     def on_ui_event(self, event: dict[str, Any]) -> None:
         """An event from flowd-ui (ADR 0013). Called on its reader thread, so
@@ -824,6 +1042,9 @@ class Daemon:
                 except Exception:
                     # A dead loop leaves a down client down for good.
                     log.exception("cleanup health probe failed")
+            # Every pass, mid-session too: requests during a dictation can
+            # mark the client down, and the popup footer should say so.
+            self._sync_warning()
             await asyncio.sleep(self.cfg.llm.health_interval_s)
 
     async def _check_max_duration(self) -> None:

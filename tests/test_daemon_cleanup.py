@@ -1,10 +1,13 @@
 """The cleanup pass inside a dictation (spec 5.5, 7.4, 9.3)."""
 
 import asyncio
+import contextlib
 from dataclasses import replace
 from typing import Any
 
 import httpx
+import numpy as np
+import pytest
 
 from flowd.cleanup import CleanupClient, CleanupResult
 from flowd.config import Config, Inject, Llm
@@ -325,3 +328,217 @@ async def test_the_app_is_read_once_at_start() -> None:
     await dictate(d)
     assert d._context_calls == [1]  # type: ignore[attr-defined]
     assert d.last_record["mode"] == "email"
+
+
+# --- what flowd-ui is told about the cleanup pass ---------------------------
+
+
+class ScriptedCleanup(FakeCleanup):
+    """Answers each `clean` call with the next `(text, error)` in turn."""
+
+    def __init__(self, answers: list[tuple[str | None, str | None]]) -> None:
+        super().__init__()
+        self.answers = answers
+
+    async def clean(self, raw: str, timeout_ms: int) -> CleanupResult:
+        self.calls.append((raw, timeout_ms))
+        text, error = self.answers.pop(0)
+        # Echo the input for an accepted answer, so the guardrails pass it.
+        return CleanupResult(raw if text == "echo" else text, error)
+
+
+def ui_states(d: Daemon) -> list[tuple[str, str]]:
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    return overlay.states()
+
+
+async def test_an_accepted_polish_reports_done() -> None:
+    d = make(LONG_RAW, FakeCleanup(), [])
+    await dictate(d)
+    assert ui_states(d)[-1] == ("done", "")
+
+
+async def test_a_short_session_reports_done_not_fallback() -> None:
+    """Under `short_bypass_words` nothing fell back; the LLM was never asked."""
+    d = make("um ship it", FakeCleanup(), [])
+    await dictate(d)
+    assert ui_states(d)[-1] == ("done", "")
+
+
+async def test_a_session_without_cleanup_reports_done() -> None:
+    d = make(LONG_RAW, None, [])
+    await dictate(d)
+    assert ui_states(d)[-1] == ("done", "")
+
+
+async def test_a_cleanup_timeout_reports_fallback_timeout() -> None:
+    d = make(LONG_RAW, FakeCleanup(text=None, error="timeout"), [])
+    await dictate(d)
+    assert ui_states(d)[-1] == ("fallback", "timeout")
+
+
+async def test_a_guardrail_rejection_reports_fallback_rejected() -> None:
+    cleanup = FakeCleanup(text="The ocean whispers secrets to the patient moon tonight.")
+    d = make(LONG_RAW, cleanup, [])
+    await dictate(d)
+    assert ui_states(d)[-1] == ("fallback", "rejected")
+
+
+async def test_a_down_llm_reports_fallback_offline() -> None:
+    cleanup = FakeCleanup(text=None, error="down")
+    cleanup.down = True
+    d = make(LONG_RAW, cleanup, [])
+    d._notify = lambda message: None  # type: ignore[method-assign]
+    await dictate(d)
+    assert ui_states(d)[-1] == ("fallback", "offline")
+
+
+async def test_a_model_that_never_answers_reports_fallback_timeout() -> None:
+    """The release deadline abandons the chunk, which records no reason."""
+    cleanup = FakeCleanup()
+    cleanup.gate = asyncio.Event()
+    cfg = replace(Config(), llm=replace(Llm(), final_timeout_ms=50))
+    d = make(LONG_RAW, cleanup, [], cfg=cfg)
+    await dictate(d)
+    assert ui_states(d)[-1] == ("fallback", "timeout")
+
+
+async def test_mixed_chunk_fallbacks_report_the_most_severe() -> None:
+    """One chunk rejected, the next timed out: the session says timed out."""
+    first, second = "we should ship the release on friday", "and then tell the whole team"
+    cleanup = ScriptedCleanup([("Totally unrelated words about the sea.", None), (None, "timeout")])
+    d = Daemon(
+        cfg=Config(),
+        stt=FakeSttEngine([[Committed(first)], [Committed(second)]]),
+        capture=FakeCapture([np.zeros(1600, dtype=np.float32)] * 2),
+        overlay=FakeOverlay(),
+        injector=lambda text, cfg, **kw: InjectResult(ok=True, backend="fake"),
+        clock=Clock(),
+        write_metrics=False,
+        cleanup=cleanup,
+    )
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await asyncio.sleep(0)
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    assert len(cleanup.calls) == 2
+    assert ui_states(d)[-1] == ("fallback", "timeout")
+
+
+async def test_one_polished_chunk_and_one_fallback_still_reports_the_fallback() -> None:
+    first, second = "we should ship the release on friday", "and then tell the whole team"
+    cleanup = ScriptedCleanup([("echo", None), (None, "error: HTTPStatusError")])
+    d = Daemon(
+        cfg=Config(),
+        stt=FakeSttEngine([[Committed(first)], [Committed(second)]]),
+        capture=FakeCapture([np.zeros(1600, dtype=np.float32)] * 2),
+        overlay=FakeOverlay(),
+        injector=lambda text, cfg, **kw: InjectResult(ok=True, backend="fake"),
+        clock=Clock(),
+        write_metrics=False,
+        cleanup=cleanup,
+    )
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await asyncio.sleep(0)
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    assert ui_states(d)[-1] == ("fallback", "failed")
+
+
+async def test_fallback_reasons_start_empty_for_each_session() -> None:
+    cleanup = ScriptedCleanup([(None, "timeout"), ("echo", None)])
+    d = make(LONG_RAW, cleanup, [])
+    await dictate(d)
+    d.stt = FakeSttEngine([[Committed(LONG_RAW)]])
+    await dictate(d)
+    assert ui_states(d)[-1] == ("done", "")
+
+
+def warnings(d: Daemon) -> list[tuple[Any, ...]]:
+    overlay = d.overlay
+    assert isinstance(overlay, FakeOverlay)
+    return [e for e in overlay.events if e[0] == "warn"]
+
+
+async def test_cleanup_going_down_and_up_sets_and_clears_the_warning() -> None:
+    cleanup = FakeCleanup()
+    d = make(LONG_RAW, cleanup, [], cfg=Config(llm=Llm(health_interval_s=1)))
+    cleanup.down = True
+    task = asyncio.create_task(d._health_loop())
+    await asyncio.sleep(0)
+    assert warnings(d) == [("warn", "Cleanup offline, pasting as heard", False)]
+    cleanup.down = False
+    await asyncio.sleep(1.05)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert warnings(d) == [
+        ("warn", "Cleanup offline, pasting as heard", False),
+        ("warn", None, False),
+    ]
+
+
+async def test_a_steady_warning_is_sent_once() -> None:
+    cleanup = FakeCleanup()
+    cleanup.down = True
+    d = make(LONG_RAW, cleanup, [], cfg=Config(llm=Llm(health_interval_s=1)))
+    d._sync_warning()
+    d._sync_warning()
+    assert len(warnings(d)) == 1
+
+
+async def test_cleanup_going_down_mid_session_warns_after_the_paste() -> None:
+    client = CleanupClient(
+        Llm(down_after_failures=1),
+        transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ConnectError("no"))),
+    )
+    d = make(LONG_RAW, client, [])
+    d._notify = lambda message: None  # type: ignore[method-assign]
+    await dictate(d)
+    assert ui_states(d)[-1] == ("fallback", "offline")
+    assert warnings(d) == [("warn", "Cleanup offline, pasting as heard", False)]
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("result", "reason"),
+    [
+        (CleanupResult(None, "down"), "offline"),
+        (CleanupResult(None, "error: ConnectError"), "offline"),
+        (CleanupResult(None, "error: ConnectTimeout"), "offline"),
+        (CleanupResult(None, "timeout"), "timeout"),
+        (CleanupResult(None, "too long"), "failed"),
+        (CleanupResult(None, "error: no content"), "failed"),
+        (CleanupResult(None, "error: HTTPStatusError"), "failed"),
+        (CleanupResult(None, "error: RuntimeError"), "failed"),
+        (CleanupResult(None, None), "failed"),
+        # Text came back, so it fell back on a guardrail.
+        (CleanupResult("Anything at all.", None), "rejected"),
+    ],
+)
+def test_cleanup_results_map_to_the_popup_fallback_reasons(
+    result: CleanupResult, reason: str
+) -> None:
+    from flowd.daemon import _fallback_reason
+
+    assert _fallback_reason(result) == reason
+
+
+@pytest.mark.parametrize(
+    ("reasons", "shown"),
+    [
+        ([], None),
+        (["rejected"], "rejected"),
+        (["rejected", "timeout"], "timeout"),
+        (["timeout", "failed"], "failed"),
+        (["rejected", "offline", "timeout"], "offline"),
+        (["something new"], "failed"),
+    ],
+)
+def test_a_session_reports_its_most_severe_fallback(reasons: list[str], shown: str | None) -> None:
+    from flowd.daemon import worst_fallback
+
+    assert worst_fallback(reasons) == shown
