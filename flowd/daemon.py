@@ -611,7 +611,13 @@ class Daemon:
             outcome = ("done", "")
         self._end_session(text=final, reason=None, outcome=outcome)
         self._sync_warning()
-        if self.cleanup is not None and self.cleanup.down:
+        if self.cfg.ui.notify_on_finish:
+            # design.md Appearance: for people who don't watch the popup.
+            # Errors already notify on their own paths.
+            words = len(final.split())
+            what = "pasted" if result.ok else "could not paste"
+            self._notify_later(f"flowd: {what} {words} word{'s' if words != 1 else ''}")
+        if self._llm_active() and self.cleanup is not None and self.cleanup.down:
             # spec 9.3: once per session, and only after the text is in: the
             # user's words matter more than the news that cleanup is degraded.
             #
@@ -622,6 +628,15 @@ class Daemon:
         if rewrite_status is not None:
             reply["rewrite"] = rewrite_status
         return reply
+
+    def _llm_active(self) -> bool:
+        """Whether cleanup requests should go out at all.
+
+        True only when a client is wired up and `[llm] enabled` (spec 8.1) is
+        still true. Checked instead of `self.cleanup is None` everywhere a
+        reload could have flipped the config live.
+        """
+        return self.cleanup is not None and self.cfg.llm.enabled
 
     async def _rewrite(self, joined: str) -> tuple[str, str]:
         """spec 6.6: one more LLM pass over the whole joined text.
@@ -634,11 +649,12 @@ class Daemon:
         metrics = self.metrics
         assert metrics is not None
         if (
-            self.cleanup is None
+            not self._llm_active()
             or not self.style.use_llm
             or len(joined.split()) > REWRITE_MAX_WORDS
         ):
             return joined, "skipped"
+        assert self.cleanup is not None
         # The recording-time budget, not `final_timeout_ms`: the user asked for
         # this pass and its latency grows with length, which is why it is
         # opt-in (spec 6.6).
@@ -699,8 +715,9 @@ class Daemon:
         guardrails only, as known words for check 3 and repeats for check 6.
         """
         metrics = self.metrics
-        if self.cleanup is None or metrics is None:
+        if not self._llm_active() or metrics is None:
             return None
+        assert self.cleanup is not None
         raw = apply_replacements(raw, self.vocab.replace)
         result = await self.cleanup.clean(raw, timeout_ms)
         if self.metrics is not metrics:
@@ -937,7 +954,7 @@ class Daemon:
         """Show whichever warning applies now, or clear it (design.md "Warning")."""
         if self._mic_unavailable:
             warning: tuple[str | None, bool] = (WARN_MIC_UNAVAILABLE, True)
-        elif self.cleanup is not None and self.cleanup.down:
+        elif self._llm_active() and self.cleanup is not None and self.cleanup.down:
             warning = (WARN_CLEANUP_OFFLINE, False)
         else:
             warning = (None, False)
@@ -1061,7 +1078,8 @@ class Daemon:
         dictation for the server's single slot.
         """
         while True:
-            if self.cleanup is not None and self.session is None:
+            if self._llm_active() and self.session is None:
+                assert self.cleanup is not None
                 try:
                     await self.cleanup.check_health()
                 except Exception:

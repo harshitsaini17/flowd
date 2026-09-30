@@ -108,6 +108,28 @@ async def test_the_final_frame_shows_the_polished_text() -> None:
     assert overlay.messages[-1]["pending"] == ""
 
 
+async def test_llm_disabled_pastes_rule_based_text_without_calling_the_llm() -> None:
+    injected: list[str] = []
+    cleanup = FakeCleanup()
+    cfg = replace(Config(), llm=replace(Llm(), enabled=False))
+    d = make(LONG_RAW, cleanup, injected, cfg=cfg)
+    await dictate(d)
+    assert injected == [FALLBACK]
+    assert cleanup.calls == []
+
+
+async def test_llm_disabled_skips_health_probes() -> None:
+    cleanup = FakeCleanup()
+    cfg = replace(Config(), llm=replace(Llm(), enabled=False, health_interval_s=1))
+    d = make(LONG_RAW, cleanup, [], cfg=cfg)
+    task = asyncio.create_task(d._health_loop())
+    await asyncio.sleep(0)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert cleanup.health_checks == 0
+
+
 async def test_a_short_session_skips_the_llm() -> None:
     """spec 9.1: under `short_bypass_words`, basic_clean alone, no fallback."""
     injected: list[str] = []

@@ -3,6 +3,7 @@ import contextlib
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -1469,3 +1470,26 @@ def test_discard_reasons_map_to_the_popup_outcomes(reason: str, outcome: tuple[s
     from flowd.daemon import discard_outcome
 
     assert discard_outcome(reason) == outcome
+
+
+async def test_notify_on_finish_sends_one_notification(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = replace(Config(), ui=replace(Ui(), notify_on_finish=True))
+    d = daemon(FakeSttEngine([[Committed("ship it")]]), cfg=cfg)
+    sent: list[str] = []
+    monkeypatch.setattr(d, "_notify", sent.append)
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    await asyncio.gather(*d._background)
+    assert sent == ["flowd: pasted 2 words"]
+
+
+async def test_notify_on_finish_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    d = daemon(FakeSttEngine([[Committed("ship it")]]))
+    sent: list[str] = []
+    monkeypatch.setattr(d, "_notify", sent.append)
+    await d.handle({"cmd": "start"})
+    await d.pump()
+    await d.handle({"cmd": "stop"})
+    await asyncio.gather(*d._background)
+    assert sent == []
