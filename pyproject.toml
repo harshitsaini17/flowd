@@ -51,9 +51,6 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 # our own source 3.11-compatible.
 strict = true
 warn_unreachable = true
-# The overlay runs on the system interpreter with pacman's PyGObject and is
-# deliberately outside the venv, so its imports are not resolvable here.
-exclude = "^overlay/"
 
 [[tool.mypy.overrides]]
 # Neither ships a py.typed marker, so neither has types to check against.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure idle memory and CPU against spec 10.1.
 
-Sums anonymous memory (ADR 0006) and RSS over flowd, its overlay and
+Sums anonymous memory (ADR 0006) and RSS over flowd, flowd-ui and
 llama-server, then samples their CPU time for `--seconds` (spec 10.1: 60 s).
 With `--soak HOURS` it repeats the check every `--every` minutes and reports
 growth and PID changes, which is the 24 h leak and restart check. Also verifies
@@ -34,7 +34,7 @@ PW_DUMP_TIMEOUT_S = 10.0  # stops a hung PipeWire from hanging the check
 #: line merely mentions flowd.
 PATTERNS = {
     "flowd": ("python", "/bin/flowd"),
-    "overlay": ("python", "flowd_overlay.py"),
+    "flowd-ui": ("flowd-ui", ""),
     "llama-server": ("llama-server", ""),
 }
 

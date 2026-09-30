@@ -14,7 +14,7 @@ def isolated_xdg(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.M
     and `flowctl stats` counted them as dictation.
 
     `XDG_RUNTIME_DIR` is left alone: Wayland clients find the compositor's
-    socket through it, so moving it disconnects the overlay tests. It lives
+    socket through it, so moving it disconnects any test that talks to one. It lives
     under /run/user, not the home directory, so nothing persists there.
     """
     root = tmp_path_factory.mktemp("xdg")

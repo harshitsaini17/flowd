@@ -1,7 +1,7 @@
 [Unit]
 Description=flowd dictation daemon
 Documentation=https://github.com/harshitsaini17/flowd
-# flowd types into windows and draws an overlay, so it belongs to the graphical
+# flowd types into windows and runs flowd-ui, so it belongs to the graphical
 # session. Tying it to graphical-session.target starts it after login and stops
 # it at logout, when the display it injects into goes away.
 PartOf=graphical-session.target
@@ -23,9 +23,10 @@ RestartSec=2
 # Exit 2 is a model hash mismatch, which a restart cannot fix. Stay stopped so
 # the error stays at the top of `systemctl --user status flowd`.
 RestartPreventExitStatus=2
-# The daemon needs the compositor's environment to inject text and show the
-# overlay. Most compositors import it into the user manager at login. If yours
-# does not, run this once per session before starting flowd:
+# The daemon needs the compositor's environment to inject text and to start
+# flowd-ui, the indicator and preview popup. Most compositors import it into
+# the user manager at login. If yours does not, run this once per session
+# before starting flowd:
 #   systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP
 
 [Install]
