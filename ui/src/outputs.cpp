@@ -5,7 +5,9 @@
 #include <gio/gio.h>
 
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -16,6 +18,7 @@
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "output_events.hpp"
@@ -36,6 +39,10 @@ constexpr std::size_t kReadChunk = 4096;
 constexpr std::size_t kMaxLine = 64 * 1024;
 // A query answer (all monitors as JSON) stays far below this.
 constexpr std::size_t kMaxQueryReply = 1 << 20;
+// Queries run on the main loop, so a stuck compositor must not freeze the
+// indicator: each send or receive gives up after this long.
+constexpr int kQueryTimeoutMs = 200;
+constexpr int kUsPerMs = 1000;
 
 void log_error(const std::string& msg) { std::cerr << kLogPrefix << msg << '\n'; }
 
@@ -75,15 +82,26 @@ int connect_unix(const std::string& path) {
 // One Hyprland request: write it, read the whole reply. Blocking, but it is
 // a local socket answered at once, and only asked at start and on focus
 // changes, never per frame.
+bool set_timeouts(int fd) {
+    timeval tv{};
+    tv.tv_sec = kQueryTimeoutMs / 1000;
+    tv.tv_usec = (kQueryTimeoutMs % 1000) * kUsPerMs;
+    return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0 &&
+           setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
+}
+
 std::optional<std::string> hypr_query(const std::string& socket_path, std::string_view request) {
     const int fd = connect_unix(socket_path);
     if (fd < 0) return std::nullopt;
     std::optional<std::string> reply;
-    if (write(fd, request.data(), request.size()) == static_cast<ssize_t>(request.size())) {
+    // MSG_NOSIGNAL: a compositor that hung up must not kill us with SIGPIPE.
+    if (set_timeouts(fd) &&
+        send(fd, request.data(), request.size(), MSG_NOSIGNAL) ==
+            static_cast<ssize_t>(request.size())) {
         std::string out;
         std::array<char, kReadChunk> buf{};
         for (;;) {
-            const ssize_t n = read(fd, buf.data(), buf.size());
+            const ssize_t n = recv(fd, buf.data(), buf.size(), 0);
             if (n < 0 && errno == EINTR) continue;
             if (n <= 0) break;
             out.append(buf.data(), static_cast<std::size_t>(n));
@@ -102,19 +120,24 @@ bool set_nonblocking(int fd) {
 
 }  // namespace
 
-OutputTracker::OutputTracker(Callbacks cb) : cb_(std::move(cb)) {}
+OutputTracker::OutputTracker(Callbacks cb) : cb_(std::move(cb)) { shared_->self = this; }
 
-OutputTracker::~OutputTracker() { stop(); }
+OutputTracker::~OutputTracker() {
+    stop();
+    shared_->alive = false;
+    shared_->self = nullptr;
+}
 
 void OutputTracker::stop() {
     io_.disconnect();
     if (fd_ >= 0) close(fd_);
     fd_ = -1;
-    if (sway_pid_ > 0) {
-        // The child watch reaps it; swaymsg dies on SIGTERM or on the closed pipe.
+    if (sway_pid_ > 0 && !shared_->exited) {
+        // The child watch reaps it; swaymsg dies on SIGTERM or on the closed
+        // pipe. Once it has exited its pid may be reused, so it is left alone.
         kill(sway_pid_, SIGTERM);
-        sway_pid_ = 0;
     }
+    sway_pid_ = 0;
 }
 
 void OutputTracker::fail(const std::string& why) {
@@ -136,8 +159,9 @@ void OutputTracker::report_output(const std::string& name) {
 }
 
 void OutputTracker::report_fullscreen(bool fs) {
-    if (failed_ || last_fullscreen_ == int(fs)) return;
-    last_fullscreen_ = int(fs);
+    const int v = static_cast<int>(fs);
+    if (failed_ || last_fullscreen_ == v) return;
+    last_fullscreen_ = v;
     if (cb_.on_fullscreen) cb_.on_fullscreen(fs);
 }
 
@@ -216,19 +240,59 @@ bool OutputTracker::on_hypr_readable(Glib::IOCondition cond) {
 
 // ---- Sway -------------------------------------------------------------------
 
-bool OutputTracker::start_sway() {
-    // The focused output right away; later changes come from the subscription.
-    try {
-        std::string out;
-        int status = 0;
-        Glib::spawn_sync("", std::vector<std::string>{"swaymsg", "-r", "-t", "get_outputs"},
-                         Glib::SpawnFlags::SEARCH_PATH | Glib::SpawnFlags::STDERR_TO_DEV_NULL,
-                         {}, &out, nullptr, &status);
-        if (const auto name = focused_output_from_json(out)) report_output(*name);
-    } catch (const Glib::Error& e) {
-        fail("swaymsg get_outputs failed: " + std::string(e.what()));
-        return false;
+namespace {
+
+// One async swaymsg query in flight: the subprocess and where its reply goes.
+struct SwayQuery {
+    std::function<void(std::string)> deliver;  // a no-op once the tracker is gone
+};
+
+void on_sway_query_done(GObject* source, GAsyncResult* res, gpointer data) {
+    std::unique_ptr<SwayQuery> q(static_cast<SwayQuery*>(data));
+    char* out = nullptr;
+    GError* err = nullptr;
+    const bool ok = g_subprocess_communicate_utf8_finish(G_SUBPROCESS(source), res, &out, nullptr,
+                                                         &err);
+    std::string reply = ok && out ? out : "";
+    g_free(out);
+    if (err) g_error_free(err);
+    g_object_unref(source);
+    // A failed query leaves the last known state; the next event asks again.
+    if (ok) q->deliver(std::move(reply));
+}
+
+}  // namespace
+
+void OutputTracker::sway_query(const char* type,
+                               std::function<void(OutputTracker&, std::string)> on_reply) {
+    const char* argv[] = {"swaymsg", "-r", "-t", type, nullptr};
+    GError* err = nullptr;
+    GSubprocess* proc = g_subprocess_newv(
+        argv, static_cast<GSubprocessFlags>(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+                                            G_SUBPROCESS_FLAGS_STDERR_SILENCE),
+        &err);
+    if (!proc) {
+        const std::string why = err ? err->message : "unknown error";
+        if (err) g_error_free(err);
+        fail(std::string("cannot run swaymsg ") + type + ": " + why);
+        return;
     }
+    std::weak_ptr<Shared> weak = shared_;
+    auto* q = new SwayQuery{[weak, on_reply](std::string reply) {
+        const auto sh = weak.lock();
+        if (sh && sh->alive && sh->self) on_reply(*sh->self, std::move(reply));
+    }};
+    g_subprocess_communicate_utf8_async(proc, nullptr, nullptr, on_sway_query_done, q);
+}
+
+bool OutputTracker::start_sway() {
+    // The focused output as soon as swaymsg answers; later changes come from
+    // the subscription. Asynchronous, so a slow Sway never blocks startup.
+    sway_query("get_outputs", [](OutputTracker& t, std::string out) {
+        if (const auto name = focused_output_from_json(out)) t.report_output(*name);
+    });
+    recheck_sway_fullscreen();
+    if (failed_) return false;
 
     int out_fd = -1;
     Glib::Pid pid{};
@@ -245,8 +309,16 @@ bool OutputTracker::start_sway() {
         return false;
     }
     sway_pid_ = pid;
-    // Reaps the child whenever it exits, so it never lingers as a zombie.
-    g_child_watch_add(pid, [](GPid p, gint, gpointer) { g_spawn_close_pid(p); }, nullptr);
+    // Reaps the child whenever it exits, so it never lingers as a zombie, and
+    // records that it did, so stop() never signals a reused pid.
+    g_child_watch_add_full(
+        G_PRIORITY_DEFAULT, pid,
+        [](GPid p, gint, gpointer data) {
+            static_cast<std::shared_ptr<Shared>*>(data)->get()->exited = true;
+            g_spawn_close_pid(p);
+        },
+        new std::shared_ptr<Shared>(shared_),
+        [](gpointer data) { delete static_cast<std::shared_ptr<Shared>*>(data); });
     fd_ = out_fd;
     if (!set_nonblocking(fd_)) {
         fail(std::string("cannot make the swaymsg pipe non-blocking: ") + std::strerror(errno));
@@ -258,30 +330,45 @@ bool OutputTracker::start_sway() {
     return true;
 }
 
+void OutputTracker::recheck_sway_fullscreen() {
+    // One get_tree at a time; requests meanwhile collapse into one more.
+    if (sway_tree_busy_) {
+        sway_tree_again_ = true;
+        return;
+    }
+    sway_tree_busy_ = true;
+    sway_query("get_tree", [](OutputTracker& t, std::string tree) {
+        t.sway_tree_busy_ = false;
+        if (const auto fs = fullscreen_from_sway_tree(tree)) t.report_fullscreen(*fs);
+        if (std::exchange(t.sway_tree_again_, false)) t.recheck_sway_fullscreen();
+    });
+}
+
+void OutputTracker::handle_sway_event(std::string_view obj) {
+    const auto e = parse_sway_event(obj);
+    if (!e) return;
+    if (e->focused_output) report_output(*e->focused_output);
+    if (e->fullscreen) report_fullscreen(*e->fullscreen);
+    if (e->recheck_fullscreen) recheck_sway_fullscreen();
+}
+
 bool OutputTracker::on_sway_readable(Glib::IOCondition cond) {
     std::array<char, kReadChunk> buf{};
     for (;;) {
         const ssize_t n = read(fd_, buf.data(), buf.size());
         if (n > 0) {
             sway_split_.feed(std::string_view(buf.data(), static_cast<std::size_t>(n)),
-                       [this](std::string_view obj) {
-                           const auto e = parse_sway_event(obj);
-                           if (!e) return;
-                           if (e->focused_output) report_output(*e->focused_output);
-                           if (e->fullscreen) report_fullscreen(*e->fullscreen);
-                       });
+                             [this](std::string_view obj) { handle_sway_event(obj); });
             if (failed_) return false;
             continue;
         }
         if (n < 0 && errno == EINTR) continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
-        sway_pid_ = 0;  // it exited; the child watch reaps it
         fail(n == 0 ? "swaymsg exited" : std::string("reading swaymsg: ") + std::strerror(errno));
         return false;
     }
     if ((cond & (Glib::IOCondition::IO_HUP | Glib::IOCondition::IO_ERR)) !=
         Glib::IOCondition{}) {
-        sway_pid_ = 0;
         fail("swaymsg hung up");
         return false;
     }

@@ -233,7 +233,14 @@ Indicator::Indicator(Backend backend, PositionStore& store, Tokens tokens, bool 
     drag_->signal_drag_update().connect(sigc::mem_fun(*this, &Indicator::on_drag_update));
     drag_->signal_drag_end().connect(sigc::mem_fun(*this, &Indicator::on_drag_end));
     drag_->signal_cancel().connect([this](Gdk::EventSequence*) {
+        // The compositor took the grab: no click, and the pill goes back to
+        // where the press found it.
         cancelled_ = true;
+        if (dragging_) {
+            center_x_ = anchor_.press_center();
+            position_dirty_ = false;
+            apply_position();
+        }
         end_drag();
     });
     canvas_.add_controller(drag_);
@@ -253,11 +260,18 @@ Indicator::Indicator(Backend backend, PositionStore& store, Tokens tokens, bool 
 }
 
 Indicator::~Indicator() {
-    tracker_.reset();
-    if (tick_id_) canvas_.remove_tick_callback(tick_id_);
+    // First, before any member goes: unmapping synthesizes crossing events,
+    // and a controller or timer reaching this half-destroyed window would
+    // touch freed members or re-arm a timer that captures this.
+    canvas_.remove_controller(motion_);
+    canvas_.remove_controller(drag_);
     deadline_.disconnect();
     monitor_switch_.disconnect();
     monitor_gone_.disconnect();
+    reduced_meter_.disconnect();
+    if (tick_id_) canvas_.remove_tick_callback(tick_id_);
+    tick_id_ = 0;
+    tracker_.reset();
     for (PangoLayout* l : {dictate_layout_, move_layout_, warn_layout_})
         if (l) g_object_unref(l);
 }
@@ -279,7 +293,7 @@ bool Indicator::start() {
     if (!monitor_) use_monitor(first_monitor(get_display()));
 
     started_ = true;
-    if (!fullscreen_hidden_) show_now();
+    update_visibility();
     return !why_not_;
 }
 
@@ -302,8 +316,12 @@ void Indicator::show_now() {
 
 void Indicator::set_fullscreen_hidden(bool hidden) {
     fullscreen_hidden_ = hidden;
+    update_visibility();
+}
+
+void Indicator::update_visibility() {
     if (!started_) return;
-    if (hidden) {
+    if (fullscreen_hidden_ || config_hidden_) {
         set_visible(false);
     } else if (!get_visible()) {
         show_now();
@@ -337,7 +355,11 @@ void Indicator::on_warn(Warn w) {
     refresh();
 }
 
-void Indicator::on_config(UiConfig c) { config_ = std::move(c); }
+void Indicator::on_config(UiConfig c) {
+    // design.md "Indicator" → Idle: hidden entirely when [ui] indicator = false.
+    config_hidden_ = !c.indicator;
+    update_visibility();
+}
 
 void Indicator::set_tokens(Tokens t) {
     tokens_ = t;
@@ -347,6 +369,34 @@ void Indicator::set_tokens(Tokens t) {
 void Indicator::set_reduced_motion(bool reduced) {
     reduced_ = reduced;
     refresh();
+}
+
+void Indicator::update_reduced_meter() {
+    const bool needed = reduced_ && look_ == IndicatorLook::Recording;
+    if (!needed) {
+        reduced_meter_.disconnect();
+        return;
+    }
+    if (reduced_meter_.connected()) return;
+    last_meter_draw_s_ = now_s();
+    reduced_meter_ = Glib::signal_timeout().connect(
+        sigc::mem_fun(*this, &Indicator::on_reduced_meter),
+        static_cast<unsigned>(kReducedMeterPeriodS * kMsPerS));
+}
+
+bool Indicator::on_reduced_meter() {
+    // design.md "Reduced motion": the single bar updates at 10 Hz, so a timer
+    // replaces the per-frame tick while recording.
+    const double now = now_s();
+    meter_.tick(now - last_meter_draw_s_);
+    last_meter_draw_s_ = now;
+    if (meter_.clipping() != clipping_) {
+        clipping_ = meter_.clipping();
+        if (on_clipping_) on_clipping_(clipping_);
+    }
+    reduced_fill_ = meter_.single_fill();
+    canvas_.queue_draw();
+    return true;
 }
 
 void Indicator::set_output(const Glib::RefPtr<Gdk::Monitor>& monitor) {
@@ -417,17 +467,17 @@ void Indicator::on_drag_begin(double x, double y) {
     moved_ = dragging_ = cancelled_ = false;
     press_x_ = x;
     press_y_ = y;
-    press_center_ = center_x_;
-    press_left_ = surface_left();
+    anchor_.begin(center_x_, surface_left());
+    position_dirty_ = false;
     snap_point_.reset();
 }
 
 void Indicator::on_drag_update(double dx, double dy) {
     if (!pressed_) return;
     // The gesture reports offsets in surface coordinates, and the surface
-    // itself moves while dragging, so its own movement is added back to get
-    // the pointer's movement on the output.
-    const double out_dx = dx + (surface_left() - press_left_);
+    // itself moves while dragging; DragAnchor adds back only the movement the
+    // pointer events already see.
+    const double out_dx = anchor_.output_dx(dx);
     if (!moved_ && is_drag(out_dx, dy)) {
         moved_ = true;
         model_.drag_begin();
@@ -435,10 +485,13 @@ void Indicator::on_drag_update(double dx, double dy) {
         refresh();
     }
     if (!dragging_) return;
-    const Snap snap = snap_center(press_center_ + out_dx, output_width());
+    const Snap snap = snap_center(anchor_.center_for(dx), output_width());
     center_x_ = snap.x;
     snap_point_ = snap.point;
-    apply_position();
+    // Applied in on_tick, at most once per frame, together with the frame
+    // that draws it.
+    position_dirty_ = true;
+    ensure_tick();
     canvas_.queue_draw();
 }
 
@@ -448,6 +501,7 @@ void Indicator::on_drag_end(double dx, double dy) {
     const bool dragged = dragging_;
     end_drag();
     if (dragged) {
+        if (std::exchange(position_dirty_, false)) apply_position();
         const std::string out = output_name();
         const double f = to_fraction(center_x_, output_width());
         store_.set(out, f);
@@ -500,7 +554,9 @@ void Indicator::refresh() {
     if (expanded(l)) content_look_ = l;
     look_ = l;
     update_targets(now);
+    narrow_if_done(now);
     apply_input_region();
+    update_reduced_meter();
     if (pointer_) update_cursor(pointer_->first, pointer_->second);
     schedule_deadline();
     ensure_tick();
@@ -576,7 +632,9 @@ void Indicator::update_targets(double now) {
         aim(kAnimRing, kNone, kFast, kStandard, now);
 
     aim(kAnimGrip, model_.show_grip() ? kFull : kNone, kFast, kStandard, now);
-    aim(kAnimScale, l == IndicatorLook::Dragging ? kDragScale : kFull, kFast, kStandard, now);
+    // design.md "Reduced motion": no lift while dragging.
+    aim(kAnimScale, l == IndicatorLook::Dragging && !reduced_ ? kDragScale : kFull, kFast,
+        kStandard, now);
     // design.md "Warning": the dot fades out over 160 ms when it clears.
     aim(kAnimWarnDot, warn && !open ? kFull : kNone, kBase, kStandard, now);
 }
@@ -606,6 +664,16 @@ void Indicator::apply_position() {
     }
 }
 
+void Indicator::narrow_if_done(double now) {
+    // Only once the wide pill has collapsed, so it is never clipped; with
+    // reduced motion the size jumps and this happens at once.
+    if (!wide_ || look_ == IndicatorLook::WarningHover || tl_[kAnimW].running(now)) return;
+    wide_ = false;
+    canvas_.queue_resize();
+    apply_position();
+    apply_input_region();
+}
+
 // ---- time -------------------------------------------------------------------
 
 void Indicator::schedule_deadline() {
@@ -625,7 +693,9 @@ void Indicator::schedule_deadline() {
 
 bool Indicator::needs_tick(double now) const {
     if (tl_.any_running(now) || any_delayed()) return true;
-    if (look_ == IndicatorLook::Recording) return true;  // the meter and ring breath
+    if (dragging_) return true;  // margins follow the pointer once per frame
+    // The meter and ring breath; reduced motion uses a 10 Hz timer instead.
+    if (look_ == IndicatorLook::Recording && !reduced_) return true;
     if (look_ == IndicatorLook::Finishing && !reduced_) return true;  // spinner, dots
     return false;
 }
@@ -643,32 +713,31 @@ bool Indicator::on_tick(const Glib::RefPtr<Gdk::FrameClock>&) {
 
     bool redraw = fire_delayed(now) || tl_.any_running(now);
 
-    if (look_ == IndicatorLook::Recording || look_ == IndicatorLook::Finishing) {
+    if (dragging_) {
+        // A new frame has started, so the one carrying the last margin has
+        // been shown and pointer events are relative to it from here on.
+        anchor_.presented();
+        if (std::exchange(position_dirty_, false)) {
+            apply_position();
+            anchor_.committed(surface_left());
+            redraw = true;
+        }
+    }
+
+    if (!reduced_ && (look_ == IndicatorLook::Recording || look_ == IndicatorLook::Finishing)) {
         meter_.tick(dt);
         if (meter_.clipping() != clipping_) {
             clipping_ = meter_.clipping();
             if (on_clipping_) on_clipping_(clipping_);
         }
-        if (!reduced_) {
-            redraw = true;
-        } else if (now - last_meter_draw_s_ >= kReducedMeterPeriodS) {
-            last_meter_draw_s_ = now;
-            reduced_fill_ = meter_.single_fill();
-            redraw = true;
-        }
+        redraw = true;
     }
 
     // The warning pill's region follows its width while it animates.
     if (model_.input_region() == InputRegion::WarnPill && tl_[kAnimW].running(now))
         apply_input_region();
 
-    // Narrow the surface only once the wide pill has collapsed.
-    if (wide_ && look_ != IndicatorLook::WarningHover && !tl_[kAnimW].running(now)) {
-        wide_ = false;
-        canvas_.queue_resize();
-        apply_position();
-        apply_input_region();
-    }
+    narrow_if_done(now);
 
     if (redraw) canvas_.queue_draw();
     if (needs_tick(now)) return true;

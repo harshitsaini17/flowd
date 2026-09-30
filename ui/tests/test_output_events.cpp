@@ -36,6 +36,7 @@ TEST_CASE("output events: Sway workspace focus and window fullscreen") {
     auto ws = parse_sway_event(R"({"change":"focus","current":{"output":"HDMI-A-1"},"old":{}})");
     REQUIRE(ws);
     CHECK(ws->focused_output == "HDMI-A-1");
+    CHECK(ws->recheck_fullscreen);
 
     auto fs = parse_sway_event(R"({"change":"fullscreen_mode","container":{"fullscreen_mode":1}})");
     REQUIRE(fs);
@@ -47,6 +48,46 @@ TEST_CASE("output events: Sway workspace focus and window fullscreen") {
     CHECK_FALSE(parse_sway_event(R"({"change":"init","current":{"output":"X"}})"));
     CHECK_FALSE(parse_sway_event("not json"));
     CHECK_FALSE(parse_sway_event("[]"));
+}
+
+TEST_CASE("output events: focus moving elsewhere asks for a recheck") {
+    for (const char* line : {"closewindow>>55d1a2b0", "activewindowv2>>55d1a2b0", "workspace>>3"}) {
+        auto e = parse_hypr_line(line);
+        REQUIRE(e);
+        CHECK(e->recheck_fullscreen);
+        CHECK_FALSE(e->fullscreen);
+    }
+    auto close = parse_sway_event(R"({"change":"close","container":{"fullscreen_mode":1}})");
+    REQUIRE(close);
+    CHECK(close->recheck_fullscreen);
+    // The closing window's own mode says nothing about what is left.
+    CHECK_FALSE(close->fullscreen);
+    auto ws = parse_sway_event(R"({"change":"focus","current":{"type":"workspace"}})");
+    REQUIRE(ws);
+    CHECK(ws->recheck_fullscreen);
+    CHECK_FALSE(ws->focused_output);
+}
+
+TEST_CASE("output events: Sway tree fullscreen follows the focused node") {
+    // A focused fullscreen window.
+    CHECK(fullscreen_from_sway_tree(R"({"nodes":[{"type":"output","nodes":[{"type":"workspace",
+        "nodes":[{"focused":true,"fullscreen_mode":1}]}]}]})") == true);
+    // A focused window inside a fullscreen container.
+    CHECK(fullscreen_from_sway_tree(R"({"nodes":[{"fullscreen_mode":1,
+        "nodes":[{"focused":true,"fullscreen_mode":0}]}]})") == true);
+    // A fullscreen window elsewhere, the focused one tiled.
+    CHECK(fullscreen_from_sway_tree(R"({"nodes":[{"nodes":[{"fullscreen_mode":1}]},
+        {"nodes":[{"focused":true,"fullscreen_mode":0}]}]})") == false);
+    // An empty workspace is focused itself.
+    CHECK(fullscreen_from_sway_tree(R"({"nodes":[{"type":"workspace","focused":true,"nodes":[]}]})") ==
+          false);
+    // Nothing focused at all.
+    CHECK(fullscreen_from_sway_tree(R"({"nodes":[]})") == false);
+    // Floating windows count too.
+    CHECK(fullscreen_from_sway_tree(R"({"floating_nodes":[{"focused":true,"fullscreen_mode":2}]})") ==
+          true);
+    CHECK_FALSE(fullscreen_from_sway_tree("not json"));
+    CHECK_FALSE(fullscreen_from_sway_tree("[]"));
 }
 
 TEST_CASE("output events: startup queries") {

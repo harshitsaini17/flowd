@@ -5,6 +5,7 @@
 #include <glibmm/main.h>
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -40,6 +41,11 @@ private:
     bool on_sway_readable(Glib::IOCondition cond);
     void handle_hypr_line(std::string_view line);
     void recheck_hypr_fullscreen();
+    void handle_sway_event(std::string_view json);
+    void recheck_sway_fullscreen();
+    // Runs `swaymsg -r -t <type>` without blocking and hands its stdout to
+    // on_reply on the main loop, unless this tracker has gone by then.
+    void sway_query(const char* type, std::function<void(OutputTracker&, std::string)> on_reply);
     void report_output(const std::string& name);
     void report_fullscreen(bool fs);
     void fail(const std::string& why);
@@ -49,6 +55,17 @@ private:
     std::string hypr_query_path_;
     int fd_ = -1;              // socket2 on Hyprland, swaymsg's stdout on Sway
     int sway_pid_ = 0;         // the swaymsg child, reaped by a child watch
+    // Shared with the child watch and async queries, which may outlive this
+    // tracker: `exited` keeps stop() from signalling a reused pid, `alive`
+    // turns late query replies into no-ops.
+    struct Shared {
+        bool exited = false;
+        bool alive = true;
+        OutputTracker* self = nullptr;
+    };
+    std::shared_ptr<Shared> shared_ = std::make_shared<Shared>();
+    bool sway_tree_busy_ = false;     // a get_tree query is in flight
+    bool sway_tree_again_ = false;    // and another was asked for meanwhile
     sigc::connection io_;
     std::string line_buf_;     // Hyprland: bytes after the last newline
     JsonObjectSplitter sway_split_;  // Sway: swaymsg's event stream

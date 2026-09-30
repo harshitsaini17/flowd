@@ -62,3 +62,44 @@ TEST_CASE("indicator geometry: input regions per model region") {
     CHECK(warn->w == doctest::Approx(300));
     CHECK(warn->x == doctest::Approx(30));
 }
+
+TEST_CASE("indicator geometry: a drag reads events against the presented surface") {
+    DragAnchor a;
+    a.begin(960, 888);
+    // Before any margin change, the offset is the pointer's movement.
+    CHECK(a.center_for(30) == doctest::Approx(990));
+    // A margin of 918 is committed but not yet shown: events in flight are
+    // still relative to 888, so the same offset means the same place.
+    a.committed(918);
+    CHECK(a.center_for(30) == doctest::Approx(990));
+    // Once presented, events are relative to 918; the pointer at the same
+    // output x now reads as offset 0.
+    a.presented();
+    CHECK(a.baseline() == 918);
+    CHECK(a.center_for(0) == doctest::Approx(990));
+    CHECK(a.output_dx(0) == doctest::Approx(30));
+    // Presenting again without a new commit changes nothing.
+    a.presented();
+    CHECK(a.center_for(0) == doctest::Approx(990));
+    CHECK(a.press_center() == doctest::Approx(960));
+}
+
+TEST_CASE("indicator geometry: steady pointer motion never runs ahead") {
+    // The pointer moves 10 px per frame. Each frame commits the margin for
+    // the latest event and the previous commit is presented. The pill centre
+    // must track the pointer, not accelerate away from it.
+    DragAnchor a;
+    const double press_center = 500;
+    const int press_left = 428;
+    a.begin(press_center, press_left);
+    int presented_left = press_left;
+    for (int frame = 1; frame <= 50; ++frame) {
+        const double pointer_dx = 10.0 * frame;  // on the output
+        const double event_dx = pointer_dx - (presented_left - press_left);
+        const double cx = a.center_for(event_dx);
+        CHECK(cx == doctest::Approx(press_center + pointer_dx));
+        a.presented();
+        presented_left = a.baseline();
+        a.committed(static_cast<int>(cx) - 72);
+    }
+}

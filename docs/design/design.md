@@ -571,7 +571,8 @@ Density is "comfortable": card padding 20–24, row padding 20 × 24, section ga
 - Hit area: the idle line is 8 px tall but its input region is a **120 × 20 px**
   invisible strip centered on it (`Gdk.Surface.set_input_region`). That makes
   it hoverable without pixel hunting while staying small visually. The surface
-  itself is sized 140 × 48 so the expansion has room without a resize. Everything
+  itself is sized 144 × 54 (the 120 × 36 pill plus 12 px of shadow room on
+  each side) so the expansion has room without a resize. Everything
   outside the input region is click-through.
 - Horizontal position is stored as a fraction of output width (0–1, default
   0.5) in `$XDG_STATE_HOME/flowd/indicator.json`, so it survives resolution
@@ -703,7 +704,7 @@ delays the user. Every duration here is under 200 ms except fades that happen
 
 **GTK mapping.** GTK4 CSS transitions cover opacity, color, `min-width` and
 `min-height` on the inner widget. Size changes of the indicator animate the
-*inner* pill inside a fixed-size surface (140 × 48), so the compositor never
+*inner* pill inside a fixed-size surface (144 × 54), so the compositor never
 has to resize the layer surface mid-animation. The level meter is drawn in a
 `Gtk.DrawingArea` driven by `add_tick_callback`, not CSS.
 
@@ -768,7 +769,7 @@ Every state is carried by at least two channels. Color is never the only one.
 
 ### Indicator
 
-A layer-shell surface (namespace `flowd-indicator`, 140 × 48 px fixed, input
+A layer-shell surface (namespace `flowd-indicator`, 144 × 54 px fixed, input
 region varies by state) holding one inner pill that changes size. It never
 takes keyboard focus. Every interaction is pointer-only; the keyboard path is
 the global hotkey.
@@ -853,8 +854,9 @@ A degraded-but-working condition. It overlays whichever base state is current.
   opacity rises from 0.35 → 0.55, so the marker is readable on busy wallpaper.
   Shape (dot) plus position is the non-color cue.
 - **Hover + warning:** the expanded pill widens to fit a one-line reason (max
-  **360 px**, ellipsized with the full text in the tooltip). This is the one
-  state where the layer surface grows: it's resized to 380 × 48 *before* the
+  **360 px**, ellipsized; a surface that never takes focus offers no
+  tooltip, so the full reason is not shown there). This is the one
+  state where the layer surface grows: it's resized to 384 × 54 *before* the
   pill animates wider and shrunk back after it collapses, so the pill is never
   clipped by its own surface: `triangle-alert`
   14 px in `warn`, then the reason in `label` `text`, e.g.

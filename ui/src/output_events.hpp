@@ -13,23 +13,32 @@ namespace flowd {
 struct OutputEvent {
     std::optional<std::string> focused_output;  // a connector name, e.g. "eDP-1"
     std::optional<bool> fullscreen;
-    // Focus moved to another workspace or output, which Hyprland does not
-    // follow with a fullscreen>> line; the caller asks again.
+    // Focus moved (another workspace, output or window, or the focused window
+    // closed), which neither compositor follows with a fullscreen event; the
+    // caller asks again.
     bool recheck_fullscreen = false;
 };
 
 // One line from Hyprland's .socket2.sock: "focusedmon>>NAME,WORKSPACE",
-// "fullscreen>>0|1" or "workspace>>NAME". Anything else is nothing.
+// "fullscreen>>0|1", or a focus change that needs a recheck ("workspace>>",
+// "closewindow>>", "activewindowv2>>"). Anything else is nothing.
 std::optional<OutputEvent> parse_hypr_line(std::string_view line);
 
 // One compact JSON event from `swaymsg -r -m -t subscribe '["window","workspace"]'`:
-// a workspace "focus" names its output; a window "focus" or
-// "fullscreen_mode" says whether that window is fullscreen.
+// a workspace "focus" names its output and asks for a recheck, since the
+// new workspace may hold a fullscreen window or nothing at all; a window
+// "focus" or "fullscreen_mode" says whether that window is fullscreen; a
+// window "close" asks for a recheck, since focus may land nowhere.
 std::optional<OutputEvent> parse_sway_event(std::string_view json);
 
 // The focused output's name from `hyprctl -j monitors` or `swaymsg -r -t
 // get_outputs` (both are arrays of objects with "name" and "focused").
 std::optional<std::string> focused_output_from_json(std::string_view json);
+
+// Whether the focused node in `swaymsg -r -t get_tree` is fullscreen, or sits
+// inside a fullscreen container. Nothing focused (an empty workspace) is
+// false; nothing only for a reply that is not a tree.
+std::optional<bool> fullscreen_from_sway_tree(std::string_view json);
 
 // Whether `hyprctl -j activewindow` reports a fullscreen window.
 std::optional<bool> fullscreen_from_hypr_activewindow(std::string_view json);

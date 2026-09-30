@@ -12,6 +12,10 @@ constexpr std::string_view kHyprSep = ">>";
 constexpr std::string_view kFocusedMon = "focusedmon";
 constexpr std::string_view kFullscreen = "fullscreen";
 constexpr std::string_view kWorkspace = "workspace";
+constexpr std::string_view kCloseWindow = "closewindow";
+constexpr std::string_view kActiveWindowV2 = "activewindowv2";
+// get_tree nests at most a few dozen levels; deeper is not a real tree.
+constexpr int kMaxTreeDepth = 256;
 
 // Parses without throwing: a bad line from the compositor is just ignored.
 std::optional<json> parse(std::string_view text) {
@@ -41,7 +45,8 @@ std::optional<OutputEvent> parse_hypr_line(std::string_view line) {
         if (mon.empty()) return std::nullopt;
         return OutputEvent{std::string(mon), std::nullopt, true};
     }
-    if (name == kWorkspace) return OutputEvent{std::nullopt, std::nullopt, true};
+    if (name == kWorkspace || name == kCloseWindow || name == kActiveWindowV2)
+        return OutputEvent{std::nullopt, std::nullopt, true};
     if (name == kFullscreen) {
         if (data == "1") return OutputEvent{std::nullopt, true, false};
         if (data == "0") return OutputEvent{std::nullopt, false, false};
@@ -58,10 +63,10 @@ std::optional<OutputEvent> parse_sway_event(std::string_view text) {
     // Workspace events carry "current"; window events carry "container".
     if (const auto cur = j->find("current"); cur != j->end()) {
         if (*change != "focus") return std::nullopt;
-        if (auto out = string_at(*cur, "output")) return OutputEvent{std::move(out), std::nullopt, false};
-        return std::nullopt;
+        return OutputEvent{string_at(*cur, "output"), std::nullopt, true};
     }
     if (const auto con = j->find("container"); con != j->end()) {
+        if (*change == "close") return OutputEvent{std::nullopt, std::nullopt, true};
         if (*change != "focus" && *change != "fullscreen_mode") return std::nullopt;
         if (!con->is_object()) return std::nullopt;
         const auto mode = con->find("fullscreen_mode");
@@ -81,6 +86,43 @@ std::optional<std::string> focused_output_from_json(std::string_view text) {
         if (f != mon.end() && f->is_boolean() && f->get<bool>()) return string_at(mon, "name");
     }
     return std::nullopt;
+}
+
+namespace {
+
+bool node_fullscreen(const json& node) {
+    const auto m = node.find("fullscreen_mode");
+    return m != node.end() && m->is_number_integer() && m->get<int>() != 0;
+}
+
+// Searches node's subtree for the focused node. Returns whether one was
+// found; fs becomes true when it or any container above it is fullscreen.
+bool find_focused(const json& node, bool inside_fs, int depth, bool& fs) {
+    if (!node.is_object() || depth > kMaxTreeDepth) return false;
+    inside_fs = inside_fs || node_fullscreen(node);
+    const auto f = node.find("focused");
+    if (f != node.end() && f->is_boolean() && f->get<bool>()) {
+        fs = inside_fs;
+        return true;
+    }
+    for (const char* key : {"nodes", "floating_nodes"}) {
+        const auto kids = node.find(key);
+        if (kids == node.end() || !kids->is_array()) continue;
+        for (const auto& kid : *kids)
+            if (find_focused(kid, inside_fs, depth + 1, fs)) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+std::optional<bool> fullscreen_from_sway_tree(std::string_view text) {
+    const auto j = parse(text);
+    if (!j || !j->is_object()) return std::nullopt;
+    bool fs = false;
+    // An empty workspace is itself the focused node, not fullscreen.
+    if (!find_focused(*j, false, 0, fs)) return false;
+    return fs;
 }
 
 std::optional<bool> fullscreen_from_hypr_activewindow(std::string_view text) {

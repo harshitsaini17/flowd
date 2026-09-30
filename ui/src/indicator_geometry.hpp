@@ -57,4 +57,36 @@ double warn_pill_w(double text_w, bool blocking);
 // surface's padding (set_input_region adds the pad back). Nothing for Empty.
 std::optional<PillRect> input_rect(InputRegion region, double pill_w, double pill_cx_in_surface);
 
+// Where a drag puts the pill. Pointer events arrive relative to the surface
+// as it was placed when the compositor generated them, and a margin change
+// takes effect only when the frame carrying it lands. Moving the surface by
+// the requested margin at once would read in-flight events against the wrong
+// origin and make the pill race ahead of the pointer, so the origin used for
+// events (the baseline) advances only once the frame with the new margin has
+// been presented.
+class DragAnchor {
+public:
+    // A press at surface-relative offsets, with the pill centred on center_x
+    // and the surface's left edge at surface_left on the output.
+    void begin(double center_x, int surface_left);
+    // The pill centre for a drag offset dx (the gesture's, in surface
+    // coordinates), before snapping.
+    double center_for(double dx) const;
+    // The pointer's movement on the output for a drag offset dx.
+    double output_dx(double dx) const;
+    // A frame carrying surface_left has been committed.
+    void committed(int surface_left);
+    // The next frame has started, so the committed one was presented: events
+    // from now on are relative to it.
+    void presented();
+    int baseline() const { return baseline_; }
+    double press_center() const { return press_center_; }
+
+private:
+    double press_center_ = 0.0;
+    int press_left_ = 0;
+    int baseline_ = 0;
+    std::optional<int> committed_;
+};
+
 }  // namespace flowd

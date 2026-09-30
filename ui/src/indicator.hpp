@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "backend.hpp"
+#include "indicator_geometry.hpp"
 #include "indicator_model.hpp"
 #include "meter.hpp"
 #include "motion.hpp"
@@ -113,6 +114,13 @@ private:
     void rebuild_warn_layout();
     void use_monitor(const Glib::RefPtr<Gdk::Monitor>& monitor);
     void set_fullscreen_hidden(bool hidden);
+    // Shows or hides for the config and fullscreen state together.
+    void update_visibility();
+    // Returns the surface to its narrow width once the wide pill has collapsed.
+    void narrow_if_done(double now);
+    // Runs the reduced-motion meter on a 10 Hz timer while recording.
+    void update_reduced_meter();
+    bool on_reduced_meter();
     void show_now();
     int output_width() const;
     std::string output_name() const;
@@ -143,7 +151,6 @@ private:
     ClickFn on_click_;
     MovedFn on_moved_;
     std::function<void(bool)> on_clipping_;
-    UiConfig config_;
 
     IndicatorCanvas canvas_;
     Glib::RefPtr<Gtk::EventControllerMotion> motion_;
@@ -173,6 +180,7 @@ private:
     bool clipping_ = false;
     bool started_ = false;
     bool fullscreen_hidden_ = false;
+    bool config_hidden_ = false;  // [ui] indicator = false
     std::optional<std::string> why_not_;
 
     Glib::RefPtr<Gdk::Monitor> monitor_;
@@ -187,8 +195,8 @@ private:
     bool dragging_ = false;
     bool cancelled_ = false;  // the compositor took the grab: no click
     double press_x_ = 0.0, press_y_ = 0.0;
-    double press_center_ = 0.0;
-    int press_left_ = 0;
+    DragAnchor anchor_;
+    bool position_dirty_ = false;  // a drag moved the pill; apply on the next frame
     std::optional<double> snap_point_;
     // The pointer's last position over the surface, so the cursor can follow
     // look changes that happen without motion.
@@ -196,9 +204,10 @@ private:
 
     guint tick_id_ = 0;
     double last_tick_s_ = 0.0;
-    double last_meter_draw_s_ = 0.0;
+    double last_meter_draw_s_ = 0.0;  // the reduced-motion meter timer's last run
     double reduced_fill_ = 0.0;  // the single bar's level, sampled at 10 Hz
     sigc::connection deadline_;
+    sigc::connection reduced_meter_;
 
     PangoLayout* dictate_layout_ = nullptr;
     PangoLayout* move_layout_ = nullptr;

@@ -60,4 +60,21 @@ std::optional<PillRect> input_rect(InputRegion region, double pill_w, double pil
     return std::nullopt;
 }
 
+void DragAnchor::begin(double center_x, int surface_left) {
+    press_center_ = center_x;
+    press_left_ = baseline_ = surface_left;
+    committed_.reset();
+}
+
+double DragAnchor::output_dx(double dx) const { return dx + (baseline_ - press_left_); }
+
+double DragAnchor::center_for(double dx) const { return press_center_ + output_dx(dx); }
+
+void DragAnchor::committed(int surface_left) { committed_ = surface_left; }
+
+void DragAnchor::presented() {
+    if (committed_) baseline_ = *committed_;
+    committed_.reset();
+}
+
 }  // namespace flowd
