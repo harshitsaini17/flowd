@@ -77,7 +77,7 @@ TEST_CASE("popup: lays out, wraps, scrolls and draws without a compositor") {
     CHECK(p->model().phase() == PopupPhase::Hidden);
     CHECK_FALSE(draws_something(*p, now_s()));
 
-    p->on_show();
+    p->on_show_msg();
     CHECK(p->model().phase() == PopupPhase::Entering);
     CHECK(p->card().w >= kPopupMinW);
     CHECK(p->text_lines() == 1);
@@ -106,7 +106,7 @@ TEST_CASE("popup: lays out, wraps, scrolls and draws without a compositor") {
     p->on_state({UiState::Cancelled, ""});
     CHECK(draws_something(*p, now_s() + 1.0));
 
-    p->on_hide();
+    p->on_hide_msg();
     delete p;
 }
 
@@ -116,7 +116,7 @@ TEST_CASE("popup: the card never shrinks within a session") {
         return;
     }
     auto* p = new Popup(Backend::Unsupported, tokens(false, false), true);
-    p->on_show();
+    p->on_show_msg();
     p->on_render(
         {"a considerably longer sentence than the minimum card holds on one line", "", ""});
     const int wide = p->card().w;

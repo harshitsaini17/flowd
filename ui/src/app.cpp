@@ -314,7 +314,7 @@ void App::dispatch(const Message& m) {
                     popup_->set_output(indicator_->monitor());
                     popup_->set_anchor_x(indicator_->center_x());
                 }
-                popup_->on_show();
+                popup_->on_show_msg();
             } else if constexpr (std::is_same_v<T, Render>) {
                 if (!popup_) return;
                 if (indicator_) popup_->set_anchor_x(indicator_->center_x());
@@ -322,7 +322,7 @@ void App::dispatch(const Message& m) {
             } else if constexpr (std::is_same_v<T, Fade>) {
                 if (popup_) popup_->on_fade();
             } else if constexpr (std::is_same_v<T, Hide>) {
-                if (popup_) popup_->on_hide();
+                if (popup_) popup_->on_hide_msg();
             } else if constexpr (std::is_same_v<T, Quit>) {
                 log(LogLevel::Info, "quit received");
                 quit(kExitOk);

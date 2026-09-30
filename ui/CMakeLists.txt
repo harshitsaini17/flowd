@@ -12,7 +12,9 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 # CI has no GTK 4.22 or layer-shell; the core is everything worth unit-testing.
 option(FLOWD_UI_CORE_ONLY "Build only the GTK-free core library and its tests" OFF)
 
-add_compile_options(-Wall -Wextra -Wpedantic)
+# suggest-override: a missing override on a gtkmm virtual (on_show, on_hide)
+# silently replaces the base handler, and the window never maps.
+add_compile_options(-Wall -Wextra -Wpedantic -Werror=suggest-override)
 
 include(CheckIPOSupported)
 check_ipo_supported(RESULT flowd_lto OUTPUT flowd_lto_error LANGUAGES CXX)

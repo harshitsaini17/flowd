@@ -56,13 +56,15 @@ public:
 
     const std::optional<std::string>& why_not() const { return why_not_; }
 
-    void on_show();
+    // Not on_show/on_hide: those are Gtk::Widget virtuals, and hiding them
+    // replaces the handler that maps the window.
+    void on_show_msg();
     void on_render(const Render& r);
     void on_state(const StateMsg& s);
     void on_meta(const Meta& m);
     void on_config(const UiConfig& c);
     void on_fade();
-    void on_hide();
+    void on_hide_msg();
     // design.md "Warning" → Recording + warning: the footer carries it.
     void on_warn(const Warn& w);
     // The indicator's centre on its output, in logical px; the card centres

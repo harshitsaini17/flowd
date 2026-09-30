@@ -276,7 +276,7 @@ double Popup::now_s() { return static_cast<double>(g_get_monotonic_time()) / kUs
 
 // ---- inputs -----------------------------------------------------------------
 
-void Popup::on_show() {
+void Popup::on_show_msg() {
     model_.on_show(now_s());
     restart_ = true;
     refresh();
@@ -314,7 +314,7 @@ void Popup::on_fade() {
     refresh();
 }
 
-void Popup::on_hide() {
+void Popup::on_hide_msg() {
     model_.on_hide(now_s());
     refresh();
 }
