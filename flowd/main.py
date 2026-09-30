@@ -271,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     # with the daemon, so a user who never presses the hotkey never pays for a
     # GTK process. `--replay` deliberately gets none — it exists to measure
     # latency, and a window competing for cores would skew what it reports.
-    overlay = OverlayProcess(cfg.overlay)
+    overlay = OverlayProcess(cfg.ui)
     daemon = Daemon(
         cfg=cfg,
         stt=engine,

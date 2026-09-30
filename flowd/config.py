@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from dataclasses import dataclass, fields, replace
@@ -10,6 +11,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 APP = "flowd"
+
+log = logging.getLogger(__name__)
 
 
 def _home() -> Path:
@@ -150,7 +153,25 @@ class Inject:
 
 
 @dataclass(frozen=True, slots=True)
+class Ui:
+    """`flowd-ui`'s settings (ADR 0013). All but `enabled` and
+    `notify_on_finish` reach the UI through `ui_message`."""
+
+    enabled: bool = True
+    indicator: bool = True  # always-present pill at the bottom edge
+    theme: str = "system"  # system | light | dark
+    max_lines: int = 4
+    fade_ms: int = 1000
+    footer: bool = True  # mode and app in the popup
+    notify_on_finish: bool = False
+    hotkey_label: str = ""  # shown in hints only, e.g. "Super D"
+
+
+@dataclass(frozen=True, slots=True)
 class Overlay:
+    """The legacy `[overlay]` table, parsed only so its keys are checked before
+    they are folded into `[ui]`. Removed in the next release."""
+
     enabled: bool = True
     max_lines: int = 4
     fade_ms: int = 1000
@@ -175,7 +196,7 @@ class Config:
     llm: Llm = Llm()
     guardrails: Guardrails = Guardrails()
     inject: Inject = Inject()
-    overlay: Overlay = Overlay()
+    ui: Ui = Ui()
     logging: Logging = Logging()
     #: spec 8.1's three, plus the common Linux ids for each mode's apps.
     #: Matched case-insensitively (context.py); terminals default to code.
@@ -238,6 +259,9 @@ _VALID_HOTKEY_MODES = ("toggle", "ptt")
 #: The styles flowd/modes.py defines (ADR 0009).
 _VALID_APP_MODES = ("default", "code", "chat", "email")
 _VALID_LOG_LEVELS = ("debug", "info", "warning", "error")
+_VALID_THEMES = ("system", "light", "dark")
+#: `Ui` fields the daemon keeps to itself rather than sending to `flowd-ui`.
+_UI_DAEMON_ONLY = ("enabled", "notify_on_finish")
 
 
 def _build(section_type: type, raw: dict[str, Any], name: str) -> Any:
@@ -286,6 +310,8 @@ def _validate(cfg: Config) -> None:
         raise ValueError(f"[llm] url: must point at this machine ({', '.join(_LOOPBACK_HOSTS)})")
     if not cfg.inject.order:
         raise ValueError("[inject] order: must list at least one backend")
+    if cfg.ui.theme not in _VALID_THEMES:
+        raise ValueError(f"[ui] theme: must be one of {_VALID_THEMES}, got {cfg.ui.theme!r}")
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -294,6 +320,19 @@ def load_config(path: Path | None = None) -> Config:
     if not path.is_file():
         return Config()
     raw = tomllib.loads(path.read_text())
+
+    # [overlay] became [ui]; read it for one release so existing configs keep
+    # working. Keys set in [ui] win.
+    legacy = raw.pop("overlay", None)
+    if legacy is not None:
+        if not isinstance(legacy, dict):
+            raise ValueError("[overlay]: expected a table")
+        log.warning("[overlay] is deprecated; rename it to [ui]")
+        _build(Overlay, legacy, "overlay")  # same key checks as before
+        ui = raw.get("ui", {})
+        if not isinstance(ui, dict):
+            raise ValueError("[ui]: expected a table")
+        raw["ui"] = {**legacy, **ui}
 
     defaults = Config()
     section_names = {f.name for f in fields(Config)}
@@ -317,6 +356,17 @@ def load_config(path: Path | None = None) -> Config:
     cfg = replace(defaults, **kwargs)
     _validate(cfg)
     return cfg
+
+
+def ui_message(cfg: Config) -> dict[str, Any]:
+    """The `ui` object of the `config` message `flowd-ui` receives on start and
+    reload (ADR 0013), sent as `{"type": "config", "ui": ui_message(cfg)}`."""
+    msg: dict[str, Any] = {}
+    for field in fields(cfg.ui):
+        if field.name not in _UI_DAEMON_ONLY:
+            msg[field.name] = getattr(cfg.ui, field.name)
+    msg["max_session_s"] = cfg.audio.max_session_s
+    return msg
 
 
 def reload_config(current: Config, path: Path | None = None) -> tuple[Config, str | None]:

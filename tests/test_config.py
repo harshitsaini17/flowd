@@ -3,7 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from flowd.config import Config, Stt, load_config, reload_config, runtime_dir, state_dir
+from flowd.config import (
+    Config,
+    Stt,
+    load_config,
+    reload_config,
+    runtime_dir,
+    state_dir,
+    ui_message,
+)
 
 
 def test_missing_file_yields_spec_defaults(tmp_path: Path) -> None:
@@ -145,3 +153,75 @@ def test_an_empty_final_model_is_accepted(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text('[stt]\nfinal_model = ""\n')
     assert load_config(path).stt.final_model == ""
+
+
+def write_config(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "config.toml"
+    path.write_text(text)
+    return path
+
+
+def test_ui_defaults_match_spec() -> None:
+    ui = Config().ui
+    assert (ui.enabled, ui.indicator, ui.theme, ui.max_lines, ui.fade_ms, ui.footer) == (
+        True,
+        True,
+        "system",
+        4,
+        1000,
+        True,
+    )
+    assert ui.notify_on_finish is False
+    assert ui.hotkey_label == ""
+
+
+def test_an_overlay_section_still_loads_into_ui(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = load_config(write_config(tmp_path, "[overlay]\nmax_lines = 6\nfade_ms = 500\n"))
+    assert (cfg.ui.max_lines, cfg.ui.fade_ms) == (6, 500)
+    assert "[overlay] is deprecated" in caplog.text
+
+
+def test_ui_keys_win_over_overlay_keys(tmp_path: Path) -> None:
+    cfg = load_config(
+        write_config(tmp_path, '[overlay]\nmax_lines = 6\n[ui]\nmax_lines = 2\ntheme = "dark"\n')
+    )
+    assert cfg.ui.max_lines == 2
+    assert cfg.ui.theme == "dark"
+
+
+def test_a_disabled_overlay_disables_the_ui(tmp_path: Path) -> None:
+    assert load_config(write_config(tmp_path, "[overlay]\nenabled = false\n")).ui.enabled is False
+
+
+def test_an_overlay_section_keeps_its_old_key_checks(tmp_path: Path) -> None:
+    """Only the three legacy keys were ever valid there; [ui]-only keys are not."""
+    with pytest.raises(ValueError, match=r"\[overlay\]: unknown key"):
+        load_config(write_config(tmp_path, '[overlay]\ntheme = "dark"\n'))
+
+
+def test_an_unknown_theme_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"\[ui\] theme"):
+        load_config(write_config(tmp_path, '[ui]\ntheme = "neon"\n'))
+
+
+def test_ui_max_lines_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"\[ui\] max_lines"):
+        load_config(write_config(tmp_path, "[ui]\nmax_lines = 0\n"))
+
+
+def test_the_ui_message_carries_display_settings_only() -> None:
+    msg = ui_message(Config())
+    assert msg["theme"] == "system"
+    assert msg["max_session_s"] == Config().audio.max_session_s
+    assert "enabled" not in msg and "notify_on_finish" not in msg
+    assert set(msg) == {
+        "indicator",
+        "theme",
+        "max_lines",
+        "fade_ms",
+        "footer",
+        "hotkey_label",
+        "max_session_s",
+    }

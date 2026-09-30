@@ -27,7 +27,7 @@ import sys
 import time
 from typing import Any
 
-from flowd.config import Overlay as OverlayCfg
+from flowd.config import Ui as OverlayCfg
 from flowd.overlay_ipc import OverlayProcess
 
 #: Long enough for GTK to start, re-exec itself with LD_PRELOAD (ADR 0003) and

@@ -22,7 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from flowd.config import Overlay as OverlayCfg
+from flowd.config import Ui as OverlayCfg
 
 log = logging.getLogger(__name__)
 

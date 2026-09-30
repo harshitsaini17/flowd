@@ -13,7 +13,7 @@ import json
 import subprocess
 from typing import Any
 
-from flowd.config import Overlay as OverlayCfg
+from flowd.config import Ui as OverlayCfg
 from flowd.overlay_ipc import OverlayProcess
 
 
