@@ -36,8 +36,12 @@ struct PillRect {
     double x, y, w, h;
 };
 
-// The surface width: wide while the warning pill is shown or still collapsing.
-int indicator_surface_w(bool wide);
+// The surface width. It spans the output (out_w, 0 when unknown), so it never
+// has to move or resize under a held pointer: compositors animate or delay
+// both, and a drag read against a moving surface lands in the wrong place.
+// Until the output is known it is the pill's width, wide while the warning
+// pill is shown or still collapsing.
+int indicator_surface_w(bool wide, int out_w);
 
 // The surface's left edge on an output out_w wide (0 when unknown), for a
 // pill centred on center_x. It is kept on the output, since a wide surface
@@ -58,20 +62,8 @@ double warn_pill_w(double text_w, bool blocking);
 std::optional<PillRect> input_rect(InputRegion region, double pill_w, double pill_cx_in_surface);
 
 // Where a drag puts the pill, before snapping: the press centre plus the
-// pointer's movement on the output. dx is the gesture's offset, read against
-// a surface whose left edge was at press_left when pressed and at
-// event_origin when the event was generated.
-double drag_center(double press_center, int press_left, int event_origin, double dx);
-
-// Which origin an event was generated against, while the surface switches
-// from old_origin to new_origin (it widens to the output as a drag starts).
-// The compositor applies the switch at a time the client cannot observe, so
-// neither "at once" nor "next frame" is safe; instead each event is read
-// against whichever origin puts the pointer nearer where it last was, since
-// the pointer moves a few px per event and the origins differ by the
-// surface's travel. Once new_origin is seen, callers keep it: events never
-// go back to an older surface.
-int drag_event_origin(double press_center, int press_left, int old_origin, int new_origin,
-                      double dx, double last_center);
+// gesture's offset. The surface never moves, so the offset is the pointer's
+// movement on the output.
+double drag_center(double press_center, double dx);
 
 }  // namespace flowd

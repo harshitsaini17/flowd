@@ -96,7 +96,7 @@ TEST_CASE("surface: a layer surface reads back keyboard mode NONE") {
     CHECK(gtk_layer_get_keyboard_mode(win->gobj()) == GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
     CHECK(gtk_layer_get_layer(win->gobj()) == GTK_LAYER_SHELL_LAYER_OVERLAY);
     CHECK(gtk_layer_get_margin(win->gobj(), GTK_LAYER_SHELL_EDGE_LEFT) == 10);
-    CHECK(gtk_layer_get_exclusive_zone(win->gobj()) == 0);
+    CHECK(gtk_layer_get_exclusive_zone(win->gobj()) == -1);
 
     set_overlay_margins(*win, {.left = 42, .bottom = 6});
     CHECK(gtk_layer_get_margin(win->gobj(), GTK_LAYER_SHELL_EDGE_LEFT) == 42);

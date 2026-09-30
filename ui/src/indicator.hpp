@@ -205,10 +205,6 @@ private:
     bool cancelled_ = false;  // the compositor took the grab: no click
     double press_x_ = 0.0, press_y_ = 0.0;
     double press_center_ = 0.0;
-    int press_left_ = 0;       // the surface's left edge when pressed
-    int event_origin_ = 0;     // the left edge drag events are read against
-    double last_center_ = 0.0;  // the unsnapped centre of the last drag event
-    bool drag_full_ = false;   // the surface spans the output while dragging
     std::optional<double> snap_point_;
     // The pointer's last position over the surface, so the cursor can follow
     // look changes that happen without motion.

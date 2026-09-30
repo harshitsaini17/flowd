@@ -18,9 +18,12 @@ warning states.
   built with CMake (`-O2`, LTO, stripped). It replaces `overlay/`. Target:
   ≤ 40 MB anonymous memory.
 - Two layer surfaces, both `OVERLAY` layer, keyboard interactivity `NONE`,
-  exclusive zone 0:
-  - `flowd-indicator`: always present when `[ui] indicator = true`. Accepts
-    pointer input only inside its input region.
+  exclusive zone -1: they reserve no space, and they ignore the space other
+  panels reserve, so surface x is output x on every compositor. With zone 0
+  a bar's reserved edge shifts the surface off where the pill is drawn.
+  - `flowd-indicator`: always present when `[ui] indicator = true`. It spans
+    the output's bottom edge and accepts pointer input only inside its input
+    region, so everything but the pill is click-through.
   - `flowd-popup`: created on the first `show`, then unmapped (not
     destroyed) after the fade, with no tick while hidden. Reusing it avoids
     re-running surface creation and the focus checks on every dictation.
@@ -35,9 +38,13 @@ warning states.
   `present()`, which would request focus. That is the same guarantee ADR 0003
   asks of a layer surface, so this supersedes 0003's "X11 gets no overlay".
 - Click toggles dictation. A press that moves more than 4 px is a drag. The
-  drag moves the indicator by updating its left margin with `LEFT | BOTTOM`
-  anchors; Wayland keeps sending pointer events to the pressed surface until
-  release, so the input region does not need to grow. The position is stored
+  drag only redraws the pill and moves the input region inside the
+  output-wide surface; the surface itself never moves or resizes. Moving or
+  widening it under a held pointer failed on Hyprland: the compositor
+  animates the change, events in between are read against the wrong
+  origin, and the pill leaves the pointer and can miss the release. Wayland
+  keeps sending pointer events to the pressed surface until release, so the
+  input region does not need to grow. The position is stored
   per output as a fraction of its width in
   `$XDG_STATE_HOME/flowd/indicator.json`.
 - The daemon still spawns `flowd-ui` and restarts it if it dies; a UI crash

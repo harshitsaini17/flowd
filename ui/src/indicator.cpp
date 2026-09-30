@@ -152,12 +152,10 @@ Gtk::SizeRequestMode IndicatorCanvas::get_request_mode_vfunc() const {
 
 void IndicatorCanvas::measure_vfunc(Gtk::Orientation orientation, int, int& minimum, int& natural,
                                     int& minimum_baseline, int& natural_baseline) const {
-    // Fixed: the pill animates inside the surface, so the compositor never
-    // resizes it mid-animation (design.md "Motion" → GTK mapping). Only the
-    // warning pill widens it, before the pill grows, and a drag, which spans
-    // the output so the surface never has to move under the pointer.
-    int w = indicator_surface_w(owner_.wide_);
-    if (owner_.drag_full_) w = std::max(w, owner_.output_width());
+    // Fixed: the pill animates and moves inside the surface, which spans the
+    // output, so the compositor never resizes or moves it (design.md
+    // "Motion" → GTK mapping, "Indicator placement").
+    const int w = indicator_surface_w(owner_.wide_, owner_.output_width());
     minimum = natural = orientation == Gtk::Orientation::HORIZONTAL ? w : kSurfaceH;
     minimum_baseline = natural_baseline = -1;
 }
@@ -428,6 +426,8 @@ void Indicator::use_monitor(const Glib::RefPtr<Gdk::Monitor>& monitor) {
     if (backend_ == Backend::Wayland && gtk_layer_is_layer_window(gobj()))
         gtk_layer_set_monitor(gobj(), monitor->gobj());
     center_x_ = from_fraction(store_.get(output_name()), output_width());
+    // The surface spans the output, so a new output means a new width.
+    canvas_.queue_resize();
     apply_position();
     apply_input_region();
 }
@@ -445,10 +445,11 @@ std::string Indicator::output_name() const {
 }
 
 int Indicator::surface_left() const {
-    // The allocated width, not the requested one: a resize (wide warning,
-    // full-width drag) lands with a later frame, and the surface must stay
-    // where its current buffer's pill is drawn until then.
-    const int w = canvas_.get_width() > 0 ? canvas_.get_width() : indicator_surface_w(wide_);
+    // The allocated width, not the requested one: a resize (a new output, or
+    // the wide warning before the output is known) lands with a later frame,
+    // and the surface must stay where its current buffer's pill is drawn.
+    const int w = canvas_.get_width() > 0 ? canvas_.get_width()
+                                          : indicator_surface_w(wide_, output_width());
     return indicator_surface_left(center_x_, w, output_width());
 }
 
@@ -469,29 +470,19 @@ void Indicator::on_drag_begin(double x, double y) {
     moved_ = dragging_ = cancelled_ = false;
     press_x_ = x;
     press_y_ = y;
-    press_center_ = last_center_ = center_x_;
-    press_left_ = event_origin_ = placed_left_;
+    press_center_ = center_x_;
     snap_point_.reset();
 }
 
 void Indicator::on_drag_update(double dx, double dy) {
     if (!pressed_) return;
-    // The gesture reports offsets against the press, in surface coordinates.
-    // The surface moves once, when it widens to the output, and from then on
-    // stays put, so the pill never feeds back into the offsets it reads.
-    if (placed_left_ != event_origin_)
-        event_origin_ = drag_event_origin(press_center_, press_left_, event_origin_, placed_left_,
-                                          dx, last_center_);
-    const double center = drag_center(press_center_, press_left_, event_origin_, dx);
-    last_center_ = center;
-    if (!moved_ && is_drag(center - press_center_, dy)) {
+    // The gesture reports offsets against the press. The surface never
+    // moves, so they are the pointer's movement on the output.
+    const double center = drag_center(press_center_, dx);
+    if (!moved_ && is_drag(dx, dy)) {
         moved_ = true;
         model_.drag_begin();
         dragging_ = model_.look() == IndicatorLook::Dragging;
-        if (dragging_) {
-            drag_full_ = true;
-            canvas_.queue_resize();
-        }
         refresh();
     }
     if (!dragging_) return;
@@ -511,7 +502,7 @@ void Indicator::on_drag_end(double dx, double dy) {
         const double f = to_fraction(center_x_, output_width());
         store_.set(out, f);
         if (on_moved_) on_moved_(f, out);
-        end_drag();  // shrinks back to the narrow surface at the new place
+        end_drag();
         return;
     }
     end_drag();
@@ -531,11 +522,6 @@ void Indicator::end_drag() {
     if (dragging_) model_.drag_end();
     dragging_ = false;
     snap_point_.reset();
-    if (std::exchange(drag_full_, false)) canvas_.queue_resize();
-    // Now, not only once the narrow size is allocated: that may never come
-    // (the wide size never landed) and the surface would stay at the press.
-    // While still wide this places it at the output's left edge, as before.
-    apply_position();
     refresh();
 }
 
@@ -620,7 +606,8 @@ void Indicator::update_targets(double now) {
     if (l == IndicatorLook::WarningHover) w = warn_pill_w(warn_text_w_, model_.warn_blocking());
     if (!open) w = kIdleLineW;
     // Widen the surface before the pill grows (design.md "Warning"); it
-    // narrows again once the pill has shrunk, in on_tick.
+    // narrows again once the pill has shrunk, in on_tick. Only before the
+    // output is known: after that the surface already spans it.
     if (w > kPillW && !wide_) {
         wide_ = true;
         canvas_.queue_resize();

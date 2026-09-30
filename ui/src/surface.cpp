@@ -23,8 +23,10 @@ namespace flowd {
 namespace {
 
 constexpr const char* kLogPrefix = "flowd-ui: ";
-// ADR 0013: an overlay never reserves space; windows keep their full size.
-constexpr int kExclusiveZone = 0;
+// ADR 0013: an overlay never reserves space, and -1 (not 0) also ignores the
+// space other panels reserve, so surface x is output x: a bar's zone would
+// otherwise shift the indicator off the position it draws and stores.
+constexpr int kExclusiveZone = -1;
 
 // GDK_BACKEND values.
 constexpr const char* kGdkWayland = "wayland";

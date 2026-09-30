@@ -5,7 +5,10 @@
 
 namespace flowd {
 
-int indicator_surface_w(bool wide) { return wide ? kWarnSurfaceW : kSurfaceW; }
+int indicator_surface_w(bool wide, int out_w) {
+    const int pill_w = wide ? kWarnSurfaceW : kSurfaceW;
+    return std::max(pill_w, out_w);
+}
 
 int indicator_surface_left(double center_x, int surface_w, int out_w) {
     const int left = indicator_left_margin(center_x, surface_w);
@@ -60,18 +63,6 @@ std::optional<PillRect> input_rect(InputRegion region, double pill_w, double pil
     return std::nullopt;
 }
 
-double drag_center(double press_center, int press_left, int event_origin, double dx) {
-    // The pointer on the output is its surface x plus event_origin; the press
-    // was at press x plus press_left.
-    return press_center + dx + (event_origin - press_left);
-}
-
-int drag_event_origin(double press_center, int press_left, int old_origin, int new_origin,
-                      double dx, double last_center) {
-    const double via_old = drag_center(press_center, press_left, old_origin, dx);
-    const double via_new = drag_center(press_center, press_left, new_origin, dx);
-    return std::abs(via_new - last_center) < std::abs(via_old - last_center) ? new_origin
-                                                                              : old_origin;
-}
+double drag_center(double press_center, double dx) { return press_center + dx; }
 
 }  // namespace flowd

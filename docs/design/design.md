@@ -564,17 +564,19 @@ Density is "comfortable": card padding 20–24, row padding 20 × 24, section ga
 ### Indicator placement
 
 - Layer: `OVERLAY`. Anchor: `LEFT | BOTTOM`, with the horizontal position set
-  by the left margin (see Components → Indicator → Dragging). Exclusive zone:
-  `0` (it never pushes windows up). Namespace `flowd-indicator`.
+  by where the pill is drawn inside an output-wide surface (see Components →
+  Indicator → Dragging). Exclusive zone: `-1` (it never pushes windows up,
+  and it sits on the output edge even beside a bar that reserves space).
+  Namespace `flowd-indicator`.
 - Bottom margin **6 px** idle, measured from the output edge. The expanded
   pill grows **upward** from the same baseline, so the pointer never has to chase it.
 - Hit area: the idle line is 8 px tall but its input region is a **120 × 20 px**
   invisible strip centered on it (`Gdk.Surface.set_input_region`). That makes
   it hoverable without pixel hunting while staying small visually. The surface
-  itself is sized 144 × 54 (the 120 × 36 pill plus 12 px of shadow room on
-  each side) so the expansion has room without a resize; it grows to 384 × 54
-  only for the warning pill, and spans the output's full width only while a
-  drag is in progress. Everything outside the input region is click-through.
+  spans the output's full width and is 54 px tall (the 36 px pill plus 12 px
+  of shadow room above and the 6 px margin), so hover, the warning pill and a
+  drag all happen without the compositor resizing or moving it. Everything
+  outside the input region is click-through.
 - Horizontal position is stored as a fraction of output width (0–1, default
   0.5) in `$XDG_STATE_HOME/flowd/indicator.json`, so it survives resolution
   changes. One per output name.
@@ -711,7 +713,7 @@ delays the user. Every duration here is under 200 ms except fades that happen
 
 **GTK mapping.** GTK4 CSS transitions cover opacity, color, `min-width` and
 `min-height` on the inner widget. Size changes of the indicator animate the
-*inner* pill inside a fixed-size surface (144 × 54), so the compositor never
+*inner* pill inside a fixed-size surface (output width × 54), so the compositor never
 has to resize the layer surface mid-animation. The level meter is drawn in a
 `Gtk.DrawingArea` driven by `add_tick_callback`, not CSS.
 
@@ -776,7 +778,7 @@ Every state is carried by at least two channels. Color is never the only one.
 
 ### Indicator
 
-A layer-shell surface (namespace `flowd-indicator`, 144 × 54 px fixed, input
+A layer-shell surface (namespace `flowd-indicator`, output width × 54 px fixed, input
 region varies by state) holding one inner pill that changes size. It never
 takes keyboard focus. Every interaction is pointer-only; the keyboard path is
 the global hotkey.
@@ -862,10 +864,8 @@ A degraded-but-working condition. It overlays whichever base state is current.
   Shape (dot) plus position is the non-color cue.
 - **Hover + warning:** the expanded pill widens to fit a one-line reason (max
   **360 px**, ellipsized; a surface that never takes focus offers no
-  tooltip, so the full reason is not shown there). This is the one
-  state where the layer surface grows: it's resized to 384 × 54 *before* the
-  pill animates wider and shrunk back after it collapses, so the pill is never
-  clipped by its own surface: `triangle-alert`
+  tooltip, so the full reason is not shown there). The surface already spans
+  the output, so the pill widens inside it and is never clipped: `triangle-alert`
   14 px in `warn`, then the reason in `label` `text`, e.g.
   - "Cleanup offline, pasting as heard"
   - "Microphone unavailable: USB Audio unplugged"
@@ -896,11 +896,12 @@ A degraded-but-working condition. It overlays whichever base state is current.
   focus by design); dragging back is the undo, and Settings → Hotkey &
   activation → "Reset indicator position" restores center.
 - **Implementation note.** A layer surface can't be moved by the compositor
-  on drag. Past the drag threshold the indicator surface widens to the full
-  output width (left margin 0) and the pill is drawn at the pointer inside it,
-  so the surface never moves under the pointer; on release it shrinks back to
-  144 px with its left margin at the new place. Wayland keeps delivering
-  pointer events to the surface the button was pressed on until release. The indicator stays on its output; the per-output
+  on drag, and moving or resizing it under a held pointer is not safe either:
+  compositors animate both, and events in between read against the wrong
+  origin. The surface spans the output all the time, so the pill is simply
+  drawn at the pointer and only the input region follows it. Wayland keeps
+  delivering pointer events to the surface the button was pressed on until
+  release. The indicator stays on its output; the per-output
   position is the way to place it on another.
 - Reduced motion: no scale, no settle animation; ticks still show.
 
