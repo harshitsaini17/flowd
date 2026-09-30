@@ -63,43 +63,52 @@ TEST_CASE("indicator geometry: input regions per model region") {
     CHECK(warn->x == doctest::Approx(30));
 }
 
-TEST_CASE("indicator geometry: a drag reads events against the presented surface") {
-    DragAnchor a;
-    a.begin(960, 888);
-    // Before any margin change, the offset is the pointer's movement.
-    CHECK(a.center_for(30) == doctest::Approx(990));
-    // A margin of 918 is committed but not yet shown: events in flight are
-    // still relative to 888, so the same offset means the same place.
-    a.committed(918);
-    CHECK(a.center_for(30) == doctest::Approx(990));
-    // Once presented, events are relative to 918; the pointer at the same
-    // output x now reads as offset 0.
-    a.presented();
-    CHECK(a.baseline() == 918);
-    CHECK(a.center_for(0) == doctest::Approx(990));
-    CHECK(a.output_dx(0) == doctest::Approx(30));
-    // Presenting again without a new commit changes nothing.
-    a.presented();
-    CHECK(a.center_for(0) == doctest::Approx(990));
-    CHECK(a.press_center() == doctest::Approx(960));
+TEST_CASE("indicator geometry: a drag follows the pointer across the surface switch") {
+    // Pressed at centre 960 on a narrow surface whose left edge is 888.
+    // Events still relative to the narrow surface: the offset is the motion.
+    CHECK(drag_center(960, 888, 888, 30) == doctest::Approx(990));
+    // Once the full-width surface (left edge 0) is in place, the same pointer
+    // position reads as an offset 888 px larger, and lands on the same centre.
+    CHECK(drag_center(960, 888, 0, 30 + 888) == doctest::Approx(990));
+    CHECK(drag_center(960, 888, 0, 888 - 400) == doctest::Approx(560));
 }
 
-TEST_CASE("indicator geometry: steady pointer motion never runs ahead") {
-    // The pointer moves 10 px per frame. Each frame commits the margin for
-    // the latest event and the previous commit is presented. The pill centre
-    // must track the pointer, not accelerate away from it.
-    DragAnchor a;
+TEST_CASE("indicator geometry: events are read against the origin they were generated for") {
+    // Pressed at centre 960, narrow surface at 888; the pointer is at +30.
+    // An event still against the narrow surface says dx 32 (moved 2 px).
+    CHECK(drag_event_origin(960, 888, 888, 0, 32, 990) == 888);
+    // One against the full-width surface says dx 888 + 32.
+    CHECK(drag_event_origin(960, 888, 888, 0, 888 + 32, 990) == 0);
+    // Also when the pill moves leftward, past the old surface's edge.
+    CHECK(drag_event_origin(960, 888, 888, 0, 888 - 200, 760) == 0);
+    CHECK(drag_event_origin(960, 888, 888, 0, -205, 760) == 888);
+}
+
+TEST_CASE("indicator geometry: steady pointer motion tracks exactly on the full surface") {
+    // The surface no longer moves, so there is no feedback between the pill
+    // and the offsets: each event maps to the pointer, whatever the frame.
     const double press_center = 500;
     const int press_left = 428;
-    a.begin(press_center, press_left);
-    int presented_left = press_left;
-    for (int frame = 1; frame <= 50; ++frame) {
-        const double pointer_dx = 10.0 * frame;  // on the output
-        const double event_dx = pointer_dx - (presented_left - press_left);
-        const double cx = a.center_for(event_dx);
-        CHECK(cx == doctest::Approx(press_center + pointer_dx));
-        a.presented();
-        presented_left = a.baseline();
-        a.committed(static_cast<int>(cx) - 72);
+    for (int step = 1; step <= 50; ++step) {
+        const double pointer_dx = 10.0 * step;          // on the output
+        const double event_dx = pointer_dx + press_left;  // against origin 0
+        CHECK(drag_center(press_center, press_left, 0, event_dx) ==
+              doctest::Approx(press_center + pointer_dx));
     }
+}
+
+TEST_CASE("indicator geometry: on the full-width drag surface the pill sits at its centre") {
+    const int out_w = 1920;
+    // With the surface's left edge at 0, surface x is output x.
+    CHECK(pill_center_in_surface(700, kPillW, 0, out_w) == doctest::Approx(700));
+    // Still kept kEdgeClampPx inside the output.
+    CHECK(pill_center_in_surface(10, kPillW, 0, out_w) ==
+          doctest::Approx(kEdgeClampPx + kPillW / 2.0));
+    // The input region is only the pill there; the rest of the output clicks
+    // through.
+    const auto r = input_rect(InputRegion::Pill, kPillW, 700);
+    REQUIRE(r);
+    CHECK(r->x == doctest::Approx(700 - kSurfacePad - kPillW / 2.0));
+    CHECK(r->w == doctest::Approx(kPillW));
+    CHECK(r->h == doctest::Approx(kPillH));
 }

@@ -57,36 +57,21 @@ double warn_pill_w(double text_w, bool blocking);
 // surface's padding (set_input_region adds the pad back). Nothing for Empty.
 std::optional<PillRect> input_rect(InputRegion region, double pill_w, double pill_cx_in_surface);
 
-// Where a drag puts the pill. Pointer events arrive relative to the surface
-// as it was placed when the compositor generated them, and a margin change
-// takes effect only when the frame carrying it lands. Moving the surface by
-// the requested margin at once would read in-flight events against the wrong
-// origin and make the pill race ahead of the pointer, so the origin used for
-// events (the baseline) advances only once the frame with the new margin has
-// been presented.
-class DragAnchor {
-public:
-    // A press at surface-relative offsets, with the pill centred on center_x
-    // and the surface's left edge at surface_left on the output.
-    void begin(double center_x, int surface_left);
-    // The pill centre for a drag offset dx (the gesture's, in surface
-    // coordinates), before snapping.
-    double center_for(double dx) const;
-    // The pointer's movement on the output for a drag offset dx.
-    double output_dx(double dx) const;
-    // A frame carrying surface_left has been committed.
-    void committed(int surface_left);
-    // The next frame has started, so the committed one was presented: events
-    // from now on are relative to it.
-    void presented();
-    int baseline() const { return baseline_; }
-    double press_center() const { return press_center_; }
+// Where a drag puts the pill, before snapping: the press centre plus the
+// pointer's movement on the output. dx is the gesture's offset, read against
+// a surface whose left edge was at press_left when pressed and at
+// event_origin when the event was generated.
+double drag_center(double press_center, int press_left, int event_origin, double dx);
 
-private:
-    double press_center_ = 0.0;
-    int press_left_ = 0;
-    int baseline_ = 0;
-    std::optional<int> committed_;
-};
+// Which origin an event was generated against, while the surface switches
+// from old_origin to new_origin (it widens to the output as a drag starts).
+// The compositor applies the switch at a time the client cannot observe, so
+// neither "at once" nor "next frame" is safe; instead each event is read
+// against whichever origin puts the pointer nearer where it last was, since
+// the pointer moves a few px per event and the origins differ by the
+// surface's travel. Once new_origin is seen, callers keep it: events never
+// go back to an older surface.
+int drag_event_origin(double press_center, int press_left, int old_origin, int new_origin,
+                      double dx, double last_center);
 
 }  // namespace flowd

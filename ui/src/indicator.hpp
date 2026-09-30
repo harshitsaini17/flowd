@@ -43,6 +43,7 @@ protected:
     Gtk::SizeRequestMode get_request_mode_vfunc() const override;
     void measure_vfunc(Gtk::Orientation orientation, int for_size, int& minimum, int& natural,
                        int& minimum_baseline, int& natural_baseline) const override;
+    void size_allocate_vfunc(int width, int height, int baseline) override;
 
 private:
     Indicator& owner_;
@@ -124,7 +125,11 @@ private:
     void show_now();
     int output_width() const;
     std::string output_name() const;
+    // Where the surface's left edge belongs on the output, for the width it
+    // has now; placed_left_ is where apply_position last put it.
     int surface_left() const;
+    // Places the surface for a width the compositor has just given it.
+    void on_canvas_allocated();
     double pill_cx_in_surface(double pill_w) const;
 
     // Gestures.
@@ -188,6 +193,7 @@ private:
     sigc::connection monitor_switch_;
     sigc::connection monitor_gone_;
     double center_x_ = 0.0;
+    int placed_left_ = 0;
 
     // Drag bookkeeping, in logical px.
     bool pressed_ = false;
@@ -195,8 +201,11 @@ private:
     bool dragging_ = false;
     bool cancelled_ = false;  // the compositor took the grab: no click
     double press_x_ = 0.0, press_y_ = 0.0;
-    DragAnchor anchor_;
-    bool position_dirty_ = false;  // a drag moved the pill; apply on the next frame
+    double press_center_ = 0.0;
+    int press_left_ = 0;       // the surface's left edge when pressed
+    int event_origin_ = 0;     // the left edge drag events are read against
+    double last_center_ = 0.0;  // the unsnapped centre of the last drag event
+    bool drag_full_ = false;   // the surface spans the output while dragging
     std::optional<double> snap_point_;
     // The pointer's last position over the surface, so the cursor can follow
     // look changes that happen without motion.

@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -44,8 +45,10 @@ private:
     void handle_sway_event(std::string_view json);
     void recheck_sway_fullscreen();
     // Runs `swaymsg -r -t <type>` without blocking and hands its stdout to
-    // on_reply on the main loop, unless this tracker has gone by then.
-    void sway_query(const char* type, std::function<void(OutputTracker&, std::string)> on_reply);
+    // on_reply on the main loop, or nullopt if it failed or timed out, unless
+    // this tracker has gone by then.
+    void sway_query(const char* type,
+                    std::function<void(OutputTracker&, std::optional<std::string>)> on_reply);
     void report_output(const std::string& name);
     void report_fullscreen(bool fs);
     void fail(const std::string& why);

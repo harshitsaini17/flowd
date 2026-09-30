@@ -60,21 +60,18 @@ std::optional<PillRect> input_rect(InputRegion region, double pill_w, double pil
     return std::nullopt;
 }
 
-void DragAnchor::begin(double center_x, int surface_left) {
-    press_center_ = center_x;
-    press_left_ = baseline_ = surface_left;
-    committed_.reset();
+double drag_center(double press_center, int press_left, int event_origin, double dx) {
+    // The pointer on the output is its surface x plus event_origin; the press
+    // was at press x plus press_left.
+    return press_center + dx + (event_origin - press_left);
 }
 
-double DragAnchor::output_dx(double dx) const { return dx + (baseline_ - press_left_); }
-
-double DragAnchor::center_for(double dx) const { return press_center_ + output_dx(dx); }
-
-void DragAnchor::committed(int surface_left) { committed_ = surface_left; }
-
-void DragAnchor::presented() {
-    if (committed_) baseline_ = *committed_;
-    committed_.reset();
+int drag_event_origin(double press_center, int press_left, int old_origin, int new_origin,
+                      double dx, double last_center) {
+    const double via_old = drag_center(press_center, press_left, old_origin, dx);
+    const double via_new = drag_center(press_center, press_left, new_origin, dx);
+    return std::abs(via_new - last_center) < std::abs(via_old - last_center) ? new_origin
+                                                                              : old_origin;
 }
 
 }  // namespace flowd

@@ -171,11 +171,17 @@ void IndicatorCanvas::measure_vfunc(Gtk::Orientation orientation, int, int& mini
                                     int& minimum_baseline, int& natural_baseline) const {
     // Fixed: the pill animates inside the surface, so the compositor never
     // resizes it mid-animation (design.md "Motion" → GTK mapping). Only the
-    // warning pill widens it, before the pill grows.
-    minimum = natural = orientation == Gtk::Orientation::HORIZONTAL
-                            ? indicator_surface_w(owner_.wide_)
-                            : kSurfaceH;
+    // warning pill widens it, before the pill grows, and a drag, which spans
+    // the output so the surface never has to move under the pointer.
+    int w = indicator_surface_w(owner_.wide_);
+    if (owner_.drag_full_) w = std::max(w, owner_.output_width());
+    minimum = natural = orientation == Gtk::Orientation::HORIZONTAL ? w : kSurfaceH;
     minimum_baseline = natural_baseline = -1;
+}
+
+void IndicatorCanvas::size_allocate_vfunc(int width, int height, int baseline) {
+    Gtk::Widget::size_allocate_vfunc(width, height, baseline);
+    owner_.on_canvas_allocated();
 }
 
 void IndicatorCanvas::snapshot_vfunc(const Glib::RefPtr<Gtk::Snapshot>& snapshot) {
@@ -236,11 +242,7 @@ Indicator::Indicator(Backend backend, PositionStore& store, Tokens tokens, bool 
         // The compositor took the grab: no click, and the pill goes back to
         // where the press found it.
         cancelled_ = true;
-        if (dragging_) {
-            center_x_ = anchor_.press_center();
-            position_dirty_ = false;
-            apply_position();
-        }
+        if (dragging_) center_x_ = press_center_;
         end_drag();
     });
     canvas_.add_controller(drag_);
@@ -322,7 +324,12 @@ void Indicator::set_fullscreen_hidden(bool hidden) {
 void Indicator::update_visibility() {
     if (!started_) return;
     if (fullscreen_hidden_ || config_hidden_) {
+        if (!get_visible()) return;
         set_visible(false);
+        // A hidden surface gets no leave event, so the hover would stick.
+        pointer_.reset();
+        model_.pointer_leave(now_s());
+        refresh();
     } else if (!get_visible()) {
         show_now();
     }
@@ -453,11 +460,21 @@ std::string Indicator::output_name() const {
 }
 
 int Indicator::surface_left() const {
-    return indicator_surface_left(center_x_, indicator_surface_w(wide_), output_width());
+    // The allocated width, not the requested one: a resize (wide warning,
+    // full-width drag) lands with a later frame, and the surface must stay
+    // where its current buffer's pill is drawn until then.
+    const int w = canvas_.get_width() > 0 ? canvas_.get_width() : indicator_surface_w(wide_);
+    return indicator_surface_left(center_x_, w, output_width());
+}
+
+void Indicator::on_canvas_allocated() {
+    // The margin and the buffer at the new width go out in the same commit.
+    apply_position();
+    apply_input_region();
 }
 
 double Indicator::pill_cx_in_surface(double pill_w) const {
-    return pill_center_in_surface(center_x_, pill_w, surface_left(), output_width());
+    return pill_center_in_surface(center_x_, pill_w, placed_left_, output_width());
 }
 
 // ---- gestures ---------------------------------------------------------------
@@ -467,47 +484,52 @@ void Indicator::on_drag_begin(double x, double y) {
     moved_ = dragging_ = cancelled_ = false;
     press_x_ = x;
     press_y_ = y;
-    anchor_.begin(center_x_, surface_left());
-    position_dirty_ = false;
+    press_center_ = last_center_ = center_x_;
+    press_left_ = event_origin_ = placed_left_;
     snap_point_.reset();
 }
 
 void Indicator::on_drag_update(double dx, double dy) {
     if (!pressed_) return;
-    // The gesture reports offsets in surface coordinates, and the surface
-    // itself moves while dragging; DragAnchor adds back only the movement the
-    // pointer events already see.
-    const double out_dx = anchor_.output_dx(dx);
-    if (!moved_ && is_drag(out_dx, dy)) {
+    // The gesture reports offsets against the press, in surface coordinates.
+    // The surface moves once, when it widens to the output, and from then on
+    // stays put, so the pill never feeds back into the offsets it reads.
+    if (placed_left_ != event_origin_)
+        event_origin_ = drag_event_origin(press_center_, press_left_, event_origin_, placed_left_,
+                                          dx, last_center_);
+    const double center = drag_center(press_center_, press_left_, event_origin_, dx);
+    last_center_ = center;
+    if (!moved_ && is_drag(center - press_center_, dy)) {
         moved_ = true;
         model_.drag_begin();
         dragging_ = model_.look() == IndicatorLook::Dragging;
+        if (dragging_) {
+            drag_full_ = true;
+            canvas_.queue_resize();
+        }
         refresh();
     }
     if (!dragging_) return;
-    const Snap snap = snap_center(anchor_.center_for(dx), output_width());
+    const Snap snap = snap_center(center, output_width());
     center_x_ = snap.x;
     snap_point_ = snap.point;
-    // Applied in on_tick, at most once per frame, together with the frame
-    // that draws it.
-    position_dirty_ = true;
-    ensure_tick();
+    // Only the drawing and the input region move; the surface does not.
+    apply_input_region();
     canvas_.queue_draw();
 }
 
 void Indicator::on_drag_end(double dx, double dy) {
     if (!pressed_) return;
     const bool was_click = !moved_ && !cancelled_;
-    const bool dragged = dragging_;
-    end_drag();
-    if (dragged) {
-        if (std::exchange(position_dirty_, false)) apply_position();
+    if (dragging_) {
         const std::string out = output_name();
         const double f = to_fraction(center_x_, output_width());
         store_.set(out, f);
         if (on_moved_) on_moved_(f, out);
+        end_drag();  // shrinks back to the narrow surface at the new place
         return;
     }
+    end_drag();
     if (!was_click || !model_.clickable()) return;
     // design.md "Indicator" → Hover: press and release within the pill.
     const double rx = press_x_ + dx, ry = press_y_ + dy;
@@ -524,6 +546,11 @@ void Indicator::end_drag() {
     if (dragging_) model_.drag_end();
     dragging_ = false;
     snap_point_.reset();
+    if (std::exchange(drag_full_, false)) canvas_.queue_resize();
+    // Now, not only once the narrow size is allocated: that may never come
+    // (the wide size never landed) and the surface would stay at the press.
+    // While still wide this places it at the output's left edge, as before.
+    apply_position();
     refresh();
 }
 
@@ -656,7 +683,7 @@ void Indicator::apply_input_region() {
 }
 
 void Indicator::apply_position() {
-    const int left = surface_left();
+    const int left = placed_left_ = surface_left();
     if (backend_ == Backend::Wayland) {
         if (gtk_layer_is_layer_window(gobj())) set_overlay_margins(*this, {.left = left});
     } else if (backend_ == Backend::X11 && get_realized() && monitor_) {
@@ -693,7 +720,6 @@ void Indicator::schedule_deadline() {
 
 bool Indicator::needs_tick(double now) const {
     if (tl_.any_running(now) || any_delayed()) return true;
-    if (dragging_) return true;  // margins follow the pointer once per frame
     // The meter and ring breath; reduced motion uses a 10 Hz timer instead.
     if (look_ == IndicatorLook::Recording && !reduced_) return true;
     if (look_ == IndicatorLook::Finishing && !reduced_) return true;  // spinner, dots
@@ -712,17 +738,6 @@ bool Indicator::on_tick(const Glib::RefPtr<Gdk::FrameClock>&) {
     last_tick_s_ = now;
 
     bool redraw = fire_delayed(now) || tl_.any_running(now);
-
-    if (dragging_) {
-        // A new frame has started, so the one carrying the last margin has
-        // been shown and pointer events are relative to it from here on.
-        anchor_.presented();
-        if (std::exchange(position_dirty_, false)) {
-            apply_position();
-            anchor_.committed(surface_left());
-            redraw = true;
-        }
-    }
 
     if (!reduced_ && (look_ == IndicatorLook::Recording || look_ == IndicatorLook::Finishing)) {
         meter_.tick(dt);
@@ -793,7 +808,7 @@ void Indicator::draw(GtkSnapshot* s) {
     if (alpha <= 0.0) return;
 
     if (dragging_ && snap_point_) {
-        const double tick_x = *snap_point_ * output_width() - surface_left();
+        const double tick_x = *snap_point_ * output_width() - placed_left_;
         fill_rounded(s, rect(tick_x - kTickW / 2, 0, kTickW, kTickH), 0, tokens_.text2);
     }
 

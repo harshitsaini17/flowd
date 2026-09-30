@@ -43,6 +43,9 @@ constexpr std::size_t kMaxQueryReply = 1 << 20;
 // indicator: each send or receive gives up after this long.
 constexpr int kQueryTimeoutMs = 200;
 constexpr int kUsPerMs = 1000;
+// A swaymsg query that has not answered by then is killed and counted as
+// failed, so a wedged Sway cannot hold the one-get_tree-at-a-time slot.
+constexpr guint kSwayQueryTimeoutMs = 1000;
 
 void log_error(const std::string& msg) { std::cerr << kLogPrefix << msg << '\n'; }
 
@@ -79,9 +82,6 @@ int connect_unix(const std::string& path) {
     return fd;
 }
 
-// One Hyprland request: write it, read the whole reply. Blocking, but it is
-// a local socket answered at once, and only asked at start and on focus
-// changes, never per frame.
 bool set_timeouts(int fd) {
     timeval tv{};
     tv.tv_sec = kQueryTimeoutMs / 1000;
@@ -90,6 +90,9 @@ bool set_timeouts(int fd) {
            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
 }
 
+// One Hyprland request: write it, read the whole reply. Blocking, but it is
+// a local socket answered at once, and only asked at start and on focus
+// changes, never per frame.
 std::optional<std::string> hypr_query(const std::string& socket_path, std::string_view request) {
     const int fd = connect_unix(socket_path);
     if (fd < 0) return std::nullopt;
@@ -242,29 +245,53 @@ bool OutputTracker::on_hypr_readable(Glib::IOCondition cond) {
 
 namespace {
 
-// One async swaymsg query in flight: the subprocess and where its reply goes.
+// One async swaymsg query in flight: the subprocess, its deadline and where
+// its reply goes.
 struct SwayQuery {
-    std::function<void(std::string)> deliver;  // a no-op once the tracker is gone
+    // Called exactly once: with the reply, or nullopt when swaymsg failed or
+    // timed out. A no-op once the tracker is gone.
+    std::function<void(std::optional<std::string>)> deliver;
+    GSubprocess* proc = nullptr;
+    GCancellable* cancel = nullptr;
+    guint timeout_id = 0;
 };
+
+gboolean on_sway_query_timeout(gpointer data) {
+    auto* q = static_cast<SwayQuery*>(data);
+    q->timeout_id = 0;
+    // Our own references: q may be freed as soon as the query completes.
+    auto* proc = G_SUBPROCESS(g_object_ref(q->proc));
+    auto* cancel = G_CANCELLABLE(g_object_ref(q->cancel));
+    // Cancelling first makes the pending communicate finish with
+    // G_IO_ERROR_CANCELLED, never with a truncated reply; on_sway_query_done
+    // then delivers the failure and frees q. The kill stops swaymsg itself.
+    g_cancellable_cancel(cancel);
+    g_subprocess_force_exit(proc);
+    g_object_unref(cancel);
+    g_object_unref(proc);
+    return G_SOURCE_REMOVE;
+}
 
 void on_sway_query_done(GObject* source, GAsyncResult* res, gpointer data) {
     std::unique_ptr<SwayQuery> q(static_cast<SwayQuery*>(data));
+    if (q->timeout_id) g_source_remove(q->timeout_id);
     char* out = nullptr;
     GError* err = nullptr;
     const bool ok = g_subprocess_communicate_utf8_finish(G_SUBPROCESS(source), res, &out, nullptr,
                                                          &err);
-    std::string reply = ok && out ? out : "";
+    std::optional<std::string> reply;
+    if (ok && out) reply = out;
     g_free(out);
     if (err) g_error_free(err);
+    g_object_unref(q->cancel);
     g_object_unref(source);
-    // A failed query leaves the last known state; the next event asks again.
-    if (ok) q->deliver(std::move(reply));
+    q->deliver(std::move(reply));
 }
 
 }  // namespace
 
-void OutputTracker::sway_query(const char* type,
-                               std::function<void(OutputTracker&, std::string)> on_reply) {
+void OutputTracker::sway_query(
+    const char* type, std::function<void(OutputTracker&, std::optional<std::string>)> on_reply) {
     const char* argv[] = {"swaymsg", "-r", "-t", type, nullptr};
     GError* err = nullptr;
     GSubprocess* proc = g_subprocess_newv(
@@ -278,18 +305,23 @@ void OutputTracker::sway_query(const char* type,
         return;
     }
     std::weak_ptr<Shared> weak = shared_;
-    auto* q = new SwayQuery{[weak, on_reply](std::string reply) {
-        const auto sh = weak.lock();
-        if (sh && sh->alive && sh->self) on_reply(*sh->self, std::move(reply));
-    }};
-    g_subprocess_communicate_utf8_async(proc, nullptr, nullptr, on_sway_query_done, q);
+    auto* q = new SwayQuery{[weak, on_reply](std::optional<std::string> reply) {
+                                const auto sh = weak.lock();
+                                if (sh && sh->alive && sh->self)
+                                    on_reply(*sh->self, std::move(reply));
+                            },
+                            proc, g_cancellable_new(), 0};
+    q->timeout_id = g_timeout_add(kSwayQueryTimeoutMs, on_sway_query_timeout, q);
+    g_subprocess_communicate_utf8_async(proc, nullptr, q->cancel, on_sway_query_done, q);
 }
 
 bool OutputTracker::start_sway() {
     // The focused output as soon as swaymsg answers; later changes come from
     // the subscription. Asynchronous, so a slow Sway never blocks startup.
-    sway_query("get_outputs", [](OutputTracker& t, std::string out) {
-        if (const auto name = focused_output_from_json(out)) t.report_output(*name);
+    sway_query("get_outputs", [](OutputTracker& t, std::optional<std::string> out) {
+        // A failed query leaves the last known output; the next event says.
+        if (!out) return;
+        if (const auto name = focused_output_from_json(*out)) t.report_output(*name);
     });
     recheck_sway_fullscreen();
     if (failed_) return false;
@@ -337,9 +369,12 @@ void OutputTracker::recheck_sway_fullscreen() {
         return;
     }
     sway_tree_busy_ = true;
-    sway_query("get_tree", [](OutputTracker& t, std::string tree) {
+    sway_query("get_tree", [](OutputTracker& t, std::optional<std::string> tree) {
+        // Also on failure, so the slot frees and a request made meanwhile runs.
         t.sway_tree_busy_ = false;
-        if (const auto fs = fullscreen_from_sway_tree(tree)) t.report_fullscreen(*fs);
+        if (tree) {
+            if (const auto fs = fullscreen_from_sway_tree(*tree)) t.report_fullscreen(*fs);
+        }
         if (std::exchange(t.sway_tree_again_, false)) t.recheck_sway_fullscreen();
     });
 }
