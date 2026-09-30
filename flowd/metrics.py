@@ -97,7 +97,7 @@ def read_records(path: Path, last_n: int = 50) -> list[dict[str, Any]]:
     return records
 
 
-def _percentile(values: list[float], pct: float) -> float:
+def percentile(values: list[float], pct: float) -> float:
     """Nearest-rank percentile; adequate for the tens of samples we keep."""
     ordered = sorted(values)
     index = max(0, min(len(ordered) - 1, round(pct / 100.0 * len(ordered)) - 1))
@@ -116,6 +116,6 @@ def summarise(records: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
         for stage, value in record.get("stages", {}).items():
             buckets.setdefault(stage, []).append(float(value))
     return {
-        stage: {"p50": _percentile(values, 50), "p95": _percentile(values, 95)}
+        stage: {"p50": percentile(values, 50), "p95": percentile(values, 95)}
         for stage, values in buckets.items()
     }

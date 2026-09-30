@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from flowd.guardrails import novel_words, tokens
-from flowd.metrics import _percentile
+from flowd.metrics import percentile
 
 
 def normalise(text: str) -> list[str]:
@@ -121,8 +121,8 @@ def summarise(results: Sequence[FileResult]) -> dict[str, Any]:
         "fallback_errors": errors,
         "flagged_for_review": sum(1 for r in results if r.novel),
         "release_to_inject_ms": {
-            "p50": _percentile(latencies, 50) if latencies else None,
-            "p95": _percentile(latencies, 95) if latencies else None,
+            "p50": percentile(latencies, 50) if latencies else None,
+            "p95": percentile(latencies, 95) if latencies else None,
         },
     }
 
