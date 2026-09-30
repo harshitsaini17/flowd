@@ -56,7 +56,7 @@ public:
 
     const std::optional<std::string>& why_not() const { return why_not_; }
 
-    // Not on_show/on_hide: those are Gtk::Widget virtuals, and hiding them
+    // Not on_show/on_hide: those are Gtk::Widget virtuals, and overriding them
     // replaces the handler that maps the window.
     void on_show_msg();
     void on_render(const Render& r);
