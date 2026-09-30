@@ -158,7 +158,11 @@ def main() -> int:
     ui.state("finishing")
     time.sleep(0.2)
     ui.end("done", fade=True)
-    time.sleep(1.0)
+    # "Done" holds for fade_ms, then the exit animation runs; poll rather
+    # than guess how long that takes.
+    deadline = time.monotonic() + Ui().fade_ms / 1000 + 2.0
+    while layer_surfaces()["flowd-popup"] and time.monotonic() < deadline:
+        time.sleep(0.1)
     results["focus unchanged after the session"] = focused() == before
     results["popup gone after the fade"] = not layer_surfaces()["flowd-popup"]
 
