@@ -215,6 +215,7 @@
     if (!Object.keys(changes).length) return Promise.resolve(null);
     return req('PATCH', '/api/config', { etag: cfg.etag, changes }).then((r) => {
       if (r.data.etag && r.status !== 409) cfg.etag = r.data.etag;
+      if (r.data.in_file && r.status !== 409) cfg.in_file = r.data.in_file; // the base for group-reset Undo
       if (r.status === 200) {
         cfg.values = r.data.values;
         lastModes = { ...r.data.values.modes };

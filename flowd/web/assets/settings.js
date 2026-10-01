@@ -500,6 +500,7 @@
     if (demo) { setDaemon(true); setCleanup('ready'); }
     if (location.hash && /^#[\w-]+$/.test(location.hash)) document.querySelector(location.hash)?.scrollIntoView();
     F.api?.start();
+    // Booted (controls wired, demo data or F.api.start() kicked off), not "config loaded".
     F.ready = true;
     document.dispatchEvent(new Event('flowd:ready'));
   };

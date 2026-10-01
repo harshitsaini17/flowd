@@ -284,12 +284,25 @@ async def test_reload_failure_after_write_is_500_saying_it_was_saved(
     body = {"etag": await etag(api), "changes": {"hotkey.debounce_ms": 90}}
     reply = await call(api, "PATCH", "/api/config", body)
     assert reply.status == 500
+    snapshot = read_config(backend.config_file)
     assert reply.body == {
         "ok": False,
         "error": "saved, but flowd could not apply it: model not found",
-        "etag": read_config(backend.config_file).etag,
+        "etag": snapshot.etag,
+        "in_file": snapshot.in_file,
     }
     assert "debounce_ms = 90" in backend.config_file.read_text()
+
+
+async def test_patch_reply_carries_in_file_like_get(api: SettingsApi) -> None:
+    body = {"etag": await etag(api), "changes": {"hotkey.debounce_ms": 120}}
+    reply = await call(api, "PATCH", "/api/config", body)
+    assert reply.body["in_file"] == {"hotkey": {"mode": "toggle", "debounce_ms": 120}}
+    assert reply.body["in_file"] == (await call(api, "GET", "/api/config")).body["in_file"]
+
+    body = {"etag": reply.body["etag"], "changes": {"hotkey.debounce_ms": None}}
+    reply = await call(api, "PATCH", "/api/config", body)
+    assert reply.body["in_file"] == {"hotkey": {"mode": "toggle"}}
 
 
 async def test_reset_section(api: SettingsApi, backend: FakeBackend) -> None:

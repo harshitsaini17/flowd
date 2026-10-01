@@ -203,11 +203,13 @@ class SettingsApi:
             return _error(422, str(exc))
         return _error(409, "conflict", etag=current)
 
-    async def _reload_after_write(self, etag: str) -> Reply | None:
+    async def _reload_after_write(self, etag: str, **extra: Any) -> Reply | None:
         failure = await self._backend.reload()
         if failure is not None:
             # The file did change: the page needs the new etag to keep saving.
-            return _error(500, f"saved, but flowd could not apply it: {failure}", etag=etag)
+            return _error(
+                500, f"saved, but flowd could not apply it: {failure}", etag=etag, **extra
+            )
         return None
 
     async def _get_config(self, query: dict[str, str], body: Any) -> Reply:
@@ -238,13 +240,15 @@ class SettingsApi:
             # not expect. The write never happened, so it is the body's fault.
             return _error(422, str(exc))
         self._update_pending(snapshot)
-        failed = await self._reload_after_write(snapshot.etag)
+        # in_file lets the page keep its Undo base current without a re-GET.
+        failed = await self._reload_after_write(snapshot.etag, in_file=snapshot.in_file)
         if failed is not None:
             return failed
         return _ok(
             applied=applied,
             etag=snapshot.etag,
             values=snapshot.values,
+            in_file=snapshot.in_file,
             restart_pending=sorted(self.restart_pending),
         )
 

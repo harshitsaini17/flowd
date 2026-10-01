@@ -132,7 +132,10 @@ _REVIEWED = {
 
 def test_template_interpolations_escape_outside_values() -> None:
     """Outside values reach markup only through esc() or CSS.escape(). Lines that assign
-    textContent are exempt, since the browser never parses them as HTML."""
+    textContent are exempt, since the browser never parses them as HTML.
+
+    Limits: it knows only the identifiers in _TAINTED, so a value under a new name slips
+    past, and its ${...} match skips expressions with nested braces or backticks."""
     bad = []
     for path in sorted((WEB / "assets").glob("*.js")):
         for line in without_comments(path.read_text()).splitlines():

@@ -234,7 +234,9 @@
     host.querySelector('.unit').textContent = d.unit;
     let cur = +d.slider, saved = cur, keyT;
     const pct = (v) => ((v - +r.min) / (+r.max - +r.min)) * 100;
-    const fit = (v) => { r.min = Math.min(lo, v); r.max = Math.max(hi, v); r.value = v; };
+    // A value outside the slider's normal range widens it. While widened, step is 'any', so the
+    // browser does not snap an off-grid value (5 ms, 8000 ms) to the authored step.
+    const fit = (v) => { const wide = v < lo || v > hi; r.min = Math.min(lo, v); r.max = Math.max(hi, v); r.step = wide ? 'any' : step; r.value = v; };
     const paint = () => {
       r.style.setProperty('--p', `${pct(+r.value)}%`);
       r.setAttribute('aria-valuetext', `${cur} ${d.unit === 'ms' ? 'milliseconds' : d.unit}`);
