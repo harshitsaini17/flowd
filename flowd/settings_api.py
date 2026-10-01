@@ -8,8 +8,10 @@ the wrong method is 405.
 from __future__ import annotations
 
 import asyncio
+import logging
+import math
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol, TypeGuard
 
@@ -26,6 +28,11 @@ BUDGET_MB = 1600
 MAX_TEST_TEXT = 2000
 #: How many metrics records the stats overview reads ("All time").
 STATS_RECORDS = 100_000
+#: The microphone test's length bounds and default, in seconds. The server
+#: puts no limit on a stream, so the upper bound here is the only one.
+MIC_TEST_MIN_S, MIC_TEST_MAX_S = 1.0, 15.0
+
+log = logging.getLogger(__name__)
 
 
 class Backend(Protocol):
@@ -51,6 +58,17 @@ class Backend(Protocol):
 
     def daemon_status(self) -> dict[str, Any]:
         """`{"state", "stt_model", "final_model", "cleanup"}`."""
+        ...
+
+    def mic_test(self, seconds: float) -> AsyncIterator[tuple[float, float]]:
+        """`(rms_db, peak_db)` per 50 ms window for `seconds`. Raises `Busy`
+        on its first step during a dictation or another test; a dictation
+        that starts mid-test ends it."""
+        ...
+
+    @property
+    def mic_test_preempted(self) -> bool:
+        """Whether the last microphone test was ended by a dictation."""
         ...
 
 
@@ -112,6 +130,7 @@ class SettingsApi:
             ("GET", "/api/stats"): self._stats,
             ("GET", "/api/status"): self._status,
             ("GET", "/api/inject-backends"): self._inject_backends,
+            ("POST", "/api/mic-test"): self._mic_test,
         }
         self._paths = {path for _, path in self._routes}
 
@@ -324,3 +343,97 @@ class SettingsApi:
     async def _inject_backends(self, query: dict[str, str], body: Any) -> Reply:
         order = self._backend.cfg.inject.order
         return _ok(backends=await asyncio.to_thread(status.backends, order))
+
+    # -- microphone test ----------------------------------------------------
+
+    async def _mic_test(self, query: dict[str, str], body: Any) -> Reply | Stream:
+        seconds = MIC_TEST_MAX_S
+        if body is not None:
+            if not isinstance(body, dict):
+                return _error(422, "the body must be an object")
+            value = body.get("seconds")
+            if value is not None:
+                # bool is an int subclass, and NaN would slip past the clamp.
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int | float)
+                    or not math.isfinite(value)
+                ):
+                    return _error(422, "seconds must be a number")
+                seconds = min(max(float(value), MIC_TEST_MIN_S), MIC_TEST_MAX_S)
+        levels = self._backend.mic_test(seconds)
+        # Busy is raised on the generator's first step, so that step is taken
+        # here, where a 409 can still be sent instead of a stream.
+        try:
+            first: tuple[float, float] | None = await anext(levels)
+        except Busy as exc:
+            return _error(409, str(exc))
+        except StopAsyncIteration:
+            first = None
+        except Exception:
+            log.exception("microphone test: could not open the microphone")
+            return Stream(_mic_error())
+        return Stream(_MicEvents(levels, first, lambda: self._backend.mic_test_preempted))
+
+
+class _MicEvents:
+    """The microphone test's events: `level`s, then one `end`.
+
+    A class rather than a generator: the levels are already started (the busy
+    check takes their first step), and a generator closed before its own first
+    step never runs its `finally`, which would leave the microphone open when
+    the page goes before anything is written. `aclose` here always closes them.
+    """
+
+    def __init__(
+        self,
+        levels: AsyncIterator[tuple[float, float]],
+        first: tuple[float, float] | None,
+        preempted: Callable[[], bool],
+    ) -> None:
+        self._levels = levels
+        self._first = first
+        self._preempted = preempted
+        self._ended = first is None
+        self._done = False
+
+    def __aiter__(self) -> _MicEvents:
+        return self
+
+    async def __anext__(self) -> tuple[str, dict[str, Any]]:
+        if self._done:
+            raise StopAsyncIteration
+        if self._first is not None:
+            pair, self._first = self._first, None
+            return _level(pair)
+        if not self._ended:
+            try:
+                return _level(await anext(self._levels))
+            except StopAsyncIteration:
+                pass
+            except Exception:
+                log.exception("microphone test failed")
+                await self.aclose()
+                return "end", {"reason": "error", "error": "the microphone test failed"}
+            self._ended = True
+        self._done = True
+        await self._close_levels()
+        reason = "dictation" if self._preempted() else "done"
+        return "end", {"reason": reason}
+
+    async def aclose(self) -> None:
+        self._done = True
+        await self._close_levels()
+
+    async def _close_levels(self) -> None:
+        aclose = getattr(self._levels, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+
+def _level(pair: tuple[float, float]) -> tuple[str, dict[str, Any]]:
+    return "level", {"rms": pair[0], "peak": pair[1]}
+
+
+async def _mic_error() -> AsyncIterator[tuple[str, dict[str, Any]]]:
+    yield "end", {"reason": "error", "error": "could not open the microphone"}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,8 +13,8 @@ import pytest
 from flowd import settings_api, status
 from flowd.config import Config, load_config
 from flowd.config_edit import read_config
-from flowd.settings_api import SettingsApi
-from flowd.settings_server import Reply
+from flowd.settings_api import Busy, SettingsApi
+from flowd.settings_server import Reply, Stream
 
 
 @dataclass
@@ -25,10 +26,29 @@ class FakeBackend:
     reloads: int = 0
     reload_error: str | None = None
     recording: bool = False
+    # The microphone test: what `mic_test` yields, how it ends, and what it saw.
+    mic_levels: list[tuple[float, float]] = field(default_factory=list)
+    mic_error: Exception | None = None
+    mic_preempt: bool = False
+    mic_test_preempted: bool = False
+    mic_seconds: list[float] = field(default_factory=list)
+    mic_closed: bool = False
 
     @property
     def metrics_file(self) -> Path:
         return self.metrics_path
+
+    async def mic_test(self, seconds: float) -> AsyncIterator[tuple[float, float]]:
+        self.mic_seconds.append(seconds)
+        if self.mic_error is not None:
+            raise self.mic_error
+        self.mic_test_preempted = False
+        try:
+            for pair in self.mic_levels:
+                yield pair
+            self.mic_test_preempted = self.mic_preempt
+        finally:
+            self.mic_closed = True
 
     async def reload(self) -> str | None:
         self.reloads += 1
@@ -457,7 +477,7 @@ async def test_inject_backends_follow_order(
 # -- routing --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", ["/api/nope", "/api/config/", "/api/mic-test", "/api/restart"])
+@pytest.mark.parametrize("path", ["/api/nope", "/api/config/", "/api/restart"])
 async def test_unknown_route_is_404(api: SettingsApi, path: str) -> None:
     reply = await call(api, "GET", path)
     assert reply.status == 404 and reply.body["ok"] is False
@@ -465,8 +485,108 @@ async def test_unknown_route_is_404(api: SettingsApi, path: str) -> None:
 
 @pytest.mark.parametrize(
     ("method", "path"),
-    [("DELETE", "/api/config"), ("GET", "/api/config/reset"), ("POST", "/api/stats")],
+    [
+        ("DELETE", "/api/config"),
+        ("GET", "/api/config/reset"),
+        ("POST", "/api/stats"),
+        ("GET", "/api/mic-test"),
+    ],
 )
 async def test_wrong_method_is_405(api: SettingsApi, method: str, path: str) -> None:
     reply = await call(api, method, path)
     assert reply.status == 405 and reply.body["ok"] is False
+
+
+# -- microphone test --------------------------------------------------------
+
+
+async def mic_events(api: SettingsApi, body: Any = None) -> list[tuple[str, dict[str, Any]]]:
+    reply = await api("POST", "/api/mic-test", {}, body)
+    assert isinstance(reply, Stream)
+    events = [event async for event in reply.events]
+    json.dumps(events)
+    return events
+
+
+async def test_mic_test_route_streams_and_ends(api: SettingsApi, backend: FakeBackend) -> None:
+    backend.mic_levels = [(-30.0, -12.0), (-40.0, -20.0)]
+    assert await mic_events(api, {"seconds": 3}) == [
+        ("level", {"rms": -30.0, "peak": -12.0}),
+        ("level", {"rms": -40.0, "peak": -20.0}),
+        ("end", {"reason": "done"}),
+    ]
+    assert backend.mic_seconds == [3] and backend.mic_closed
+
+
+@pytest.mark.parametrize(
+    ("body", "seconds"),
+    [
+        (None, 15),
+        ({}, 15),
+        ({"seconds": None}, 15),
+        ({"seconds": 0.2}, 1),
+        ({"seconds": 99}, 15),
+        ({"seconds": 7.5}, 7.5),
+    ],
+)
+async def test_mic_test_seconds_are_clamped(
+    api: SettingsApi, backend: FakeBackend, body: Any, seconds: float
+) -> None:
+    await mic_events(api, body)
+    assert backend.mic_seconds == [seconds]
+
+
+@pytest.mark.parametrize(
+    "body", [{"seconds": "5"}, {"seconds": True}, {"seconds": [1]}, {"seconds": float("nan")}, [1]]
+)
+async def test_mic_test_bad_seconds_is_422(
+    api: SettingsApi, backend: FakeBackend, body: Any
+) -> None:
+    reply = await call(api, "POST", "/api/mic-test", body)
+    assert reply.status == 422 and reply.body["ok"] is False
+    assert backend.mic_seconds == []
+
+
+async def test_mic_test_busy_is_409(api: SettingsApi, backend: FakeBackend) -> None:
+    backend.mic_error = Busy("the microphone is in use by a dictation")
+    reply = await call(api, "POST", "/api/mic-test", {"seconds": 5})
+    assert reply.status == 409
+    assert reply.body == {"ok": False, "error": "the microphone is in use by a dictation"}
+
+
+async def test_mic_test_ended_by_a_dictation(api: SettingsApi, backend: FakeBackend) -> None:
+    backend.mic_levels, backend.mic_preempt = [(-30.0, -12.0)], True
+    events = await mic_events(api)
+    assert events[-1] == ("end", {"reason": "dictation"})
+
+
+async def test_mic_test_open_failure_ends_with_a_plain_error(
+    api: SettingsApi, backend: FakeBackend
+) -> None:
+    backend.mic_error = OSError("PaErrorCode -9985: secret detail")
+    events = await mic_events(api)
+    assert events == [("end", {"reason": "error", "error": "could not open the microphone"})]
+
+
+async def test_mic_test_disconnect_closes_the_capture(
+    api: SettingsApi, backend: FakeBackend
+) -> None:
+    backend.mic_levels = [(-30.0, -12.0)] * 5
+    reply = await api("POST", "/api/mic-test", {}, None)
+    assert isinstance(reply, Stream)
+    events = reply.events
+    await anext(events)
+    await events.aclose()  # type: ignore[attr-defined]
+    assert backend.mic_closed
+
+
+async def test_mic_test_closed_before_the_first_event_releases_the_mic(
+    api: SettingsApi, backend: FakeBackend
+) -> None:
+    # The page can go before the server writes anything; the levels were
+    # already started for the busy check, so they must still be closed.
+    backend.mic_levels = [(-30.0, -12.0)] * 5
+    reply = await api("POST", "/api/mic-test", {}, None)
+    assert isinstance(reply, Stream)
+    await reply.events.aclose()  # type: ignore[attr-defined]
+    assert backend.mic_closed

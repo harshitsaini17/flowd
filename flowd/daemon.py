@@ -9,7 +9,7 @@ import os
 import subprocess
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,12 +23,13 @@ from flowd.context import AppContext
 from flowd.inject import inject_text as real_inject
 from flowd.inject.base import InjectResult
 from flowd.joiner import stitch
-from flowd.levels import LevelWindows
+from flowd.levels import FLOOR_DB, LevelWindows
 from flowd.metrics import SessionMetrics, read_records, summarise, write_record
 from flowd.modes import Style, finish, style_for
 from flowd.recordings import SessionRecorder
 from flowd.scheduler import Scheduler
 from flowd.session import Chunk, Session
+from flowd.settings_api import Busy
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
 from flowd.suspend import SleepDetector
@@ -41,6 +42,13 @@ Injector = Callable[..., InjectResult]
 
 #: spec 6.6: the full-rewrite pass takes the whole joined text, ≤ 300 words.
 REWRITE_MAX_WORDS = 300
+#: The microphone test reads the capture this often, the meter's 20 Hz.
+MIC_TEST_POLL_S = 0.05
+#: Empty reads in a row after which the microphone test reports silence, so the
+#: settings server, which notices a closed page only when it writes, still
+#: writes while the device delivers nothing. Two polls: blocks of up to 100 ms
+#: arrive at least that often from a working device.
+MIC_TEST_SILENT_POLLS = 2
 
 
 class Capture(Protocol):
@@ -210,6 +218,10 @@ class Daemon:
         # what it last sent, so a steady condition is not re-sent.
         self._mic_unavailable = False
         self._warning: tuple[str | None, bool] = (None, False)
+        # The settings page's microphone test: whether one is running, and
+        # whether a dictation took its stream (see `mic_test`).
+        self._mic_testing = False
+        self._mic_test_preempted = False
 
     # --- command handling -------------------------------------------------
 
@@ -319,6 +331,10 @@ class Daemon:
             on_change=self._render,
             clock=self.clock,
         )
+        if self._mic_testing:
+            # A dictation always wins: the test sees this after its next await
+            # and stops, leaving the stream to the session.
+            self._mic_test_preempted = True
         try:
             self.capture.start()
         except Exception as exc:
@@ -362,6 +378,66 @@ class Daemon:
         not — awaiting the lock is exactly where a `cancel` lands.
         """
         return self.session is not None and self.machine.state is State.RECORDING
+
+    @property
+    def recording(self) -> bool:
+        """Whether a capture stream may be open: a session, a microphone test,
+        or `audio.always_open`. The capture has no public way to say whether
+        its idle stream is open, so `always_open` counts as open throughout."""
+        return self.session is not None or self._mic_testing or self.cfg.audio.always_open
+
+    @property
+    def mic_test_preempted(self) -> bool:
+        """Whether the last microphone test was ended by a dictation."""
+        return self._mic_test_preempted
+
+    def _preempted(self) -> bool:
+        """The flag behind a call, as in `_recording`: `_begin` sets it while
+        `mic_test` is suspended at a yield, which a type checker narrowing the
+        attribute would take for dead code."""
+        return self._mic_test_preempted
+
+    async def mic_test(self, seconds: float) -> AsyncIterator[tuple[float, float]]:
+        """Levels from the microphone for the settings page (design.md
+        Microphone), as `(rms_db, peak_db)` per 50 ms window, for `seconds`.
+
+        Uses `self.capture`, so there is one device path and one PortAudio
+        client; `pump` does nothing without a session, so these reads do not
+        race the STT. Refused with `Busy` during a dictation or another test.
+        A dictation that starts mid-test ends it and keeps the stream. An
+        error opening the device propagates.
+        """
+        if self.session is not None or self._mic_testing:
+            raise Busy("the microphone is in use by a dictation")
+        self._mic_testing, self._mic_test_preempted = True, False
+        levels = LevelWindows(self.cfg.audio.sample_rate)
+        try:
+            # On the loop, as `_begin` does, so the two never open it at once.
+            self.capture.start()
+            deadline = self.clock() + seconds
+            silent = 0
+            while not self._preempted():
+                pairs = levels.feed(self.capture.read())
+                silent = 0 if pairs else silent + 1
+                if silent >= MIC_TEST_SILENT_POLLS:
+                    pairs, silent = [(FLOOR_DB, FLOOR_DB)], 0
+                for pair in pairs:
+                    yield pair
+                    if self._preempted():
+                        return
+                # Checked after the first read, so even a short test reports.
+                if self.clock() >= deadline:
+                    return
+                await asyncio.sleep(MIC_TEST_POLL_S)
+        finally:
+            self._mic_testing = False
+            # A session that took the stream owns it now. One that failed to
+            # open left it to nobody, so it is released here.
+            if not self._mic_test_preempted or self.session is None:
+                try:
+                    self.capture.stop()
+                except Exception as exc:
+                    log.warning("error closing microphone: %s", exc)
 
     async def pump(self) -> None:
         """Move one block of audio through STT. Called by the run loop and tests."""

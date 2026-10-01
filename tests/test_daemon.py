@@ -14,6 +14,7 @@ from flowd.audio import MicrophoneStuck
 from flowd.config import Config, Hotkey, Inject, Ui
 from flowd.daemon import Daemon
 from flowd.inject.base import InjectResult
+from flowd.settings_api import Busy
 from flowd.state import Event as MachineEvent
 from flowd.state import State
 from flowd.stt import Committed, Event, FakeSttEngine, Partial
@@ -1516,3 +1517,78 @@ async def test_notify_on_finish_off_by_default(monkeypatch: pytest.MonkeyPatch) 
     await d.handle({"cmd": "stop"})
     await asyncio.gather(*d._background)
     assert sent == []
+
+
+# --- microphone test (settings page) -------------------------------------
+
+
+class FailingCapture(FakeCapture):
+    def start(self) -> None:
+        raise OSError("device busy")
+
+
+async def test_mic_test_streams_levels_then_releases_the_mic() -> None:
+    d = daemon(FakeSttEngine([]))
+    levels = [pair async for pair in d.mic_test(0.2)]
+    assert levels  # FakeCapture's blocks produce windows
+    assert d.capture.stopped
+    assert not d.recording
+
+
+async def test_mic_test_refused_while_recording() -> None:
+    d = daemon(FakeSttEngine([[]]))
+    await d.handle({"cmd": "start"})
+    with pytest.raises(Busy):
+        async for _ in d.mic_test(1):
+            pass
+
+
+async def test_mic_test_refused_while_another_runs() -> None:
+    d = daemon(FakeSttEngine([]))
+    first = d.mic_test(15)
+    await anext(first)
+    assert d.recording
+    with pytest.raises(Busy):
+        await anext(d.mic_test(1))
+    await first.aclose()
+    assert d.capture.stopped and not d.recording
+
+
+async def test_dictation_start_ends_mic_test() -> None:
+    d = daemon(FakeSttEngine([[Committed("hi")]]))
+    gen = d.mic_test(15)
+    await anext(gen)
+    await d.handle({"cmd": "start"})
+    rest = [p async for p in gen]
+    assert d.mic_test_preempted and d.session is not None
+    assert not d.capture.stopped  # the session kept the stream
+    assert len(rest) <= 2
+
+
+async def test_mic_test_open_failure_raises_and_frees_the_test() -> None:
+    d = daemon(FakeSttEngine([]), capture=FailingCapture())
+    with pytest.raises(OSError):
+        await anext(d.mic_test(1))
+    assert not d.recording
+    # The failed test does not block the next one.
+    d.capture = FakeCapture()
+    assert [p async for p in d.mic_test(0.2)]
+
+
+async def test_mic_test_after_a_preempted_one_is_not_preempted() -> None:
+    d = daemon(FakeSttEngine([[]]))
+    gen = d.mic_test(15)
+    await anext(gen)
+    await d.handle({"cmd": "start"})
+    _ = [p async for p in gen]
+    await d.handle({"cmd": "cancel"})
+    assert d.session is None
+    d.capture = FakeCapture()
+    assert [p async for p in d.mic_test(0.2)]
+    assert not d.mic_test_preempted and d.capture.stopped
+
+
+def test_always_open_counts_as_recording() -> None:
+    cfg = Config()
+    d = daemon(FakeSttEngine([]), cfg=replace(cfg, audio=replace(cfg.audio, always_open=True)))
+    assert d.recording
