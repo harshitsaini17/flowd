@@ -71,9 +71,23 @@ class Backend(Protocol):
         """Whether the last microphone test was ended by a dictation."""
         ...
 
+    async def focused_app(self) -> str | None:
+        """The focused window's app id after a short delay, or None when the
+        desktop cannot tell."""
+        ...
+
+    async def restart(self, target: str, *, reset_position: bool) -> None:
+        """Restart flowd-ui (`"ui"`) or the daemon (`"daemon"`). Raises `Busy`
+        during a dictation and `Unavailable` when it cannot be done here."""
+        ...
+
 
 class Busy(Exception):
     """The microphone is in use by a dictation."""
+
+
+class Unavailable(Exception):
+    """The request cannot be carried out here; the message says why."""
 
 
 Route = Callable[[dict[str, str], Any], Awaitable[Reply | Stream]]
@@ -131,6 +145,8 @@ class SettingsApi:
             ("GET", "/api/status"): self._status,
             ("GET", "/api/inject-backends"): self._inject_backends,
             ("POST", "/api/mic-test"): self._mic_test,
+            ("POST", "/api/detect-app"): self._detect_app,
+            ("POST", "/api/restart"): self._restart,
         }
         self._paths = {path for _, path in self._routes}
 
@@ -377,6 +393,29 @@ class SettingsApi:
             log.exception("microphone test: could not open the microphone")
             return Stream(_mic_error())
         return Stream(_MicEvents(levels, first, lambda: self._backend.mic_test_preempted))
+
+    # -- detect app, restart -------------------------------------------------
+
+    async def _detect_app(self, query: dict[str, str], body: Any) -> Reply:
+        # None: the desktop cannot tell (KDE and GNOME on Wayland).
+        return _ok(app_id=await self._backend.focused_app())
+
+    async def _restart(self, query: dict[str, str], body: Any) -> Reply:
+        if not isinstance(body, dict):
+            return _error(422, "the body must be an object")
+        target = body.get("target")
+        if target not in ("ui", "daemon"):
+            return _error(422, 'target must be "ui" or "daemon"')
+        reset_position = body.get("reset_position", False)
+        if not isinstance(reset_position, bool):
+            return _error(422, "reset_position must be true or false")
+        try:
+            await self._backend.restart(target, reset_position=reset_position)
+        except Busy as exc:
+            return _error(409, str(exc))
+        except Unavailable as exc:
+            return _error(422, str(exc))
+        return _ok()
 
 
 class _MicEvents:

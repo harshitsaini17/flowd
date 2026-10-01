@@ -16,7 +16,8 @@ from flowd.config import Config, Hotkey, Inject, Ui
 from flowd.daemon import Daemon
 from flowd.inject.base import InjectResult
 from flowd.levels import FLOOR_DB
-from flowd.settings_api import Busy
+from flowd.settings_api import Busy, Unavailable
+from flowd.settings_server import Tokens
 from flowd.state import Event as MachineEvent
 from flowd.state import State
 from flowd.stt import Committed, Event, FakeSttEngine, Partial
@@ -84,10 +85,13 @@ class FakeOverlay:
         self.stopped = False
         self.started = False
         self.starts = 0
+        # `start` and `stop` in order, kept apart from `calls` and `events`.
+        self.lifecycle: list[str] = []
 
     def start(self) -> None:
         self.started = True
         self.starts += 1
+        self.lifecycle.append("start")
 
     def state(self, state: str, reason: str = "") -> None:
         self.events.append(("state", state, reason))
@@ -134,6 +138,7 @@ class FakeOverlay:
 
     def stop(self) -> None:
         self.stopped = True
+        self.lifecycle.append("stop")
 
 
 def daemon(
@@ -1624,3 +1629,229 @@ async def test_mic_test_reports_silence_while_the_device_is_quiet(
     # per MIC_TEST_SILENT_POLLS empty reads.
     assert levels and all(pair == (FLOOR_DB, FLOOR_DB) for pair in levels)
     assert d.capture.stopped
+
+
+# --- detect app and restart (settings page) ------------------------------
+
+
+async def test_focused_app_waits_then_asks(monkeypatch: pytest.MonkeyPatch) -> None:
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(daemon_module, "DETECT_DELAY_S", 0.25)
+    monkeypatch.setattr(daemon_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(daemon_module, "focused_app_id", lambda: "org.gnome.Terminal")
+    d = daemon(FakeSttEngine([]))
+    assert await d.focused_app() == "org.gnome.Terminal"
+    assert slept == [0.25]
+
+
+async def test_focused_app_none_when_the_desktop_cannot_tell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(daemon_module, "DETECT_DELAY_S", 0)
+    monkeypatch.setattr(daemon_module, "focused_app_id", lambda: None)
+    assert await daemon(FakeSttEngine([])).focused_app() is None
+
+
+async def test_restart_ui_stops_and_starts_the_indicator() -> None:
+    d = daemon(FakeSttEngine([]))
+    await d.restart("ui", reset_position=False)
+    assert overlay_of(d).lifecycle == ["stop", "start"]
+
+
+def _position_file(root: Path) -> Path:
+    path = root / "flowd" / "indicator.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"DP-1": 0.25}')
+    return path
+
+
+async def test_restart_ui_reset_position_deletes_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    path = _position_file(tmp_path)
+    d = daemon(FakeSttEngine([]))
+    seen_at_start: list[bool] = []
+    overlay = overlay_of(d)
+    real_start = overlay.start
+
+    def start() -> None:
+        seen_at_start.append(path.exists())
+        real_start()
+
+    overlay.start = start  # type: ignore[method-assign]
+    await d.restart("ui", reset_position=True)
+    assert not path.exists()
+    # Gone before the new flowd-ui reads it, so it starts at the default.
+    assert seen_at_start == [False]
+    assert overlay.lifecycle == ["stop", "start"]
+
+
+async def test_restart_ui_reset_position_with_no_file_is_fine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    d = daemon(FakeSttEngine([]))
+    await d.restart("ui", reset_position=True)
+    assert overlay_of(d).lifecycle == ["stop", "start"]
+
+
+async def test_restart_ui_keeps_the_position_unless_asked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    path = _position_file(tmp_path)
+    await daemon(FakeSttEngine([])).restart("ui", reset_position=False)
+    assert path.exists()
+
+
+def test_indicator_position_file_matches_flowd_ui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ui/src/position_store.cpp `default_position_file`: an absolute
+    # $XDG_STATE_HOME, else $HOME/.local/state; a relative one is ignored.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert daemon_module.indicator_position_file() == tmp_path / "state/flowd/indicator.json"
+    monkeypatch.setenv("XDG_STATE_HOME", "relative/state")
+    expected = tmp_path / "home/.local/state/flowd/indicator.json"
+    assert daemon_module.indicator_position_file() == expected
+    monkeypatch.delenv("XDG_STATE_HOME")
+    assert daemon_module.indicator_position_file() == expected
+    monkeypatch.setenv("HOME", "")
+    assert daemon_module.indicator_position_file() is None
+
+
+async def test_restart_ui_with_the_indicator_off_is_refused() -> None:
+    d = daemon(FakeSttEngine([]))
+    d.overlay = None
+    with pytest.raises(Unavailable, match="the indicator is turned off"):
+        await d.restart("ui", reset_position=False)
+
+
+async def test_restart_refused_during_a_session() -> None:
+    d = daemon(FakeSttEngine([[]]))
+    await d.handle({"cmd": "start"})
+    with pytest.raises(Busy, match="finish the dictation first"):
+        await d.restart("ui", reset_position=False)
+    with pytest.raises(Busy):
+        await d.restart("daemon", reset_position=False)
+    assert overlay_of(d).lifecycle == []
+
+
+async def test_idle_respawn_waits_for_a_ui_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The run loop's idle respawn must not start a flowd-ui while the old one
+    # is still quitting, or the new one would read the position being reset.
+    d = daemon(FakeSttEngine([]))
+    overlay = overlay_of(d)
+    released = threading.Event()
+
+    def slow_stop() -> None:
+        released.wait(2)
+        overlay.lifecycle.append("stop")
+
+    overlay.stop = slow_stop  # type: ignore[method-assign]
+    restart = asyncio.create_task(d.restart("ui", reset_position=False))
+    await asyncio.sleep(0.05)
+    d._start_ui()
+    assert overlay.lifecycle == []
+    released.set()
+    await restart
+    assert overlay.lifecycle == ["stop", "start"]
+    d._start_ui()
+    assert overlay.lifecycle == ["stop", "start", "start"]
+
+
+async def test_restart_daemon_outside_systemd_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    spawned: list[Any] = []
+
+    async def fake_exec(*argv: str, **kwargs: Any) -> Any:
+        spawned.append(argv)
+        raise AssertionError("must not spawn")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    d = daemon(FakeSttEngine([]))
+    with pytest.raises(Unavailable, match="not running under systemd"):
+        await d.restart("daemon", reset_position=False)
+    await asyncio.sleep(0.35)
+    assert spawned == []
+    assert not (tmp_path / "flowd" / "settings-tokens.json").exists()
+
+
+class _FakeProc:
+    returncode = 0
+
+    async def wait(self) -> int:
+        return 0
+
+
+async def test_restart_daemon_under_systemd_writes_tokens_and_schedules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    spawned: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+
+    async def fake_exec(*argv: str, **kwargs: Any) -> Any:
+        spawned.append((argv, kwargs))
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    stale = tmp_path / "flowd" / "settings-tokens.json"
+    stale.parent.mkdir()
+    stale.write_text('{"tokens": ["old"]}')
+    stale.chmod(0o644)
+    d = daemon(FakeSttEngine([]))
+    tokens = Tokens()
+    issued = tokens.issue()
+    d.settings_tokens = tokens
+    await d.restart("daemon", reset_position=False)
+    # The reply goes out before systemd stops us: nothing is spawned yet.
+    assert spawned == []
+    path = tmp_path / "flowd" / "settings-tokens.json"
+    assert json.loads(path.read_text()) == {"tokens": [issued]}
+    assert path.stat().st_mode & 0o777 == 0o600
+    await asyncio.sleep(0.35)
+    await asyncio.gather(*d._background)
+    assert len(spawned) == 1
+    argv, kwargs = spawned[0]
+    assert argv == ("systemctl", "--user", "restart", "flowd.service")
+    assert kwargs["start_new_session"] is True
+    for stream in ("stdin", "stdout", "stderr"):
+        assert kwargs[stream] == asyncio.subprocess.DEVNULL
+
+
+async def test_restart_daemon_without_tokens_still_restarts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    spawned: list[tuple[str, ...]] = []
+
+    async def fake_exec(*argv: str, **kwargs: Any) -> Any:
+        spawned.append(argv)
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    d = daemon(FakeSttEngine([]))
+    assert d.settings_tokens is None
+    await d.restart("daemon", reset_position=False)
+    await asyncio.sleep(0.35)
+    await asyncio.gather(*d._background)
+    assert spawned == [("systemctl", "--user", "restart", "flowd.service")]
+    assert not (tmp_path / "flowd" / "settings-tokens.json").exists()
+
+
+async def test_restart_unknown_target_is_refused() -> None:
+    with pytest.raises(Unavailable):
+        await daemon(FakeSttEngine([])).restart("everything", reset_position=False)

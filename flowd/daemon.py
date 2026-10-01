@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import subprocess
@@ -18,8 +19,8 @@ import numpy as np
 from flowd import guardrails
 from flowd.audio import MicrophoneStuck
 from flowd.cleanup import CleanupClient, CleanupResult
-from flowd.config import Config, Ui, config_path, reload_config, state_dir
-from flowd.context import AppContext
+from flowd.config import Config, Ui, config_path, reload_config, runtime_dir, state_dir
+from flowd.context import AppContext, focused_app_id
 from flowd.inject import inject_text as real_inject
 from flowd.inject.base import InjectResult
 from flowd.joiner import stitch
@@ -29,7 +30,8 @@ from flowd.modes import Style, finish, style_for
 from flowd.recordings import SessionRecorder
 from flowd.scheduler import Scheduler
 from flowd.session import Chunk, Session
-from flowd.settings_api import Busy
+from flowd.settings_api import Busy, Unavailable
+from flowd.settings_server import Tokens
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
 from flowd.suspend import SleepDetector
@@ -49,6 +51,32 @@ MIC_TEST_POLL_S = 0.05
 #: writes while the device delivers nothing. Two polls: blocks of up to 100 ms
 #: arrive at least that often from a working device.
 MIC_TEST_SILENT_POLLS = 2
+#: How long the settings page's "Detect" waits before reading the focused
+#: window, so the user has time to click into the app they mean.
+DETECT_DELAY_S = 3.0
+#: How long a daemon restart waits before asking systemd, so the reply to the
+#: page is written before systemd stops this process.
+RESTART_DELAY_S = 0.3
+#: Where the settings page's tokens wait across a daemon restart. The new
+#: daemon adopts the file at startup and deletes it.
+SETTINGS_TOKENS_FILE = "settings-tokens.json"
+RESTART_TARGETS = ("ui", "daemon")
+
+
+def indicator_position_file() -> Path | None:
+    """flowd-ui's saved indicator position, or None when it has nowhere to
+    keep one. Mirrors `default_position_file` in ui/src/position_store.cpp,
+    which differs from `state_dir`: a relative $XDG_STATE_HOME is ignored
+    (XDG spec) and there is no fallback when $HOME is unset."""
+    xdg = os.environ.get("XDG_STATE_HOME")
+    if xdg and Path(xdg).is_absolute():
+        base = Path(xdg)
+    else:
+        home = os.environ.get("HOME")
+        if not home:
+            return None
+        base = Path(home) / ".local/state"
+    return base / "flowd" / "indicator.json"
 
 
 class Capture(Protocol):
@@ -222,6 +250,12 @@ class Daemon:
         # whether a dictation took its stream (see `mic_test`).
         self._mic_testing = False
         self._mic_test_preempted = False
+        # The settings server's tokens, handed to the next daemon across a
+        # restart from the page. None while there is no settings server.
+        self.settings_tokens: Tokens | None = None
+        # True while the settings page restarts flowd-ui, so the run loop's
+        # idle respawn does not start one before the old one has gone.
+        self._ui_restarting = False
 
     # --- command handling -------------------------------------------------
 
@@ -438,6 +472,99 @@ class Daemon:
                     self.capture.stop()
                 except Exception as exc:
                     log.warning("error closing microphone: %s", exc)
+
+    # --- settings page: detect app, restart -------------------------------
+
+    async def focused_app(self) -> str | None:
+        """The focused window's app id after `DETECT_DELAY_S`, or None when
+        the desktop cannot tell (KDE and GNOME on Wayland)."""
+        await asyncio.sleep(DETECT_DELAY_S)
+        return await asyncio.to_thread(focused_app_id)
+
+    async def restart(self, target: str, *, reset_position: bool) -> None:
+        """Restart flowd-ui (`"ui"`) or this daemon (`"daemon"`).
+
+        Raises `Busy` during a dictation and `Unavailable` when the target
+        cannot be restarted from here. A daemon restart is only scheduled:
+        it happens `RESTART_DELAY_S` after this returns.
+        """
+        if target not in RESTART_TARGETS:
+            raise Unavailable(f"unknown restart target: {target}")
+        if self.session is not None:
+            raise Busy("finish the dictation first")
+        if target == "ui":
+            await self._restart_ui(reset_position=reset_position)
+        else:
+            self._restart_daemon()
+
+    async def _restart_ui(self, *, reset_position: bool) -> None:
+        overlay = self.overlay
+        if overlay is None:
+            raise Unavailable("the indicator is turned off")
+        self._ui_restarting = True
+        try:
+            # Blocking for up to a few seconds while the child quits.
+            await asyncio.to_thread(overlay.stop)
+            if reset_position:
+                path = indicator_position_file()
+                if path is not None:
+                    # Before the start, so the new flowd-ui finds no saved
+                    # position and opens at the default.
+                    path.unlink(missing_ok=True)
+        finally:
+            self._ui_restarting = False
+        self._start_ui()
+
+    def _restart_daemon(self) -> None:
+        # systemd sets INVOCATION_ID for every unit it runs; anywhere else
+        # there is nobody to start us again.
+        if not os.environ.get("INVOCATION_ID"):
+            raise Unavailable("flowd is not running under systemd; restart it yourself")
+        if self.settings_tokens is not None:
+            self._write_settings_tokens(self.settings_tokens.export())
+        loop = asyncio.get_running_loop()
+        loop.call_later(RESTART_DELAY_S, self._spawn_restart)
+
+    def _write_settings_tokens(self, tokens: list[str]) -> None:
+        """Leave the page's tokens for the next daemon, so the open tab keeps
+        working. $XDG_RUNTIME_DIR is a per-user 0700 tmpfs, so the tokens
+        still never reach a disk."""
+        directory = runtime_dir()
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / SETTINGS_TOKENS_FILE
+        # O_EXCL after the unlink: the file is ours and 0600 from creation,
+        # never a stale one (or a link) with someone else's mode.
+        path.unlink(missing_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"tokens": tokens}, f)
+
+    def _spawn_restart(self) -> None:
+        task = asyncio.get_running_loop().create_task(self._systemctl_restart())
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _systemctl_restart(self) -> None:
+        log.info("restarting flowd.service at the settings page's request")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "systemctl",
+                "--user",
+                "restart",
+                "flowd.service",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                # Its own session, so systemd stopping us does not take it too.
+                start_new_session=True,
+            )
+            code = await proc.wait()
+        except OSError as exc:
+            log.error("could not run systemctl to restart flowd: %s", exc)
+            return
+        # Reached only when the restart did not stop us.
+        if code != 0:
+            log.error("systemctl --user restart flowd.service failed (exit %s)", code)
 
     async def pump(self) -> None:
         """Move one block of audio through STT. Called by the run loop and tests."""
@@ -1094,7 +1221,7 @@ class Daemon:
                     log.exception("could not stop flowd-ui")
 
     def _start_ui(self) -> None:
-        if self.overlay is None:
+        if self.overlay is None or self._ui_restarting:
             return
         try:
             self.overlay.start()

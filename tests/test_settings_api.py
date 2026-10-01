@@ -13,7 +13,7 @@ import pytest
 from flowd import settings_api, status
 from flowd.config import Config, load_config
 from flowd.config_edit import read_config
-from flowd.settings_api import Busy, SettingsApi
+from flowd.settings_api import Busy, SettingsApi, Unavailable
 from flowd.settings_server import Reply, Stream
 
 
@@ -33,6 +33,10 @@ class FakeBackend:
     mic_test_preempted: bool = False
     mic_seconds: list[float] = field(default_factory=list)
     mic_closed: bool = False
+    # Detect app and restart: the reply, and what was asked.
+    app_id: str | None = None
+    restart_error: Exception | None = None
+    restarts: list[tuple[str, bool]] = field(default_factory=list)
 
     @property
     def metrics_file(self) -> Path:
@@ -59,6 +63,14 @@ class FakeBackend:
 
     def daemon_status(self) -> dict[str, Any]:
         return {"state": "idle", "stt_model": "tiny", "final_model": "base", "cleanup": "ready"}
+
+    async def focused_app(self) -> str | None:
+        return self.app_id
+
+    async def restart(self, target: str, *, reset_position: bool) -> None:
+        self.restarts.append((target, reset_position))
+        if self.restart_error is not None:
+            raise self.restart_error
 
 
 @pytest.fixture
@@ -477,7 +489,7 @@ async def test_inject_backends_follow_order(
 # -- routing --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", ["/api/nope", "/api/config/", "/api/restart"])
+@pytest.mark.parametrize("path", ["/api/nope", "/api/config/", "/api/shutdown"])
 async def test_unknown_route_is_404(api: SettingsApi, path: str) -> None:
     reply = await call(api, "GET", path)
     assert reply.status == 404 and reply.body["ok"] is False
@@ -599,3 +611,68 @@ async def test_mic_test_closed_before_the_first_event_releases_the_mic(
     assert isinstance(reply, Stream)
     await reply.events.aclose()  # type: ignore[attr-defined]
     assert backend.mic_closed
+
+
+# -- detect app, restart --------------------------------------------------
+
+
+@pytest.mark.parametrize("app_id", ["org.gnome.Terminal", None])
+async def test_detect_app_route(api: SettingsApi, backend: FakeBackend, app_id: str | None) -> None:
+    backend.app_id = app_id
+    reply = await call(api, "POST", "/api/detect-app")
+    assert reply.status == 200 and reply.body == {"ok": True, "app_id": app_id}
+
+
+async def test_detect_app_is_post_only(api: SettingsApi) -> None:
+    assert (await call(api, "GET", "/api/detect-app")).status == 405
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"target": "ui"}, ("ui", False)),
+        ({"target": "ui", "reset_position": True}, ("ui", True)),
+        ({"target": "daemon"}, ("daemon", False)),
+    ],
+)
+async def test_restart_route(
+    api: SettingsApi, backend: FakeBackend, body: Any, expected: tuple[str, bool]
+) -> None:
+    reply = await call(api, "POST", "/api/restart", body)
+    assert reply.status == 200 and reply.body == {"ok": True}
+    assert backend.restarts == [expected]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"target": "everything"},
+        {"target": None},
+        {},
+        None,
+        ["ui"],
+        {"target": "ui", "reset_position": "yes"},
+    ],
+)
+async def test_restart_unknown_target_is_422(
+    api: SettingsApi, backend: FakeBackend, body: Any
+) -> None:
+    reply = await call(api, "POST", "/api/restart", body)
+    assert reply.status == 422 and reply.body["ok"] is False
+    assert backend.restarts == []
+
+
+async def test_restart_during_a_session_is_409(api: SettingsApi, backend: FakeBackend) -> None:
+    backend.restart_error = Busy("finish the dictation first")
+    reply = await call(api, "POST", "/api/restart", {"target": "ui"})
+    assert reply.status == 409
+    assert reply.body == {"ok": False, "error": "finish the dictation first"}
+
+
+async def test_restart_unavailable_is_422_with_the_reason(
+    api: SettingsApi, backend: FakeBackend
+) -> None:
+    message = "flowd is not running under systemd; restart it yourself"
+    backend.restart_error = Unavailable(message)
+    reply = await call(api, "POST", "/api/restart", {"target": "daemon"})
+    assert reply.status == 422 and reply.body == {"ok": False, "error": message}
