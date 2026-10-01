@@ -52,12 +52,20 @@
     daemon: 'flowd isn’t running. Start it with <span class="mono">systemctl --user start flowd</span>.',
   };
   const RO_SEL = ['.content [data-key]', '.content [data-ui-only]', '.content [data-reset]', '.content .segmented[data-key] button', '[data-tags] input', '[data-tags] button', '#repTable input', '#repTable button', '#appTable input', '#appTable button', '#order button', '#devPicker button', '[data-slider] input', '#resetAll', '#detectApp', '#resetPos', '#micTest', '#restartNow', '#checkNow'].join(', ');
+  // Disables the editable controls under `root`. Widgets call F.rendered after each re-render,
+  // so rows drawn later (a filtered table, a new tag) are covered too.
+  const lock = (root) => {
+    const els = $$(RO_SEL, root);
+    if (root !== document && root.matches(RO_SEL)) els.push(root);
+    els.forEach((el) => { if (!el.disabled && 'disabled' in el) { el.disabled = true; el.dataset.ro = ''; } });
+  };
+  F.rendered = (root) => { if (ro) lock(root); };
   const setRo = (why) => {
     ro = why;
     $('#roBanner').hidden = !why;
     $('#roText').innerHTML = why ? RO_TEXT[why] : '';
     if (why) {
-      $$(RO_SEL).forEach((el) => { if (!el.disabled && 'disabled' in el) { el.disabled = true; el.dataset.ro = ''; } });
+      lock(document);
       F.setGlobal('offline');
       $('#saveState .txt').textContent = 'Read-only';
     } else {
@@ -126,8 +134,8 @@
     w.setDaemon(true);
     w.setCleanup(d.cleanup || 'offline');
     $('#st-models').innerHTML = `Speech ${w.badge('ok', 'circle-check', esc(d.stt_model || 'Ready'))}`;
-    const mb = (s.memory || []).reduce((a, m) => a + (m.anon_mb || 0), 0);
-    w.memory = { mb, budget: s.budget_mb || 1600 };
+    const mb = (s.memory || []).reduce((a, m) => a + (Number(m.anon_mb) || 0), 0);
+    w.memory = { mb, budget: Number(s.budget_mb) || 1600 };
     $('#st-mem').innerHTML = `${I('memory-stick', 14)}<span class="tnum">${w.fmtMem(mb)} memory</span>`;
     $('#st-mem').title = (s.memory || []).map((m) => `${m.name}: ${w.fmtMem(m.anon_mb)}`).join(', ') || 'Memory flowd is using';
     $('#hcAgo').textContent = d.health_checked_s_ago == null ? 'not checked yet' : `checked ${Math.round(d.health_checked_s_ago)} s ago`;
@@ -139,17 +147,19 @@
     const r = await req('GET', '/api/stats');
     if (r.status !== 200) return;
     const list = (r.data.sessions || []).filter((s) => typeof s.ts === 'number').map((s) => ({
-      ts: s.ts * 1000, app: s.app_id || 'unknown', name: s.app_id || 'Unknown app', mode: s.mode || 'default',
-      words: s.words || 0, speak: s.speak_s || 0, ms: s.paste_ms || 0, fb: !!s.fallback, via: s.backend || '—',
+      ts: s.ts * 1000, app: String(s.app_id || 'unknown'), name: String(s.app_id || 'Unknown app'), mode: String(s.mode || 'default'),
+      words: Number(s.words) || 0, speak: Number(s.speak_s) || 0, ms: Number(s.paste_ms) || 0, fb: !!s.fallback, via: String(s.backend || '—'),
     }));
     const lat = r.data.latency || {};
-    F.w.setSessions(list, { p50: lat.p50, p95: lat.p95, fbRate: r.data.fallback_rate });
+    const num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+    F.w.setSessions(list, { p50: num(lat.p50), p95: num(lat.p95), fbRate: num(r.data.fallback_rate) });
   };
   const loadDevices = async () => {
     const r = await req('GET', '/api/status?devices=1');
-    if (r.status !== 200 || !Array.isArray(r.data.devices)) return; // 409: a dictation holds the mic
-    const opts = [{ id: 'default', name: 'System default', node: 'PipeWire default source' },
-      ...r.data.devices.filter((d) => d.name !== 'default').map((d) => ({ id: d.name, name: d.name, node: d.default ? 'System default input' : 'Input device' }))];
+    const base = { id: 'default', name: 'System default', node: 'PipeWire default source' };
+    // 409: the microphone is held (a dictation, or audio.always_open keeps it open).
+    if (r.status !== 200 || !Array.isArray(r.data.devices)) { F.w.dev.setOptions([base], false); F.w.dev.set(cfg?.values.audio.device ?? 'default'); return; }
+    const opts = [base, ...r.data.devices.filter((d) => d.name !== 'default').map((d) => ({ id: String(d.name), name: String(d.name), node: d.default ? 'System default input' : 'Input device' }))];
     F.w.dev.setOptions(opts);
     F.w.dev.set(cfg?.values.audio.device ?? 'default');
   };
@@ -196,7 +206,8 @@
       const replace = key === 'vocab.replace' ? Object.fromEntries(value.map(({ k, v }) => [k, v])) : vocab.replace;
       return req('PATCH', '/api/vocab', { etag: vocab.etag, terms, replace }).then((r) => {
         if (r.data.etag && r.status !== 409) vocab.etag = r.data.etag;
-        if (r.status === 200) { vocab.terms = terms; vocab.replace = replace; }
+        // 200, or a 500 that carries an etag ("saved, but flowd could not apply it"): written.
+        if (r.status === 200 || (r.status >= 500 && r.data.etag)) { vocab.terms = terms; vocab.replace = replace; }
         return r;
       });
     }
@@ -213,7 +224,14 @@
     });
   };
 
-  // Saves stopped by a 409, replayed by "Keep my changes".
+  // Refreshes cfg from the file without refilling the controls (the user's edit stays shown).
+  const refetchConfig = async () => {
+    const c = await req('GET', '/api/config').catch(() => null);
+    if (c?.status !== 200) return;
+    cfg = c.data; lastModes = { ...c.data.values.modes }; setPending(c.data.restart_pending);
+  };
+
+  // Writes stopped by a 409 (saves and resets), replayed by "Keep my changes".
   let conflicted = [];
   const showConflict = () => {
     if ($('#conflictBanner')) return;
@@ -228,7 +246,7 @@
     if (c.status === 200) { cfg.etag = c.data.etag; cfg.defaults = c.data.defaults; }
     if (v.status === 200) vocab.etag = v.data.etag;
     const todo = conflicted; conflicted = [];
-    todo.forEach((args) => save(...args));
+    todo.forEach((replay) => replay());
   });
 
   const save = (el, key, value, opts = {}) => serial(async () => {
@@ -262,7 +280,7 @@
     }
     F.feedback(el, null);
     if (r.status === 409) {
-      conflicted.push([el, key, value, opts]);
+      conflicted.push(() => save(el, key, value, opts));
       F.setGlobal('error');
       showConflict();
       return false;
@@ -279,6 +297,9 @@
     }
     if (r.status >= 500 && r.data.etag) {
       // Written to disk, but the daemon's reload failed: the file is ahead of the running config.
+      // Re-read it so values, the modes baseline and the restart banner follow the file.
+      if (!key.startsWith('vocab.')) await refetchConfig();
+      F.feedback(el, 'saved');
       F.setGlobal('saved');
       toast(errText(r), { kind: 'warn', ttl: 8000 });
       return true;
@@ -290,32 +311,37 @@
   });
 
   // ---------- resets
-  const RESET = { overlay: 'ui', llmsrv: 'llm', order: 'inject.order', cues: 'chunking.correction_cues', terms: 'inject.terminal_apps' };
-  // A whole-section reset: undone by writing back what the file held for that section.
-  const reset = (btn, target, label) => serial(async () => {
+  // A group's "Reset to defaults" removes exactly the keys its controls edit (one PATCH of nulls),
+  // so the defaults apply; Undo writes back what the file held for those keys. "Reset all" empties
+  // the file through /api/config/reset, which keeps config.toml.bak.
+  const groupKeys = (btn) => [...new Set($$('[data-key], [data-list-key]', btn.closest('.group')).map((el) => el.dataset.key || el.dataset.listKey))];
+  const fileValue = (key) => { const [sec, name] = [key.slice(0, key.indexOf('.')), key.slice(key.indexOf('.') + 1)]; return cfg.in_file?.[sec]?.[name]; };
+  const written = (r) => r.status === 200 || (r.status >= 500 && r.data.etag);
+  const reset = (btn, keys, label) => serial(async () => {
     if (ro || !cfg) { toast(ro ? RO_TEXT[ro] : 'Still loading your settings.', { kind: 'info' }); return; }
-    const single = target && target.includes('.');
-    const before = single ? null : target ? { ...(cfg.in_file?.[target] || {}) } : null;
-    const prevValue = single ? F.valueOf(cfg.values, target) : null;
+    const all = keys === null;
+    const undo = all ? null : Object.fromEntries(keys.map((k) => [k, fileValue(k) ?? null]));
     let r;
     try {
-      r = single ? await req('PATCH', '/api/config', { etag: cfg.etag, changes: { [target]: null } }) : await req('POST', '/api/config/reset', { etag: cfg.etag, section: target });
+      r = all ? await req('POST', '/api/config/reset', { etag: cfg.etag, section: null }) : await req('PATCH', '/api/config', { etag: cfg.etag, changes: Object.fromEntries(keys.map((k) => [k, null])) });
     } catch (e) {
       if (!(e instanceof NetworkError)) throw e;
       toast('Couldn’t reach flowd to reset.', { kind: 'error' }); return;
     }
-    if (r.status === 409) { if (r.data.etag) cfg.etag = r.data.etag; showConflict(); return; }
-    if (r.status !== 200) { if (r.data.etag) cfg.etag = r.data.etag; toast(`Couldn’t reset: ${errText(r)}`, { kind: 'error' }); return; }
-    // A key reset replies like a PATCH; refetch so the whole page matches the file.
-    if (single) { cfg.etag = r.data.etag; await loadConfig(); } else applyConfig(r.data);
-    if (!target) { toast('All settings reset. Backup saved as config.toml.bak.', { kind: 'success' }); return; }
-    const undo = single ? { [target]: prevValue } : Object.fromEntries(Object.entries(before).map(([k, v]) => [`${target}.${k}`, v]));
-    const canUndo = Object.keys(undo).length && (single ? JSON.stringify(prevValue) !== JSON.stringify(F.valueOf(cfg.values, target)) : true);
-    toast(`${esc(label)} reset to defaults.`, canUndo ? { kind: 'undo', action: 'Undo', onAction: () => serial(async () => {
+    if (r.status === 409) { conflicted.push(() => reset(btn, keys, label)); showConflict(); return; }
+    if (r.status === 403) { setRo('session'); return; }
+    if (!written(r)) { toast(`Couldn’t reset: ${errText(r)}`, { kind: 'error' }); return; }
+    cfg.etag = r.data.etag;
+    await loadConfig(); // refills every control and in_file, the base for the next Undo
+    if (r.status >= 500) toast(errText(r), { kind: 'warn', ttl: 8000 });
+    if (all) { toast('All settings reset. Backup saved as config.toml.bak.', { kind: 'success' }); return; }
+    const changed = Object.values(undo).some((v) => v !== null);
+    if (!changed) { toast(`${esc(label)} already uses the defaults.`, { kind: 'info' }); return; }
+    toast(`${esc(label)} reset to defaults.`, { kind: 'undo', action: 'Undo', onAction: () => serial(async () => {
       const u = await req('PATCH', '/api/config', { etag: cfg.etag, changes: undo }).catch(() => null);
-      if (u?.status === 200) { cfg.etag = u.data.etag; await loadConfig(); say('Previous values restored'); }
-      else { if (u?.data.etag && u.status !== 409) cfg.etag = u.data.etag; toast(`Couldn’t undo: ${u ? errText(u) : 'flowd is unreachable'}`, { kind: 'error' }); }
-    }) } : { kind: 'success' });
+      if (u && written(u)) { cfg.etag = u.data.etag; await loadConfig(); say('Previous values restored'); }
+      else { if (u?.status === 409) showConflict(); toast(`Couldn’t undo: ${u ? errText(u) : 'flowd is unreachable'}`, { kind: 'error' }); }
+    }) });
   });
 
   // ---------- vocabulary "Try it"
@@ -342,8 +368,12 @@
     try {
       res = await fetch('/api/mic-test', { method: 'POST', cache: 'no-store', signal: ctl.signal, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ seconds: 15 }) });
     } catch {
-      micAbort = null; toast('Couldn’t reach flowd to test the microphone.', { kind: 'error' }); return;
+      micAbort = null;
+      // Stop pressed before the stream opened is not a failure.
+      if (!ctl.signal.aborted) toast('Couldn’t reach flowd to test the microphone.', { kind: 'error' });
+      return;
     }
+    if (res.status === 403) { micAbort = null; setRo('session'); return; }
     if (res.status !== 200) {
       micAbort = null;
       let msg = `HTTP ${res.status}`; try { msg = (await res.json()).error || msg; } catch {}
@@ -447,10 +477,7 @@
     });
     $('#tryIn').addEventListener('input', tryIt);
     $('#repTable').addEventListener('click', tryIt);
-    $$('[data-reset]').forEach((b) => b.addEventListener('click', () => {
-      const which = b.dataset.reset;
-      reset(b, RESET[which] || which, b.closest('.group')?.querySelector('h3')?.textContent || which);
-    }));
+    $$('[data-reset]').forEach((b) => b.addEventListener('click', () => reset(b, groupKeys(b), b.closest('.group')?.querySelector('h3')?.textContent || 'Settings')));
     $('#rdOk').addEventListener('click', () => { $('#resetDlg').close(); reset($('#resetAll'), null, 'All settings'); });
     // "Save recordings" is on exactly when logging.recordings_dir is set.
     const rec = $('#recSwitch');

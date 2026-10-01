@@ -389,7 +389,7 @@
 
     // ---------- vocabulary
     w.terms = F.initTags($('[data-tags="terms"]'), demo ? ['Hyprland', 'PipeWire', 'flowd', 'LLM', 'Wayland'] : []);
-    w.rep = F.initKV($('#repTable'), { rows: demo ? [{ k: 'hyper land', v: 'Hyprland' }, { k: 'pipe wire', v: 'PipeWire' }, { k: 'flow d', v: 'flowd' }] : [], keyLabel: 'When you say', valLabel: 'Write', key: 'vocab.replace', empty: { icon: 'book-a', title: 'No replacement rules.', text: 'Fix a mishearing that keeps coming back: spoken → written.' }, dupMsg: (k) => `“${esc(k)}” already has a rule.` });
+    w.rep = F.initKV($('#repTable'), { rows: demo ? [{ k: 'hyper land', v: 'Hyprland' }, { k: 'pipe wire', v: 'PipeWire' }, { k: 'flow d', v: 'flowd' }] : [], keyLabel: 'When you say', valLabel: 'Write', key: 'vocab.replace', empty: { icon: 'book-a', title: 'No replacement rules.', text: 'Fix a mishearing that keeps coming back: spoken → written.' }, dupMsg: (k) => `“${k}” already has a rule.` });
     if (demo) {
       const tryIt = () => {
         let s = $('#tryIn').value;
@@ -403,7 +403,7 @@
     // ---------- apps & modes
     const BUILTIN = [['code', 'code'], ['code-oss', 'code'], ['codium', 'code'], ['dev.zed.zed', 'code'], ['jetbrains-idea', 'code'], ['jetbrains-pycharm', 'code'], ['neovide', 'code'], ['org.telegram.desktop', 'chat'], ['slack', 'chat'], ['discord', 'chat'], ['vesktop', 'chat'], ['signal', 'chat'], ['element', 'chat'], ['whatsapp-for-linux', 'chat'], ['thunderbird', 'email'], ['org.gnome.evolution', 'email'], ['geary', 'email']];
     // builtins: [[app, mode]], from /api/config's defaults.modes when served.
-    w.makeApps = (builtins, extra = []) => F.initKV($('#appTable'), { rows: [...builtins.map(([k, v]) => ({ k, v, orig: v })), ...extra], keyLabel: 'App id', valLabel: 'Mode', type: 'mode', builtins: new Set(builtins.map((b) => b[0])), key: 'modes', filter: $('#appFilter'), empty: { icon: 'app-window', title: 'Using built-in modes only.', text: `${builtins.length} apps are mapped by default. Add one to override.` }, dupMsg: (k, v) => `${esc(k)} is already mapped${v ? ` to ${v}` : ''}.` });
+    w.makeApps = (builtins, extra = []) => F.initKV($('#appTable'), { rows: [...builtins.map(([k, v]) => ({ k, v, orig: v })), ...extra], keyLabel: 'App id', valLabel: 'Mode', type: 'mode', builtins: new Set(builtins.map((b) => b[0])), key: 'modes', filter: $('#appFilter'), empty: { icon: 'app-window', title: 'Using built-in modes only.', text: `${builtins.length} apps are mapped by default. Add one to override.` }, dupMsg: (k, v) => `${k} is already mapped${v ? ` to ${v}` : ''}.` });
     // Served, the table is built once /api/config has sent the built-in modes (settings-api.js).
     w.apps = demo ? w.makeApps(BUILTIN, [{ k: 'obsidian', v: 'default' }]) : null;
     // The countdown before the focused window is read (the daemon waits 3 s too).
@@ -500,6 +500,8 @@
     if (demo) { setDaemon(true); setCleanup('ready'); }
     if (location.hash && /^#[\w-]+$/.test(location.hash)) document.querySelector(location.hash)?.scrollIntoView();
     F.api?.start();
+    F.ready = true;
+    document.dispatchEvent(new Event('flowd:ready'));
   };
   const load = (src) => new Promise((ok, bad) => { const s = document.createElement('script'); s.src = src; s.addEventListener('load', ok); s.addEventListener('error', bad); document.head.appendChild(s); });
   const base = document.currentScript.src.replace(/settings\.js.*$/, '');

@@ -16,6 +16,7 @@
       const input = host.querySelector('input');
       if (focusIdx === 'input') input.focus();
       else if (focusIdx != null) host.querySelector(`.tag[data-i="${focusIdx}"]`)?.focus();
+      F.rendered?.(host);
     };
     const persist = () => {
       const prev = saved; saved = [...tags];
@@ -44,7 +45,7 @@
       let e = host.parentElement.querySelector('.field-err');
       if (!msg) { e?.remove(); host.querySelector('input')?.removeAttribute('aria-invalid'); return; }
       if (!e) { e = document.createElement('div'); e.className = 'field-err'; e.id = `te-${d.tags}`; host.after(e); }
-      e.innerHTML = `${I('circle-alert', 14)}<span>${msg}</span>`;
+      e.innerHTML = I('circle-alert', 14); const sp = document.createElement('span'); sp.textContent = msg; e.appendChild(sp);
       const input = host.querySelector('input'); input.setAttribute('aria-invalid', 'true'); input.setAttribute('aria-describedby', `${d.desc || ''} ${e.id}`);
     };
     host.addEventListener('click', (e) => {
@@ -87,14 +88,15 @@
       ul.innerHTML = order.map((it, i) => {
         const st = status[it.status];
         return `<li data-name="${esc(it.name)}" class="${it.status === 'missing' ? 'na' : ''}${grabbed === it.name ? ' grabbed' : ''}" draggable="false">
-          <button class="handle" aria-label="Reorder ${it.name}, position ${i + 1} of ${order.length}" aria-pressed="${grabbed === it.name}" aria-describedby="d-order">${I('grip-vertical')}</button>
+          <button class="handle" aria-label="Reorder ${esc(it.name)}, position ${i + 1} of ${order.length}" aria-pressed="${grabbed === it.name}" aria-describedby="d-order">${I('grip-vertical')}</button>
           <span class="pos">${i + 1}</span>
-          <div class="meta"><div class="name">${it.name}</div><div class="cap">${it.cap}</div></div>
-          <span class="moves"><button class="icon-btn" data-mv="-1" aria-label="Move ${it.name} up"${i === 0 ? ' disabled' : ''}>${I('chevron-down', 14)}</button><button class="icon-btn" data-mv="1" aria-label="Move ${it.name} down"${i === order.length - 1 ? ' disabled' : ''}>${I('chevron-down', 14)}</button></span>
+          <div class="meta"><div class="name">${esc(it.name)}</div><div class="cap">${esc(it.cap)}</div></div>
+          <span class="moves"><button class="icon-btn" data-mv="-1" aria-label="Move ${esc(it.name)} up"${i === 0 ? ' disabled' : ''}>${I('chevron-down', 14)}</button><button class="icon-btn" data-mv="1" aria-label="Move ${esc(it.name)} down"${i === order.length - 1 ? ' disabled' : ''}>${I('chevron-down', 14)}</button></span>
           ${st ? `<span class="badge ${st[0]}"${it.reason ? ` title="${esc(it.reason)}"` : ''}>${I(st[1], 12)}${st[2]}</span>` : ''}</li>`;
       }).join('');
       $$('[data-mv="-1"] svg', ul).forEach((s) => (s.style.transform = 'rotate(180deg)'));
-      if (focusName) ul.querySelector(`li[data-name="${focusName}"] .handle`)?.focus();
+      if (focusName) ul.querySelector(`li[data-name="${CSS.escape(focusName)}"] .handle`)?.focus();
+      F.rendered?.(ul);
     };
     const move = (name, delta, announce = true) => {
       const i = order.findIndex((x) => x.name === name), j = i + delta;
@@ -105,7 +107,7 @@
       if (!grabbed) persist();
     };
     ul.addEventListener('click', (e) => {
-      const mv = e.target.closest('[data-mv]'); if (mv) { const name = mv.closest('li').dataset.name; move(name, +mv.dataset.mv); ul.querySelector(`li[data-name="${name}"] [data-mv="${mv.dataset.mv}"]`)?.focus(); }
+      const mv = e.target.closest('[data-mv]'); if (mv) { const name = mv.closest('li').dataset.name; move(name, +mv.dataset.mv); ul.querySelector(`li[data-name="${CSS.escape(name)}"] [data-mv="${mv.dataset.mv}"]`)?.focus(); }
     });
     ul.addEventListener('keydown', (e) => {
       const h = e.target.closest('.handle'); if (!h) return;
@@ -176,12 +178,14 @@
       data.forEach((r) => delete r.fresh);
       $$('[data-mode-for]', host).forEach((seg) => F.initSegmented(seg, (v) => { const r = data.find((x) => x.k === seg.dataset.modeFor); r.v = v; persist(); if (builtins.has(r.k)) setTimeout(() => render(`[data-mode-for="${CSS.escape(r.k)}"] [aria-checked="true"]`), 0); }));
       if (focusSel) host.querySelector(focusSel)?.focus();
+      F.rendered?.(host);
     };
     const err = (input, msg) => {
       const td = input.closest('td'); td.querySelector('.field-err')?.remove();
       if (!msg) { input.removeAttribute('aria-invalid'); return; }
       input.setAttribute('aria-invalid', 'true');
-      td.insertAdjacentHTML('beforeend', `<div class="field-err" id="kve-${Date.now()}">${I('circle-alert', 14)}<span>${msg}</span></div>`);
+      const fe = document.createElement('div'); fe.className = 'field-err'; fe.id = `kve-${Date.now()}`; fe.innerHTML = I('circle-alert', 14);
+      const sp = document.createElement('span'); sp.textContent = msg; fe.appendChild(sp); td.appendChild(fe);
       input.setAttribute('aria-describedby', td.querySelector('.field-err').id); input.focus();
     };
     const addRow = () => {
@@ -234,15 +238,19 @@
     let sel = selected, open = false, active = 0;
     const key = host.dataset.listKey || 'audio.device';
     const id = 'devlb';
-    const cur = () => options.find((o) => o.id === sel) || { name: sel, node: 'Not connected', missing: true };
+    // listed: false while the device list can't be read (the mic is held open), so a configured
+    // device that isn't in the short fallback list is not reported as disconnected.
+    let listed = true;
+    const cur = () => options.find((o) => o.id === sel) || (listed ? { name: sel, node: 'Not connected', missing: true } : { name: sel, node: 'Device list unavailable while the microphone is held open' });
     const render = () => {
       const c = cur();
       host.innerHTML = `<button class="lb-btn" aria-haspopup="listbox" aria-expanded="${open}" aria-controls="${id}" aria-labelledby="l-dev lbv" id="lbBtn"><span class="two" id="lbv"><b>${esc(c.name)}</b><small>${esc(c.node)}</small></span>${c.missing ? '<span class="badge warn">' + I('triangle-alert', 12) + 'Not connected</span>' : ''}${I('chevron-down', 14)}</button>` +
         (open ? `<ul class="lb" role="listbox" id="${id}" aria-labelledby="l-dev" tabindex="-1" aria-activedescendant="opt-${active}">${options.map((o, i) => `<li role="option" id="opt-${i}" aria-selected="${o.id === sel}" class="${i === active ? 'active' : ''}" data-i="${i}">${I('check', 14)}<span class="two"><b>${esc(o.name)}</b><small>${esc(o.node)}</small></span></li>`).join('')}</ul>` : '');
       if (open) host.querySelector('.lb').focus();
+      F.rendered?.(host);
     };
     const close = (focus = true) => { open = false; render(); if (focus) host.querySelector('.lb-btn').focus(); };
-    const choose = (i) => { const prev = sel; sel = options[i].id; close(); if (prev !== sel) save(host, key, sel, { restart: true, revert: () => { sel = prev; render(); } }); };
+    const choose = (i) => { const prev = sel; sel = options[i].id; close(); if (prev !== sel) save(host, key, sel, { revert: () => { sel = prev; render(); } }); };
     let typed = '', typedT;
     host.addEventListener('click', (e) => {
       if (e.target.closest('.lb-btn')) { open = !open; active = Math.max(0, options.findIndex((o) => o.id === sel)); render(); return; }
@@ -265,7 +273,7 @@
     render();
     return {
       set: (v) => { sel = v; if (!open) render(); },
-      setOptions: (next) => { options = next; active = 0; if (!open) render(); },
+      setOptions: (next, isListed = true) => { options = next; listed = isListed; active = 0; if (!open) render(); },
     };
   };
 
@@ -279,7 +287,7 @@
     const y = (v) => H - padB - (v / max) * (H - padB - 6);
     const bw = (W - padR) / sessions.length;
     const grid = [0, 500, 1000].map((v) => `<line class="grid" x1="0" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/><text class="lbl" x="${W - padR + 6}" y="${y(v) + 4}" opacity=".7">${v}</text>`).join('');
-    const bars = sessions.map((s, i) => `<rect class="bar${s.fb ? ' fb' : ''}" x="${i * bw + 1}" y="${y(s.ms)}" width="${Math.max(2, bw - 3)}" height="${H - padB - y(s.ms)}" rx="1" tabindex="${i === sessions.length - 1 ? 0 : -1}" data-i="${i}" aria-label="Session ${s.n}, ${s.t}, ${s.ms} milliseconds, ${s.mode}${s.fb ? ', used fallback' : ''}"/>${s.fb ? `<rect x="${i * bw + 1}" y="${y(s.ms)}" width="${Math.max(2, bw - 3)}" height="3" fill="var(--warn)" pointer-events="none"/>` : ''}`).join('');
+    const bars = sessions.map((s, i) => `<rect class="bar${s.fb ? ' fb' : ''}" x="${i * bw + 1}" y="${y(s.ms)}" width="${Math.max(2, bw - 3)}" height="${H - padB - y(s.ms)}" rx="1" tabindex="${i === sessions.length - 1 ? 0 : -1}" data-i="${i}" aria-label="Session ${s.n}, ${s.t}, ${s.ms} milliseconds, ${esc(s.mode)}${s.fb ? ', used fallback' : ''}"/>${s.fb ? `<rect x="${i * bw + 1}" y="${y(s.ms)}" width="${Math.max(2, bw - 3)}" height="3" fill="var(--warn)" pointer-events="none"/>` : ''}`).join('');
     const line = (v, cls, label, dash) => `<line x1="0" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}" stroke="${cls}" stroke-width="${dash === 'dot' ? 1 : 1.5}" ${dash === 'dash' ? 'stroke-dasharray="5 4"' : dash === 'dot' ? 'stroke-dasharray="1.5 3"' : ''}/><text class="lbl" x="${W - padR + 6}" y="${y(v) + 4}" fill="${cls}">${label}</text>`;
     wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="group" aria-labelledby="chartTitle" aria-describedby="chartSum">
       <defs><pattern id="hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="4" height="4" fill="color-mix(in srgb, var(--warn) 22%, transparent)"/><line x1="0" y1="0" x2="0" y2="4" stroke="var(--warn)" stroke-width="1.6"/></pattern></defs>
