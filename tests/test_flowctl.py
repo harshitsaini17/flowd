@@ -230,3 +230,79 @@ def test_reply_timeout_covers_a_stop_with_the_llm() -> None:
     needed_s = worst_finalize_s + Llm().final_timeout_ms / 1000 + 1  # 1 s for inject
     timeout_s = load_flowctl().REPLY_TIMEOUT_S
     assert timeout_s > needed_s
+
+
+# --- flowctl settings ---------------------------------------------------------
+
+_URL = "http://127.0.0.1:8178/#token=abc"
+
+
+async def _settings_handler(request: dict[str, Any]) -> dict[str, Any]:
+    assert request == {"cmd": "settings"}
+    return {"ok": True, "url": _URL}
+
+
+async def _run_settings_in_process(sock: Path, monkeypatch: pytest.MonkeyPatch, popen: Any) -> int:
+    """`flowctl settings` in this process, so `subprocess.Popen` can be faked:
+    a test must never open the user's browser."""
+    flowctl = load_flowctl()
+    monkeypatch.setenv("FLOWD_SOCKET", str(sock))
+    monkeypatch.setattr(flowctl.subprocess, "Popen", popen)
+    server = await serve(sock, _settings_handler)
+    try:
+        code: int = await asyncio.to_thread(flowctl.main, ["flowctl", "settings"])
+    finally:
+        server.close()
+        await server.wait_closed()
+    return code
+
+
+async def test_settings_opens_the_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    opened: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_popen(argv: list[str], **kwargs: Any) -> object:
+        opened.append((argv, kwargs))
+        return object()
+
+    code = await _run_settings_in_process(tmp_path / "flowd.sock", monkeypatch, fake_popen)
+    assert code == 0
+    assert len(opened) == 1
+    argv, kwargs = opened[0]
+    assert argv == ["xdg-open", _URL]
+    assert kwargs == {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "start_new_session": True,
+    }
+    out = capsys.readouterr().out
+    assert out.strip() == "opened the settings page"
+    assert "token" not in out
+
+
+async def test_settings_without_xdg_open_prints_the_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing(argv: list[str], **kwargs: Any) -> object:
+        raise FileNotFoundError(2, "No such file or directory", "xdg-open")
+
+    code = await _run_settings_in_process(tmp_path / "flowd.sock", monkeypatch, missing)
+    assert code == 0
+    assert capsys.readouterr().out.strip() == _URL
+
+
+async def test_settings_reports_why_the_page_is_off(tmp_path: Path) -> None:
+    async def handler(request: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": False, "error": "port 8178 is in use"}
+
+    sock = tmp_path / "flowd.sock"
+    server = await serve(sock, handler)
+    try:
+        result = await asyncio.to_thread(_run, ["settings"], sock)
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert result.returncode == 1
+    assert "port 8178 is in use" in result.stdout + result.stderr

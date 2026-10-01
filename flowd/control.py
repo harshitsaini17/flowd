@@ -14,7 +14,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 VALID_COMMANDS = frozenset(
-    {"start", "stop", "toggle", "cancel", "status", "last", "stats", "reload"}
+    {"start", "stop", "toggle", "cancel", "status", "last", "stats", "reload", "settings"}
 )
 _MAX_LINE = 64 * 1024
 

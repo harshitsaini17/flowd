@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import stat
 import subprocess
 import time
 import uuid
@@ -30,8 +31,8 @@ from flowd.modes import Style, finish, style_for
 from flowd.recordings import SessionRecorder
 from flowd.scheduler import Scheduler
 from flowd.session import Chunk, Session
-from flowd.settings_api import Busy, Unavailable
-from flowd.settings_server import Tokens
+from flowd.settings_api import Busy, SettingsApi, Unavailable
+from flowd.settings_server import SettingsServer, Tokens
 from flowd.state import Action, Event, Machine, State
 from flowd.stt import Committed, Partial, SttEngine
 from flowd.suspend import SleepDetector
@@ -60,6 +61,13 @@ RESTART_DELAY_S = 0.3
 #: Where the settings page's tokens wait across a daemon restart. The new
 #: daemon adopts the file at startup and deletes it.
 SETTINGS_TOKENS_FILE = "settings-tokens.json"
+#: How old that file may be and still be adopted. A restart from the page takes
+#: a few seconds; anything older was left by a restart that never came back.
+SETTINGS_TOKENS_MAX_AGE_S = 60.0
+#: `flowctl settings`' reply when the page is configured off.
+SETTINGS_OFF = "the settings page is turned off ([settings] enabled = false)"
+#: Its reply before `run` has tried to start the settings server.
+SETTINGS_NOT_STARTED = "the settings page is not running yet"
 RESTART_TARGETS = ("ui", "daemon")
 
 
@@ -253,6 +261,12 @@ class Daemon:
         # The settings server's tokens, handed to the next daemon across a
         # restart from the page. None while there is no settings server.
         self.settings_tokens: Tokens | None = None
+        # The settings page's loopback server, made in `run`, and why there
+        # is none when it is off or could not listen.
+        self.settings_server: SettingsServer | None = None
+        self._settings_error = SETTINGS_NOT_STARTED
+        # When `_health_loop` last probed the LLM (monotonic), for the page.
+        self._health_checked_at: float | None = None
         # Held while the settings page restarts flowd-ui: restarts run one at
         # a time, and the run loop's idle respawn waits until the old UI has
         # gone and its position file, if asked, with it.
@@ -270,33 +284,12 @@ class Daemon:
         if cmd == "last":
             return {"ok": True, "text": self.last_text}
         if cmd == "stats":
-            path = self.metrics_path or (state_dir() / "metrics.jsonl")
-            return {"ok": True, "stats": summarise(read_records(path))}
+            return {"ok": True, "stats": summarise(read_records(self.metrics_file))}
         if cmd == "reload":
-            new_cfg, error = reload_config(self.cfg, self.config_file)
-            if error is not None:
-                return {"ok": False, "error": error}
-            # Both files are checked before either is applied, so a bad vocab
-            # leaves the old config and the old vocabulary in place together.
-            try:
-                new_vocab = load_vocab(self.vocab_file)
-            except ValueError as exc:
-                return {"ok": False, "error": str(exc)}
-            await self.apply_vocab(new_vocab)
-            if self.cleanup is not None and new_cfg.llm != self.cfg.llm:
-                # The client holds its URL and timeouts from construction, so a
-                # changed [llm] table needs a new one or the reload is a no-op.
-                old, self.cleanup = self.cleanup, CleanupClient(new_cfg.llm)
-                await old.aclose()
-            self.cfg = new_cfg
-            # The state machine holds its own copy of the window, taken at
-            # construction, so assigning `self.cfg` alone would report success
-            # and change nothing. Every other config value is read live through
-            # `self.cfg`; this is the one that has to be pushed.
-            self.machine.set_debounce_ms(new_cfg.hotkey.debounce_ms)
-            # Off the loop: turning the UI off stops it, which waits for it.
-            await asyncio.to_thread(self._configure_ui, new_cfg)
-            return {"ok": True}
+            error = await self.reload()
+            return {"ok": True} if error is None else {"ok": False, "error": error}
+        if cmd == "settings":
+            return self._settings_url()
 
         event = {
             "start": Event.START,
@@ -313,6 +306,141 @@ class Daemon:
         # `--rewrite` is a modifier on whichever command ends the session
         # (spec 6.6), so a toggle bound to a second hotkey works as well.
         return await self._perform(action, rewrite=bool(request.get("rewrite")))
+
+    @property
+    def metrics_file(self) -> Path:
+        return self.metrics_path or (state_dir() / "metrics.jsonl")
+
+    async def reload(self) -> str | None:
+        """Re-read config and vocab and apply both; None, or the error text."""
+        new_cfg, error = reload_config(self.cfg, self.config_file)
+        if error is not None:
+            return error
+        # Both files are checked before either is applied, so a bad vocab
+        # leaves the old config and the old vocabulary in place together.
+        try:
+            new_vocab = load_vocab(self.vocab_file)
+        except ValueError as exc:
+            return str(exc)
+        await self.apply_vocab(new_vocab)
+        if self.cleanup is not None and new_cfg.llm != self.cfg.llm:
+            # The client holds its URL and timeouts from construction, so a
+            # changed [llm] table needs a new one or the reload is a no-op.
+            old, self.cleanup = self.cleanup, CleanupClient(new_cfg.llm)
+            await old.aclose()
+        self.cfg = new_cfg
+        # The state machine holds its own copy of the window, taken at
+        # construction, so assigning `self.cfg` alone would report success
+        # and change nothing. Every other config value is read live through
+        # `self.cfg`; this is the one that has to be pushed.
+        self.machine.set_debounce_ms(new_cfg.hotkey.debounce_ms)
+        # Off the loop: turning the UI off stops it, which waits for it.
+        await asyncio.to_thread(self._configure_ui, new_cfg)
+        return None
+
+    def daemon_status(self) -> dict[str, Any]:
+        """What the settings page's Status section shows about the daemon."""
+        if not self.cfg.llm.enabled:
+            cleanup = "disabled"
+        elif self.cleanup is None or self.cleanup.down:
+            cleanup = "offline"
+        else:
+            cleanup = "ready"
+        checked = self._health_checked_at
+        return {
+            "state": str(self.machine.state),
+            "stt_model": self.cfg.stt.model,
+            "final_model": self.cfg.stt.final_model,
+            "cleanup": cleanup,
+            "health_checked_s_ago": (
+                None if checked is None else round(time.monotonic() - checked, 1)
+            ),
+        }
+
+    def _settings_url(self) -> dict[str, Any]:
+        """`flowctl settings`: a fresh sign-in link, or why there is no page."""
+        if self.settings_server is None or self.settings_tokens is None:
+            return {"ok": False, "error": self._settings_error}
+        token = self.settings_tokens.issue()
+        return {"ok": True, "url": f"http://127.0.0.1:{self.settings_server.port}/#token={token}"}
+
+    async def _start_settings(self) -> None:
+        """Serve the settings page. Never fatal: dictation works without it."""
+        if not self.cfg.settings.enabled:
+            # No socket at all, and the saved tokens are left alone: a later
+            # daemon with the page on rejects them as too old.
+            self._settings_error = SETTINGS_OFF
+            return
+        adopted = self._take_settings_tokens()
+        tokens = Tokens()
+        if adopted:
+            tokens.adopt(adopted)
+        server = SettingsServer(self.cfg.settings.port, SettingsApi(self), tokens)
+        reason = await server.start()
+        if reason is not None:
+            log.warning("settings page off: %s", reason)
+            self._settings_error = reason
+            return
+        self.settings_tokens = tokens
+        self.settings_server = server
+        log.info("settings page on http://127.0.0.1:%d/", server.port)
+
+    def _take_settings_tokens(self) -> list[str]:
+        """The tokens a daemon restarted from the page left behind, if they
+        can be trusted. The file is deleted either way.
+
+        Trusted means a regular file (no symlink is followed), owned by us,
+        reachable by nobody else and younger than `SETTINGS_TOKENS_MAX_AGE_S`.
+        $XDG_RUNTIME_DIR is private to us, but the /tmp fallback is not: a
+        file planted there must not sign anyone in.
+        """
+        path = runtime_dir() / SETTINGS_TOKENS_FILE
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            # ELOOP for a symlink: not ours to follow.
+            log.warning("ignoring the settings page's saved tokens: %s", exc)
+            self._discard_settings_tokens(path)
+            return []
+        try:
+            with os.fdopen(fd, "rb") as f:
+                info = os.fstat(f.fileno())
+                problem = self._untrusted_tokens_file(info)
+                if problem is not None:
+                    log.warning("ignoring the settings page's saved tokens: %s", problem)
+                    return []
+                data = json.loads(f.read(64 * 1024).decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            log.warning("ignoring the settings page's saved tokens: %s", exc)
+            return []
+        finally:
+            self._discard_settings_tokens(path)
+        tokens = data.get("tokens") if isinstance(data, dict) else None
+        if not isinstance(tokens, list) or not all(isinstance(t, str) and t for t in tokens):
+            log.warning("ignoring the settings page's saved tokens: not a list of tokens")
+            return []
+        return tokens
+
+    @staticmethod
+    def _untrusted_tokens_file(info: os.stat_result) -> str | None:
+        if not stat.S_ISREG(info.st_mode):
+            return "not a regular file"
+        if info.st_uid != os.getuid():
+            return "owned by another user"
+        if info.st_mode & 0o077:
+            return f"mode {stat.S_IMODE(info.st_mode):o} lets others reach it"
+        if time.time() - info.st_mtime >= SETTINGS_TOKENS_MAX_AGE_S:
+            return "too old"
+        return None
+
+    @staticmethod
+    def _discard_settings_tokens(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("could not delete the settings page's saved tokens: %s", exc)
 
     async def _perform(self, action: Action, rewrite: bool = False) -> dict[str, Any]:
         match action:
@@ -1114,7 +1242,7 @@ class Daemon:
         if reason:
             self.metrics.error(reason)
         self.last_record = self.metrics.to_record()
-        path = self.metrics_path or (state_dir() / "metrics.jsonl")
+        path = self.metrics_file
         # With no explicit path, write only into a state directory that already
         # exists, so importing the daemon never creates one as a side effect.
         if self.write_metrics and (self.metrics_path is not None or path.parent.exists()):
@@ -1221,6 +1349,7 @@ class Daemon:
         block_s = self.cfg.audio.block_ms / 1000.0
         health = asyncio.create_task(self._health_loop()) if self.cleanup is not None else None
         try:
+            await self._start_settings()
             # Only once the socket is ours: a second flowd that loses the
             # single-instance check must not flash a second indicator.
             self._start_ui()
@@ -1243,6 +1372,9 @@ class Daemon:
                     await health
             if self.cleanup is not None:
                 await self.cleanup.aclose()
+            if self.settings_server is not None:
+                await self.settings_server.close()
+                self.settings_server = None
             server.close()
             await server.wait_closed()
             # The overlay is our child (spec 9.5). It does exit when its stdin
@@ -1331,6 +1463,7 @@ class Daemon:
                 except Exception:
                     # A dead loop leaves a down client down for good.
                     log.exception("cleanup health probe failed")
+                self._health_checked_at = time.monotonic()
             # Every pass, mid-session too: requests during a dictation can
             # mark the client down, and the popup footer should say so.
             self._sync_warning()

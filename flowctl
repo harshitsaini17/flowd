@@ -9,6 +9,9 @@ duplicated from `flowd.control` and `flowd.config` on purpose.
 
 `tests/test_flowctl.py` imports both this file and `flowd.config` and asserts
 the two path computations agree, which is what keeps the copy honest.
+
+`flowctl settings` asks the daemon for a fresh sign-in link to the settings
+page and opens it with `xdg-open`, or prints it when there is no `xdg-open`.
 """
 
 from __future__ import annotations
@@ -16,11 +19,22 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 import sys
 
 APP = "flowd"
 SOCKET_NAME = "flowd.sock"
-COMMANDS = ("start", "stop", "toggle", "cancel", "status", "last", "stats", "reload")
+COMMANDS = (
+    "start",
+    "stop",
+    "toggle",
+    "cancel",
+    "status",
+    "last",
+    "stats",
+    "reload",
+    "settings",
+)
 USAGE = f"usage: flowctl {{{'|'.join(COMMANDS)}}} [--rewrite]"
 #: How long to wait for the daemon's reply. A `stop` answers only after STT
 #: finalize (up to ~850 ms), the cleanup pass (capped at `final_timeout_ms`,
@@ -94,6 +108,8 @@ def main(argv: list[str]) -> int:
         print("flowctl: malformed reply from daemon (expected an object)", file=sys.stderr)
         return 1
 
+    if cmd == "settings" and reply.get("ok") and isinstance(reply.get("url"), str):
+        return open_settings(reply["url"])
     # `last` and `stats` are meant for piping, so print their payload bare.
     if cmd == "last" and "text" in reply:
         print(reply["text"])
@@ -102,6 +118,28 @@ def main(argv: list[str]) -> int:
     else:
         print(json.dumps(reply))
     return 0 if reply.get("ok", False) else 1
+
+
+def open_settings(url: str) -> int:
+    """Open the settings page in the user's browser.
+
+    The URL carries the user's own sign-in token, so it is printed only when
+    there is no `xdg-open` to hand it to: they need it to open the page by
+    hand. `xdg-open` runs detached, so a browser it starts outlives us.
+    """
+    try:
+        subprocess.Popen(
+            ["xdg-open", url],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        print(url)
+        return 0
+    print("opened the settings page")
+    return 0
 
 
 if __name__ == "__main__":

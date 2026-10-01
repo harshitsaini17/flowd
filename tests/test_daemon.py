@@ -12,7 +12,7 @@ import pytest
 
 from flowd import daemon as daemon_module
 from flowd.audio import MicrophoneStuck
-from flowd.config import Config, Hotkey, Inject, Ui
+from flowd.config import Config, Hotkey, Inject, Settings, Ui
 from flowd.daemon import Daemon
 from flowd.inject.base import InjectResult
 from flowd.levels import FLOOR_DB
@@ -156,8 +156,11 @@ def daemon(
         sink.append(text)
         return InjectResult(ok=True, backend="fake")
 
+    # The settings page is off unless a test turns it on: a run loop would
+    # otherwise bind 8178 next to the user's own daemon and adopt tokens from
+    # the real runtime directory, which this suite does not isolate.
     return Daemon(
-        cfg=cfg or Config(),
+        cfg=cfg or Config(settings=Settings(enabled=False)),
         stt=stt,
         capture=capture or FakeCapture(),
         overlay=FakeOverlay(),
@@ -1979,3 +1982,301 @@ async def test_restart_daemon_tokens_write_failure_is_refused(
         await d.restart("daemon", reset_position=False)
     await asyncio.sleep(0.35)
     assert spawned == []
+
+
+# --- settings server wiring --------------------------------------------------
+
+
+def _settings_cfg(port: int = 0, *, enabled: bool = True) -> Config:
+    return Config(settings=Settings(enabled=enabled, port=port))
+
+
+async def _settings_reply(d: Daemon) -> dict[str, Any]:
+    """`settings` once the run loop has tried to start the server."""
+    reply: dict[str, Any] = {}
+    for _ in range(200):
+        reply = await d.handle({"cmd": "settings"})
+        if reply.get("ok") or reply.get("error") != daemon_module.SETTINGS_NOT_STARTED:
+            return reply
+        await asyncio.sleep(0.01)
+    return reply
+
+
+async def _stop_run(task: "asyncio.Task[None]") -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+async def _http_get(port: int, path: str, token: str | None) -> int:
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    auth = f"Authorization: Bearer {token}\r\n" if token else ""
+    writer.write(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{auth}\r\n".encode())
+    await writer.drain()
+    status_line = await reader.readline()
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+    return int(status_line.split()[1])
+
+
+async def test_settings_command_returns_a_tokened_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    try:
+        reply = await _settings_reply(d)
+        assert reply["ok"] is True, reply
+        assert d.settings_server is not None
+        port = d.settings_server.port
+        assert port != 0
+        prefix = f"http://127.0.0.1:{port}/#token="
+        assert reply["url"].startswith(prefix)
+        token = reply["url"][len(prefix) :]
+        assert d.settings_tokens is not None and d.settings_tokens.valid(token)
+        assert await _http_get(port, "/api/status", None) == 403
+        assert await _http_get(port, "/api/status", token) == 200
+        # Each request issues a fresh token; the earlier one stays valid.
+        again = await d.handle({"cmd": "settings"})
+        assert again["url"] != reply["url"]
+        assert d.settings_tokens.valid(token)
+    finally:
+        await _stop_run(task)
+    # The socket is closed with the daemon.
+    with pytest.raises(OSError):
+        await _http_get(port, "/api/status", token)
+
+
+async def test_settings_disabled_means_no_socket_and_a_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg(enabled=False))
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    try:
+        reply = await _settings_reply(d)
+        assert reply == {
+            "ok": False,
+            "error": "the settings page is turned off ([settings] enabled = false)",
+        }
+        assert d.settings_server is None
+    finally:
+        await _stop_run(task)
+
+
+async def test_settings_port_taken_keeps_dictation_working(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import socket
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as squatter:
+        squatter.bind(("127.0.0.1", 0))
+        squatter.listen()
+        port = squatter.getsockname()[1]
+        injected: list[str] = []
+        capture = FakeCapture([np.zeros(1600, dtype=np.float32) for _ in range(5)])
+        d = daemon(
+            FakeSttEngine([[Committed("ship it")]]),
+            capture,
+            injected,
+            cfg=_settings_cfg(port),
+        )
+        with caplog.at_level("WARNING", logger="flowd.daemon"):
+            task = await _start_run(d, tmp_path / "flowd.sock")
+            try:
+                reply = await _settings_reply(d)
+                assert reply["ok"] is False
+                assert reply["error"] == f"port {port} is in use"
+                assert any(
+                    r.levelname == "WARNING" and "settings page off" in r.getMessage()
+                    for r in caplog.records
+                )
+                assert (await d.handle({"cmd": "start"}))["ok"] is True
+                await asyncio.sleep(0.1)
+                assert (await d.handle({"cmd": "stop"}))["ok"] is True
+                assert not task.done()
+            finally:
+                await _stop_run(task)
+    assert injected == ["Ship it."]
+
+
+def _tokens_file(tmp_path: Path, tokens: list[str], mode: int = 0o600) -> Path:
+    path = tmp_path / "flowd" / "settings-tokens.json"
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    path.write_text(json.dumps({"tokens": tokens}))
+    path.chmod(mode)
+    return path
+
+
+async def _run_until_settings(d: Daemon, tmp_path: Path) -> None:
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    try:
+        assert (await _settings_reply(d))["ok"] is True
+    finally:
+        await _stop_run(task)
+
+
+async def test_tokens_file_is_adopted_and_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    path = _tokens_file(tmp_path, ["kept-from-the-last-daemon"])
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    await _run_until_settings(d, tmp_path)
+    assert d.settings_tokens is not None
+    assert d.settings_tokens.valid("kept-from-the-last-daemon")
+    assert not path.exists()
+
+
+async def test_a_stale_tokens_file_is_deleted_not_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    path = _tokens_file(tmp_path, ["old"])
+    long_ago = time.time() - 61
+    os.utime(path, (long_ago, long_ago))
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    await _run_until_settings(d, tmp_path)
+    assert d.settings_tokens is not None
+    assert not d.settings_tokens.valid("old")
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o604, 0o660])
+async def test_a_tokens_file_others_can_reach_is_deleted_not_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    """The /tmp fallback is not a private tmpfs: a file anyone else could
+    have read or written proves nothing about who left it."""
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    path = _tokens_file(tmp_path, ["planted"], mode)
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    await _run_until_settings(d, tmp_path)
+    assert d.settings_tokens is not None
+    assert not d.settings_tokens.valid("planted")
+    assert not path.exists()
+
+
+async def test_a_symlinked_tokens_file_is_not_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    target = tmp_path / "elsewhere.json"
+    target.write_text(json.dumps({"tokens": ["linked"]}))
+    target.chmod(0o600)
+    link = tmp_path / "flowd" / "settings-tokens.json"
+    link.parent.mkdir(mode=0o700)
+    link.symlink_to(target)
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    await _run_until_settings(d, tmp_path)
+    assert d.settings_tokens is not None
+    assert not d.settings_tokens.valid("linked")
+    assert not link.is_symlink()
+    assert target.exists()
+
+
+@pytest.mark.parametrize(
+    "body", ["not json", "[]", '{"tokens": "abc"}', '{"tokens": [1, 2]}', '{"other": []}']
+)
+async def test_a_malformed_tokens_file_is_deleted_not_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    path = _tokens_file(tmp_path, [])
+    path.write_text(body)
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    await _run_until_settings(d, tmp_path)
+    assert d.settings_tokens is not None
+    assert d.settings_tokens.export() != []  # just the one `settings` issued
+    assert len(d.settings_tokens.export()) == 1
+    assert not path.exists()
+
+
+async def test_a_disabled_page_leaves_the_tokens_file_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Off means the daemon does nothing for the page; a later daemon with it
+    on rejects the file as too old."""
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    path = _tokens_file(tmp_path, ["unused"])
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg(enabled=False))
+    task = await _start_run(d, tmp_path / "flowd.sock")
+    await _stop_run(task)
+    assert path.exists()
+    assert d.settings_tokens is None
+
+
+def test_metrics_file_defaults_to_the_state_dir() -> None:
+    from flowd.config import state_dir
+
+    assert daemon(FakeSttEngine([])).metrics_file == state_dir() / "metrics.jsonl"
+
+
+def test_metrics_file_prefers_the_given_path(tmp_path: Path) -> None:
+    d = daemon(FakeSttEngine([]), metrics_path=tmp_path / "m.jsonl")
+    assert d.metrics_file == tmp_path / "m.jsonl"
+
+
+async def test_reload_method_returns_the_error_text(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[vad]\ncommit_silence_ms = -1\n")
+    d = daemon(FakeSttEngine([]))
+    d.config_file = path
+    error = await d.reload()
+    assert isinstance(error, str) and error
+    path.write_text("[vad]\ncommit_silence_ms = 500\n")
+    assert await d.reload() is None
+    assert d.cfg.vad.commit_silence_ms == 500
+
+
+class _FakeCleanup:
+    def __init__(self, down: bool = False) -> None:
+        self.down = down
+        self.checks = 0
+
+    async def check_health(self) -> bool:
+        self.checks += 1
+        return not self.down
+
+    async def aclose(self) -> None:
+        pass
+
+
+def test_daemon_status_reports_models_and_state() -> None:
+    d = daemon(FakeSttEngine([]))
+    status = d.daemon_status()
+    assert status["state"] == "idle"
+    assert status["stt_model"] == d.cfg.stt.model
+    assert status["final_model"] == d.cfg.stt.final_model
+    assert status["health_checked_s_ago"] is None
+
+
+def test_daemon_status_cleanup_states() -> None:
+    d = daemon(FakeSttEngine([]))
+    assert d.daemon_status()["cleanup"] == "offline"  # no client
+    d.cleanup = _FakeCleanup()  # type: ignore[assignment]
+    assert d.daemon_status()["cleanup"] == "ready"
+    d.cleanup = _FakeCleanup(down=True)  # type: ignore[assignment]
+    assert d.daemon_status()["cleanup"] == "offline"
+    d.cfg = replace(d.cfg, llm=replace(d.cfg.llm, enabled=False))
+    assert d.daemon_status()["cleanup"] == "disabled"
+
+
+async def test_the_health_loop_stamps_when_it_checked() -> None:
+    d = daemon(FakeSttEngine([]))
+    d.cleanup = _FakeCleanup()  # type: ignore[assignment]
+    loop = asyncio.create_task(d._health_loop())
+    for _ in range(100):
+        if d.daemon_status()["health_checked_s_ago"] is not None:
+            break
+        await asyncio.sleep(0.01)
+    loop.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await loop
+    ago = d.daemon_status()["health_checked_s_ago"]
+    assert isinstance(ago, float) and 0 <= ago < 5

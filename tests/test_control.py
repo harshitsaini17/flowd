@@ -176,3 +176,7 @@ async def test_concurrent_clients_are_all_served(tmp_path: Path) -> None:
     finally:
         server.close()
         await server.wait_closed()
+
+
+def test_settings_is_a_valid_command() -> None:
+    assert parse_command(b'{"cmd": "settings"}') == {"cmd": "settings"}
