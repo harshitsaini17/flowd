@@ -60,6 +60,9 @@ def test_pw_dump_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
             raise subprocess.CalledProcessError(1, "pw-dump", stderr="PipeWire not running")
 
         monkeypatch.setattr("idle_check.subprocess.run", mock_run)
+        # CI runners have no PipeWire; pretend pw-dump is installed so the
+        # failure path is reached instead of the "not installed" one.
+        monkeypatch.setattr("idle_check.shutil.which", lambda name: f"/usr/bin/{name}")
 
         class MockProc:
             pid = 1234
