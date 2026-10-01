@@ -253,9 +253,13 @@ class Daemon:
         # The settings server's tokens, handed to the next daemon across a
         # restart from the page. None while there is no settings server.
         self.settings_tokens: Tokens | None = None
-        # True while the settings page restarts flowd-ui, so the run loop's
-        # idle respawn does not start one before the old one has gone.
-        self._ui_restarting = False
+        # Held while the settings page restarts flowd-ui: restarts run one at
+        # a time, and the run loop's idle respawn waits until the old UI has
+        # gone and its position file, if asked, with it.
+        self._ui_restart_lock = asyncio.Lock()
+        # Set once a daemon restart is scheduled, so a second request in the
+        # delay does not queue another; cleared if systemctl fails.
+        self._daemon_restart_pending = False
 
     # --- command handling -------------------------------------------------
 
@@ -501,27 +505,42 @@ class Daemon:
         overlay = self.overlay
         if overlay is None:
             raise Unavailable("the indicator is turned off")
-        self._ui_restarting = True
-        try:
+        failure: str | None = None
+        async with self._ui_restart_lock:
             # Blocking for up to a few seconds while the child quits.
             await asyncio.to_thread(overlay.stop)
-            if reset_position:
-                path = indicator_position_file()
-                if path is not None:
-                    # Before the start, so the new flowd-ui finds no saved
-                    # position and opens at the default.
+            path = indicator_position_file() if reset_position else None
+            if path is not None:
+                # Before the start, so the new flowd-ui finds no saved
+                # position and opens at the default.
+                try:
                     path.unlink(missing_ok=True)
-        finally:
-            self._ui_restarting = False
-        self._start_ui()
+                except OSError as exc:
+                    log.warning("could not delete %s: %s", path, exc)
+                    failure = f"could not reset the position: {exc.strerror or exc}"
+            # Restarted either way: a position that stays is no reason to
+            # leave the user without an indicator.
+            self._spawn_ui()
+        if failure is not None:
+            raise Unavailable(failure)
 
     def _restart_daemon(self) -> None:
         # systemd sets INVOCATION_ID for every unit it runs; anywhere else
         # there is nobody to start us again.
         if not os.environ.get("INVOCATION_ID"):
             raise Unavailable("flowd is not running under systemd; restart it yourself")
+        if self._daemon_restart_pending:
+            return
         if self.settings_tokens is not None:
-            self._write_settings_tokens(self.settings_tokens.export())
+            try:
+                self._write_settings_tokens(self.settings_tokens.export())
+            except OSError as exc:
+                log.warning("could not save the settings page's tokens: %s", exc)
+                # Not restarted: the open page would be locked out afterwards.
+                raise Unavailable(
+                    f"could not keep the page signed in across the restart: {exc.strerror or exc}"
+                ) from exc
+        self._daemon_restart_pending = True
         loop = asyncio.get_running_loop()
         loop.call_later(RESTART_DELAY_S, self._spawn_restart)
 
@@ -547,24 +566,39 @@ class Daemon:
     async def _systemctl_restart(self) -> None:
         log.info("restarting flowd.service at the settings page's request")
         try:
+            # `--no-block` returns once systemd has queued the job. systemctl
+            # runs in this unit's cgroup, so the stop kills it along with us
+            # (a new session does not leave the cgroup); a queued job no
+            # longer needs it. The new session only keeps it out of signals
+            # sent to our process group.
             proc = await asyncio.create_subprocess_exec(
                 "systemctl",
                 "--user",
+                "--no-block",
                 "restart",
                 "flowd.service",
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
-                # Its own session, so systemd stopping us does not take it too.
                 start_new_session=True,
             )
             code = await proc.wait()
         except OSError as exc:
             log.error("could not run systemctl to restart flowd: %s", exc)
+            self._restart_failed()
             return
-        # Reached only when the restart did not stop us.
         if code != 0:
             log.error("systemctl --user restart flowd.service failed (exit %s)", code)
+            self._restart_failed()
+
+    def _restart_failed(self) -> None:
+        """No restart is coming: the tokens left for the next daemon go, and
+        the page may ask again."""
+        self._daemon_restart_pending = False
+        try:
+            (runtime_dir() / SETTINGS_TOKENS_FILE).unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("could not delete the settings page's tokens: %s", exc)
 
     async def pump(self) -> None:
         """Move one block of audio through STT. Called by the run loop and tests."""
@@ -1221,7 +1255,13 @@ class Daemon:
                     log.exception("could not stop flowd-ui")
 
     def _start_ui(self) -> None:
-        if self.overlay is None or self._ui_restarting:
+        if self._ui_restart_lock.locked():
+            # A restart from the settings page starts it when it is ready.
+            return
+        self._spawn_ui()
+
+    def _spawn_ui(self) -> None:
+        if self.overlay is None:
             return
         try:
             self.overlay.start()

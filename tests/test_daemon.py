@@ -1789,10 +1789,11 @@ async def test_restart_daemon_outside_systemd_is_refused(
 
 
 class _FakeProc:
-    returncode = 0
+    def __init__(self, code: int = 0) -> None:
+        self.returncode = code
 
     async def wait(self) -> int:
-        return 0
+        return self.returncode
 
 
 async def test_restart_daemon_under_systemd_writes_tokens_and_schedules(
@@ -1825,7 +1826,7 @@ async def test_restart_daemon_under_systemd_writes_tokens_and_schedules(
     await asyncio.gather(*d._background)
     assert len(spawned) == 1
     argv, kwargs = spawned[0]
-    assert argv == ("systemctl", "--user", "restart", "flowd.service")
+    assert argv == ("systemctl", "--user", "--no-block", "restart", "flowd.service")
     assert kwargs["start_new_session"] is True
     for stream in ("stdin", "stdout", "stderr"):
         assert kwargs[stream] == asyncio.subprocess.DEVNULL
@@ -1848,10 +1849,133 @@ async def test_restart_daemon_without_tokens_still_restarts(
     await d.restart("daemon", reset_position=False)
     await asyncio.sleep(0.35)
     await asyncio.gather(*d._background)
-    assert spawned == [("systemctl", "--user", "restart", "flowd.service")]
+    assert spawned == [("systemctl", "--user", "--no-block", "restart", "flowd.service")]
     assert not (tmp_path / "flowd" / "settings-tokens.json").exists()
 
 
 async def test_restart_unknown_target_is_refused() -> None:
     with pytest.raises(Unavailable):
         await daemon(FakeSttEngine([])).restart("everything", reset_position=False)
+
+
+async def test_overlapping_ui_restarts_start_after_the_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A plain restart and a reset in flight together: no flowd-ui may start
+    # while the position file is still there to be deleted.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    path = _position_file(tmp_path)
+    d = daemon(FakeSttEngine([]))
+    overlay = overlay_of(d)
+    gates = [threading.Event(), threading.Event()]
+    stops = iter(gates)
+    seen_at_start: list[bool] = []
+
+    def slow_stop() -> None:
+        next(stops).wait(2)
+        overlay.lifecycle.append("stop")
+
+    def start() -> None:
+        seen_at_start.append(path.exists())
+        overlay.lifecycle.append("start")
+
+    overlay.stop = slow_stop  # type: ignore[method-assign]
+    overlay.start = start  # type: ignore[method-assign]
+    first = asyncio.create_task(d.restart("ui", reset_position=False))
+    second = asyncio.create_task(d.restart("ui", reset_position=True))
+    await asyncio.sleep(0.05)
+    gates[0].set()
+    await first
+    # The first restart is done; the second is still waiting to stop the UI.
+    d._start_ui()  # the run loop's idle respawn
+    gates[1].set()
+    await second
+    assert overlay.lifecycle == ["stop", "start", "stop", "start"]
+    assert seen_at_start == [True, False]
+
+
+async def test_restart_ui_reset_failure_still_restarts_and_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    # A directory where the file should be: unlink raises.
+    (tmp_path / "flowd" / "indicator.json").mkdir(parents=True)
+    d = daemon(FakeSttEngine([]))
+    with pytest.raises(Unavailable, match="could not reset the position"):
+        await d.restart("ui", reset_position=True)
+    assert overlay_of(d).lifecycle == ["stop", "start"]
+
+
+def _record_spawns(monkeypatch: pytest.MonkeyPatch, result: Any) -> list[tuple[str, ...]]:
+    spawned: list[tuple[str, ...]] = []
+
+    async def fake_exec(*argv: str, **kwargs: Any) -> Any:
+        spawned.append(argv)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    return spawned
+
+
+def _systemd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    return tmp_path / "flowd" / "settings-tokens.json"
+
+
+def _with_tokens(d: Daemon) -> None:
+    tokens = Tokens()
+    tokens.issue()
+    d.settings_tokens = tokens
+
+
+async def test_restart_daemon_requests_in_the_delay_schedule_one_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _systemd(tmp_path, monkeypatch)
+    spawned = _record_spawns(monkeypatch, _FakeProc())
+    d = daemon(FakeSttEngine([]))
+    _with_tokens(d)
+    await d.restart("daemon", reset_position=False)
+    await d.restart("daemon", reset_position=False)
+    await asyncio.sleep(0.35)
+    await asyncio.gather(*d._background)
+    assert len(spawned) == 1
+
+
+@pytest.mark.parametrize("result", [_FakeProc(1), OSError("no systemctl")])
+async def test_restart_daemon_failure_removes_the_tokens_and_allows_a_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: Any
+) -> None:
+    path = _systemd(tmp_path, monkeypatch)
+    spawned = _record_spawns(monkeypatch, result)
+    d = daemon(FakeSttEngine([]))
+    _with_tokens(d)
+    await d.restart("daemon", reset_position=False)
+    assert path.exists()
+    await asyncio.sleep(0.35)
+    await asyncio.gather(*d._background)
+    assert len(spawned) == 1
+    assert not path.exists()
+    # Nothing is pending any more, so the page can ask again.
+    await d.restart("daemon", reset_position=False)
+    await asyncio.sleep(0.35)
+    await asyncio.gather(*d._background)
+    assert len(spawned) == 2
+
+
+async def test_restart_daemon_tokens_write_failure_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _systemd(tmp_path, monkeypatch)
+    # A file where the runtime directory should be: mkdir raises.
+    (tmp_path / "flowd").write_text("")
+    spawned = _record_spawns(monkeypatch, _FakeProc())
+    d = daemon(FakeSttEngine([]))
+    _with_tokens(d)
+    with pytest.raises(Unavailable, match="signed in"):
+        await d.restart("daemon", reset_position=False)
+    await asyncio.sleep(0.35)
+    assert spawned == []

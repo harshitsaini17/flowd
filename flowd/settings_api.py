@@ -78,7 +78,9 @@ class Backend(Protocol):
 
     async def restart(self, target: str, *, reset_position: bool) -> None:
         """Restart flowd-ui (`"ui"`) or the daemon (`"daemon"`). Raises `Busy`
-        during a dictation and `Unavailable` when it cannot be done here."""
+        during a dictation and `Unavailable` when it cannot be done here.
+        `reset_position` deletes flowd-ui's saved position first; it applies
+        to `"ui"` only and is ignored for `"daemon"`."""
         ...
 
 
@@ -406,6 +408,7 @@ class SettingsApi:
         target = body.get("target")
         if target not in ("ui", "daemon"):
             return _error(422, 'target must be "ui" or "daemon"')
+        # Validated for either target, but only "ui" uses it.
         reset_position = body.get("reset_position", False)
         if not isinstance(reset_position, bool):
             return _error(422, "reset_position must be true or false")
