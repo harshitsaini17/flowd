@@ -20,8 +20,11 @@ page.
   default 8178. If the port is taken, the page is off, dictation is
   unaffected, and the reason is logged.
 - `flowctl settings` requests a token over the control socket and opens
-  `http://127.0.0.1:8178/#token=…` with `xdg-open`. The token is in the
-  fragment, so browsers never send or log it.
+  `http://127.0.0.1:8178/#token=…`. The token is in the fragment, so browsers
+  never send or log it. It is not passed to `xdg-open` directly: a browser's
+  command line is readable by every local user in `/proc`. `flowctl` writes a
+  mode-0600 launcher page, `settings-open.html`, next to the control socket
+  and opens that; it forwards to the URL with a meta refresh.
 - Every `/api/` request must pass all three checks, or gets `403`:
   1. `Authorization: Bearer <token>`, compared in constant time. Tokens are 32
      random bytes; each `flowctl settings` issues a new one and they live only

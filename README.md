@@ -354,8 +354,9 @@ flowctl settings
 opens a settings page in your browser for everything in `config.toml` and
 `vocab.toml`: live status, a microphone test, personal vocabulary and stats,
 with changes saved straight back to the files. The daemon serves it on
-`127.0.0.1:8178`; `flowctl settings` hands your browser a fresh, one-time token,
-so nothing else on the machine can open it. Set `[settings] enabled = false` to
+`127.0.0.1:8178`; `flowctl settings` hands your browser a fresh sign-in token
+(through a launcher file only you can read, never on a command line), so
+nothing else on the machine can open it. Set `[settings] enabled = false` to
 turn the page off entirely — dictation itself is unaffected either way.
 
 ### Per-application modes
