@@ -27,8 +27,9 @@ def over(fg, a, bg):
     )
 
 
-# Mirrors assets/tokens.css. `brand` is violet (#b154f9): fills, rings and indicators only,
-# checked at 3:1 (non-text). `primary` is the text-safe violet used for links and labels.
+# Mirrors flowd/web/assets/tokens.css. `brand` is violet (#b154f9): fills, rings and
+# indicators only, checked at 3:1 (non-text). `primary` is the text-safe violet used
+# for links and labels.
 T = {
     "light": dict(
         bg="#ffffff",

@@ -99,7 +99,7 @@ warning states.
 
 ## Notes from building it
 
-- Fonts are the design page's woff2 files (`docs/design/assets/fonts`),
+- Fonts are the design page's woff2 files (`flowd/web/assets/fonts`),
   copied next to the binary at build time and registered with Pango
   directly; there is no TTF copy. An installed build falls back to
   `FLOWD_FONTS_DIR` (default `<datadir>/flowd/fonts`), then to the system

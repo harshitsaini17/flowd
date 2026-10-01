@@ -361,7 +361,7 @@ Mockups (open directly in a browser; everything is local):
 - [`settings.html`](settings.html): the full settings page, working: auto-save,
   validation, keyboard reorder, tag input, tables, charts, theme switching,
   degraded-state simulators and a component state gallery.
-- `assets/tokens.css` is the CSS form of the tokens below; `contrast.py`
+- `flowd/web/assets/tokens.css` is the CSS form of the tokens below; `contrast.py`
   re-checks every color pair in this document.
 
 ## Overview
@@ -521,7 +521,7 @@ from size, tracking and color (`text` vs `text-2`). There is no 500, 600 or 700
 anywhere.
 
 **Families.** Inter (variable, OFL 1.1), plus JetBrains Mono (variable, OFL 1.1) for snippets, key
-names, config paths and app ids. The page uses the local `woff2` files under `docs/design/assets/fonts/` (Inter
+names, config paths and app ids. The page uses the local `woff2` files under `flowd/web/assets/fonts/` (Inter
 normal + italic, 48 KB + 52 KB; JetBrains Mono, 40 KB). `flowd-ui` ships TTF
 copies of the same fonts and registers them with Pango
 (`pango_font_map_add_font_file`, Pango ≥ 1.56), falling back to the system

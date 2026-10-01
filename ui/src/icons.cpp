@@ -1,5 +1,5 @@
 // Lucide icons, https://lucide.dev (lucide-static 1.48.0, the same copies as
-// docs/design/assets/icons.js). Circles, rects and lines are rewritten as
+// flowd/web/assets/icons.js). Circles, rects and lines are rewritten as
 // equivalent paths; the path data is otherwise unchanged.
 //
 // ISC License

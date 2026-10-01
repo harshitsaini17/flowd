@@ -105,11 +105,11 @@ if(FLOWD_GTK_SOURCES)
   if(flowd_lto)
     set_property(TARGET flowd-ui PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
   endif()
-  # Fonts live next to the binary (ADR 0013). The woff2 files are the design
-  # page's own copies; Pango >= 1.56 loads them as they are.
+  # Fonts live next to the binary (ADR 0013). The woff2 files are the
+  # settings page's own copies; Pango >= 1.56 loads them as they are.
   add_custom_command(TARGET flowd-ui POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/assets/fonts
+            ${CMAKE_CURRENT_SOURCE_DIR}/../flowd/web/assets/fonts
             $<TARGET_FILE_DIR:flowd-ui>/fonts)
 
   # With no display there is nothing to draw on: the program says so on
@@ -145,8 +145,8 @@ set(FLOWD_GTK_TESTS
 if(FLOWD_GTK_TESTS)
   add_executable(flowd-ui-gtk-tests tests/main.cpp ${FLOWD_GTK_TESTS})
   target_link_libraries(flowd-ui-gtk-tests PRIVATE flowd-ui-gtk)
-  # The design page's fonts, which the build ships next to the binary.
+  # The settings page's fonts, which the build ships next to the binary.
   target_compile_definitions(flowd-ui-gtk-tests PRIVATE
-    FLOWD_TEST_FONTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../docs/design/assets/fonts")
+    FLOWD_TEST_FONTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../flowd/web/assets/fonts")
   add_test(NAME gtk COMMAND flowd-ui-gtk-tests)
 endif()

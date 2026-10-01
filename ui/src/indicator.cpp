@@ -37,7 +37,7 @@ constexpr float kIdleShadowBlur = 3.0f;
 // design.md "Indicator" → Warning: a 6 px dot, centred at +18 px from the
 // line's centre and 5 px above its top, with a 1 px dark ring. It is amber in
 // both themes: the dark theme's `warn`, since it sits on the dark idle core
-// (docs/design/assets/overlay.css .warn-dot).
+// (flowd/web/assets/overlay.css .warn-dot).
 constexpr float kWarnDotD = 6.0f;
 constexpr float kWarnDotDx = 18.0f;
 constexpr float kWarnDotDy = -5.0f;
