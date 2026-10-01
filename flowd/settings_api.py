@@ -354,13 +354,16 @@ class SettingsApi:
             value = body.get("seconds")
             if value is not None:
                 # bool is an int subclass, and NaN would slip past the clamp.
-                if (
-                    isinstance(value, bool)
-                    or not isinstance(value, int | float)
-                    or not math.isfinite(value)
-                ):
+                if isinstance(value, bool) or not isinstance(value, int | float):
                     return _error(422, "seconds must be a number")
-                seconds = min(max(float(value), MIC_TEST_MIN_S), MIC_TEST_MAX_S)
+                try:
+                    # An int too large for a float raises OverflowError here.
+                    number = float(value)
+                except OverflowError:
+                    return _error(422, "seconds must be a number")
+                if not math.isfinite(number):
+                    return _error(422, "seconds must be a number")
+                seconds = min(max(number, MIC_TEST_MIN_S), MIC_TEST_MAX_S)
         levels = self._backend.mic_test(seconds)
         # Busy is raised on the generator's first step, so that step is taken
         # here, where a 409 can still be sent instead of a stream.

@@ -10,10 +10,12 @@ from typing import Any
 import numpy as np
 import pytest
 
+from flowd import daemon as daemon_module
 from flowd.audio import MicrophoneStuck
 from flowd.config import Config, Hotkey, Inject, Ui
 from flowd.daemon import Daemon
 from flowd.inject.base import InjectResult
+from flowd.levels import FLOOR_DB
 from flowd.settings_api import Busy
 from flowd.state import Event as MachineEvent
 from flowd.state import State
@@ -1592,3 +1594,33 @@ def test_always_open_counts_as_recording() -> None:
     cfg = Config()
     d = daemon(FakeSttEngine([]), cfg=replace(cfg, audio=replace(cfg.audio, always_open=True)))
     assert d.recording
+
+
+async def test_mic_test_releases_the_mic_when_the_preempting_dictation_fails_to_open() -> None:
+    d = daemon(FakeSttEngine([[]]))
+    gen = d.mic_test(15)
+    await anext(gen)
+
+    def refuse() -> None:
+        raise OSError("device busy")
+
+    d.capture.start = refuse  # type: ignore[method-assign]
+    reply = await d.handle({"cmd": "start"})
+    assert reply["ok"] is False and d.session is None
+    _ = [p async for p in gen]
+    # The dictation took the test's stream and then never owned one, so the
+    # test is the last holder and must close it.
+    assert d.mic_test_preempted and d.capture.stopped
+    assert not d.recording
+
+
+async def test_mic_test_reports_silence_while_the_device_is_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(daemon_module, "MIC_TEST_POLL_S", 0)
+    d = daemon(FakeSttEngine([]), capture=FakeCapture(blocks=[]))
+    levels = [pair async for pair in d.mic_test(10)]
+    # Every read is empty, yet the stream keeps writing: one floor reading
+    # per MIC_TEST_SILENT_POLLS empty reads.
+    assert levels and all(pair == (FLOOR_DB, FLOOR_DB) for pair in levels)
+    assert d.capture.stopped

@@ -537,7 +537,16 @@ async def test_mic_test_seconds_are_clamped(
 
 
 @pytest.mark.parametrize(
-    "body", [{"seconds": "5"}, {"seconds": True}, {"seconds": [1]}, {"seconds": float("nan")}, [1]]
+    "body",
+    [
+        {"seconds": "5"},
+        {"seconds": True},
+        {"seconds": [1]},
+        {"seconds": float("nan")},
+        {"seconds": float("inf")},
+        {"seconds": 10**400},
+        [1],
+    ],
 )
 async def test_mic_test_bad_seconds_is_422(
     api: SettingsApi, backend: FakeBackend, body: Any
