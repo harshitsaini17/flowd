@@ -1339,13 +1339,13 @@ own origin, enforced by `Content-Security-Policy: default-src 'self'`.
 
 #### Live vs restart
 
-Derived from the current daemon (`daemon.py` reload handler and what is
-captured at construction in `main.py`). The API reports this per key, so this
-table is the design default, not something to hard-code.
+Derived from `config.RESTART_KEYS`. The page never hard-codes this split: `GET
+/api/config` returns `applies` per `section.key` ("live" or "restart"), and the
+"Requires restart" badge comes from that, not from a copy of the table below.
 
 | Applies live on save (via `reload`) | Requires restart |
 | --- | --- |
-| `[hotkey]` mode, debounce_ms · `[llm]` all · `[chunking]` all incl. correction cues · `[guardrails]` all · `[inject]` order, terminal_apps, restore_delay_ms · `[modes]` · vocabulary · `[logging]` log_transcripts, recordings_dir | `[stt]` model, final_model · `[audio]` device, always_open, max_session_s, block_ms, preroll_ms · `[vad]` all · `[ui]` enabled, max_lines, fade_ms (`flowd-ui` reads them on spawn, so restarting it is enough; the page can trigger that instead of a full restart) · `[logging]` level |
+| `[hotkey]` mode, debounce_ms · `[llm]` all · `[chunking]` all incl. correction cues · `[guardrails]` all · `[inject]` order, terminal_apps, restore_delay_ms · `[modes]` · vocabulary · `[logging]` log_transcripts, recordings_dir · `[ui]` all (`flowd-ui` is reconfigured in place; no restart) · `[audio]` max_session_s | `[stt]` model, final_model, max_uncommitted_words · `[audio]` device, sample_rate, block_ms, always_open, preroll_ms · `[vad]` all · `[logging]` level · `[settings]` enabled, port |
 
 #### Header (64 px, sticky)
 

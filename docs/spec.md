@@ -183,7 +183,7 @@ class Session:
 
 ### IPC
 
-- **Control socket:** `$XDG_RUNTIME_DIR/flowd.sock`, newline-delimited JSON, e.g. `{"cmd": "toggle"}`. Commands: `start`, `stop`, `toggle`, `cancel`, `status`, `last`, `stats`, `reload`. The socket also serves as the single-instance lock.
+- **Control socket:** `$XDG_RUNTIME_DIR/flowd.sock`, newline-delimited JSON, e.g. `{"cmd": "toggle"}`. Commands: `start`, `stop`, `toggle`, `cancel`, `status`, `last`, `stats`, `reload`, `settings`. The socket also serves as the single-instance lock.
 - **UI messages:** newline-delimited JSON over `flowd-ui`'s stdin, e.g. `{"type": "render", "polished": "...", "pending": "...", "live": "..."}`, plus `show`, `fade`, `hide`, `state`, `level`, `meta`, `warn` and `config`. `flowd-ui` writes `click` and `moved` events to stdout (ADR 0013).
 - **Settings page:** HTTP on `127.0.0.1:8178`, token-authenticated (ADR 0014). `flowctl settings` opens it.
 
@@ -715,7 +715,7 @@ In order, each done when its criteria pass:
 | --- | --- | --- | --- |
 | 7. Microphone release | ADR 0015 | While idle after start, a session, a cancel, device loss and resume, `pactl list source-outputs` shows no flowd stream and `pw-record` can record. `scripts/idle_check.py` reports no PipeWire client from flowd. Regression test with the fake stream factory passes. | Done |
 | 8. `flowd-ui` | ADR 0013: C++ indicator and popup | Click and hotkey both toggle. Drag, snap and per-output position work and survive restart. Neither surface takes focus on Hyprland, Sway, KDE and X11; GNOME Wayland disables with a logged reason. `flowd-ui` ≤ 40 MB anonymous memory. | Done on Hyprland; Sway, KDE and X11 not yet checked |
-| 9. Settings page | ADR 0014 | Every setting in 8.1 and `vocab.toml` editable; comments in `config.toml` survive a save. Token, `Host` and `Origin` checks and the `409` conflict are tested. Playwright tests pass, including 320 px width. |  |
+| 9. Settings page | ADR 0014 | Every setting in 8.1 and `vocab.toml` editable; comments in `config.toml` survive a save. Token, `Host` and `Origin` checks and the `409` conflict are tested. Playwright tests pass, including 320 px width. | Done |
 | 10. Native build | ADR 0012: `make dist` | `dist/flowd`, `dist/flowctl`, `flowd-ui` run without a venv. pytest passes against the compiled modules. Targets in ADR 0012 met; 24 h soak on the built binaries shows no growth or restarts. |  |
 
 ### Version 2

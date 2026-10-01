@@ -345,6 +345,19 @@ The `[ui]` section used to be called `[overlay]`. flowd still reads
 fails validation is rejected and the running one is kept, so a typo cannot take
 dictation down mid-session.
 
+### Settings page
+
+```bash
+flowctl settings
+```
+
+opens a settings page in your browser for everything in `config.toml` and
+`vocab.toml`: live status, a microphone test, personal vocabulary and stats,
+with changes saved straight back to the files. The daemon serves it on
+`127.0.0.1:8178`; `flowctl settings` hands your browser a fresh, one-time token,
+so nothing else on the machine can open it. Set `[settings] enabled = false` to
+turn the page off entirely — dictation itself is unaffected either way.
+
 ### Per-application modes
 
 flowd reads the focused window's app id when dictation starts
@@ -377,7 +390,9 @@ terms = ["LLM", "STT", "Hyprland"]
 mishearing the model keeps making anyway; check `flowctl last` to see what it
 actually wrote, and only add phrases you would never mean literally. Both apply
 on `flowctl reload`, and a broken file is rejected there with the old
-vocabulary kept.
+vocabulary kept. A term or a `[replace]` key must be non-empty and must not
+span more than one line; such entries are rejected rather than silently
+dropped.
 
 ## Troubleshooting
 
@@ -496,6 +511,9 @@ flowd is built to be boring about your data.
 
 - **No network at runtime.** The only thing listening is `llama-server`, on
   `127.0.0.1`. Model downloads are a separate, explicit step you run yourself.
+  flowd listens on `127.0.0.1:8178` for the settings page. Only this machine
+  can reach it, and every request needs a token that `flowctl settings` hands
+  your browser.
 - **No transcripts on disk by default.** `logging.log_transcripts` is `false`,
   and turning it on is the only way flowd writes what you said to a file.
   Dictation contains passwords, addresses and private messages; the default
