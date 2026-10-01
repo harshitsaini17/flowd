@@ -23,7 +23,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    # Browser tests for the settings page (tests/web), skipped when either
+    # is missing or no Chromium is found.
+    "playwright==1.63.0",
+    "pytest-playwright==0.9.0",
+]
 
 [project.scripts]
 flowd = "flowd.main:main"
@@ -65,3 +74,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["web: browser tests for the settings page (tests/web), need Chromium"]
