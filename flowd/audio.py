@@ -170,6 +170,26 @@ def release_portaudio() -> None:
         sd._terminate()
 
 
+def input_devices() -> list[dict[str, Any]]:
+    """The input-capable devices, flagging the default, for the settings page.
+
+    Querying needs PortAudio initialised, which registers a PipeWire client, so
+    it is released again afterwards, as after a session (ADR 0015). Callers must
+    not run this while a stream is open: the release would pull PortAudio out
+    from under it.
+    """
+    try:
+        sd = _sounddevice()
+        default_input = sd.default.device[0]
+        return [
+            {"name": str(info["name"]), "default": index == default_input}
+            for index, info in enumerate(sd.query_devices())
+            if info["max_input_channels"] > 0
+        ]
+    finally:
+        release_portaudio()
+
+
 class AudioCapture:
     """Opens the mic on start and closes it on stop, so the indicator is off when idle.
 

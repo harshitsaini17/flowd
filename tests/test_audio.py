@@ -16,6 +16,7 @@ from flowd.audio import (
     AudioCapture,
     RingBuffer,
     _open_input_stream,
+    input_devices,
     load_wav,
     release_portaudio,
 )
@@ -121,6 +122,8 @@ class FakeSoundDevice(types.ModuleType):
         self._initialized = 1
         self.device_name = device_name
         self.opened_while_initialized: list[int] = []
+        self.devices: list[dict[str, Any]] = []
+        self.default = types.SimpleNamespace(device=[0, 0])
 
     def _initialize(self) -> None:
         self._initialized += 1
@@ -134,7 +137,9 @@ class FakeSoundDevice(types.ModuleType):
         stream.device = 5  # type: ignore[attr-defined]
         return stream
 
-    def query_devices(self, index: int) -> dict[str, Any]:
+    def query_devices(self, index: int | None = None) -> Any:
+        if index is None:
+            return self.devices
         return {"name": self.device_name, "hostapi": 0}
 
     def query_hostapis(self, index: int) -> dict[str, Any]:
@@ -190,6 +195,42 @@ def test_a_raw_hardware_default_device_is_warned_about(
     with caplog.at_level("WARNING", logger="flowd.audio"):
         _open_input_stream(samplerate=16000, channels=1, device=None)
     assert any("raw hardware device" in r.getMessage() for r in caplog.records)
+
+
+def test_input_devices_lists_inputs_only_and_releases_portaudio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settings page lists microphones without leaving a PipeWire client
+    behind on an idle daemon (ADR 0015)."""
+    sd = FakeSoundDevice()
+    sd.devices = [
+        {"name": "Speakers", "max_input_channels": 0},
+        {"name": "Mic", "max_input_channels": 1},
+        {"name": "Webcam", "max_input_channels": 2},
+    ]
+    sd.default.device = [1, 0]
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    release_portaudio()
+    assert input_devices() == [
+        {"name": "Mic", "default": True},
+        {"name": "Webcam", "default": False},
+    ]
+    assert sd._initialized == 0
+
+
+def test_input_devices_releases_portaudio_when_the_query_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sd = FakeSoundDevice()
+
+    def broken(index: int | None = None) -> Any:
+        raise OSError("no PortAudio")
+
+    sd.query_devices = broken  # type: ignore[method-assign]
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    with pytest.raises(OSError):
+        input_devices()
+    assert sd._initialized == 0
 
 
 def released_capture(**overrides: Any) -> tuple[AudioCapture, list[FakeStream], list[int]]:
