@@ -1,4 +1,5 @@
-/* flowd settings mockup: core helpers, save model, basic controls. No network: the API is simulated. */
+/* flowd settings page: core helpers, save model, basic controls. F.save goes through F.api
+   (settings-api.js) when the page is served by flowd, and is simulated otherwise (the mockup). */
 (() => {
   const F = (window.F = {});
   F.$ = (s, r = document) => r.querySelector(s);
@@ -6,6 +7,24 @@
   F.I = (n, s = 16, label) => iconSVG(n, s, label);
   F.rm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   F.esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // ---------- fill: each control registers how to show a config value without saving it
+  F.fillers = new Map();
+  F.onFill = (key, fn) => { if (!F.fillers.has(key)) F.fillers.set(key, []); F.fillers.get(key).push(fn); };
+  // `values` is GET /api/config's `values` ({section: {key: value}}), plus `vocab`.
+  F.valueOf = (values, key) => {
+    const dot = key.indexOf('.');
+    if (dot < 0) return values[key];
+    const sec = values[key.slice(0, dot)];
+    return sec ? sec[key.slice(dot + 1)] : undefined;
+  };
+  F.fill = (values, only) => {
+    for (const [key, fns] of F.fillers) {
+      if (only && key !== only) continue;
+      const v = F.valueOf(values, key);
+      if (v !== undefined) fns.forEach((fn) => fn(v));
+    }
+  };
 
   // ---------- announcements
   F.say = (msg) => { const a = F.$('#announce'); a.textContent = ''; setTimeout(() => (a.textContent = msg), 30); };
@@ -35,26 +54,36 @@
     return close;
   };
 
-  // ---------- save model (simulated PATCH /api/config)
+  // ---------- save model: row feedback and the header save state are shared with settings-api.js
   const saveState = () => F.$('#saveState');
-  const setGlobal = (s) => {
+  const setGlobal = (F.setGlobal = (s) => {
     const el = saveState();
     el.dataset.s = s;
     const map = { saved: ['check', 'All changes saved'], saving: ['loader-circle', 'Saving…'], error: ['circle-alert', 'Couldn’t save'], offline: ['check', 'Saved · applies when flowd starts'] };
     const [ic, tx] = map[s];
     el.innerHTML = `${F.I(ic, 14)}<span class="txt">${tx}</span>`;
     if (s === 'error') { const b = document.createElement('button'); b.className = 'link-btn'; b.textContent = 'Retry'; b.onclick = () => F.retry?.(); el.appendChild(b); }
+  });
+  // Row feedback: 'saving' (spinner), 'saved' (check, fades), or null (cleared).
+  F.feedback = (el, s) => {
+    const fb = el.closest('.ctl')?.querySelector('.feedback') || el.closest('.row')?.querySelector('.feedback');
+    if (!fb) return;
+    if (s === 'saving') { fb.dataset.s = 'saving'; fb.innerHTML = F.I('loader-circle', 12); return; }
+    if (!s) { delete fb.dataset.s; fb.innerHTML = ''; return; }
+    fb.innerHTML = `<span class="ok">${F.I('check', 12)}</span>Saved`;
+    fb.dataset.s = 'saved'; fb.style.animation = 'none'; void fb.offsetWidth; fb.style.animation = '';
   };
   F.state = { failNext: false, daemon: true, cleanup: true, restartKeys: new Set(), conflict: false };
-  F.save = (el, key, value, { restart = false, revert } = {}) => {
-    const fb = el.closest('.ctl')?.querySelector('.feedback') || el.closest('.row')?.querySelector('.feedback');
-    const slow = setTimeout(() => { if (fb) { fb.dataset.s = 'saving'; fb.innerHTML = F.I('loader-circle', 12); } setGlobal('saving'); }, 300);
+  F.save = (el, key, value, opts = {}) => (F.api ? F.api.save(el, key, value, opts) : demoSave(el, key, value, opts));
+  // The mockup's save: no network, random latency, and the state gallery can make it fail.
+  const demoSave = (el, key, value, { restart = false, revert } = {}) => {
+    const slow = setTimeout(() => { F.feedback(el, 'saving'); setGlobal('saving'); }, 300);
     const latency = 180 + Math.random() * 380; // sometimes > 300 ms so the spinner shows
     return new Promise((resolve) => setTimeout(() => {
       clearTimeout(slow);
       if (F.state.failNext) {
         F.state.failNext = false;
-        if (fb) { delete fb.dataset.s; fb.innerHTML = ''; }
+        F.feedback(el, null);
         setGlobal('error');
         F.retry = () => F.save(el, key, value, { restart, revert });
         revert?.();
@@ -62,10 +91,7 @@
         F.toast(`Couldn’t save <span class="mono">${F.esc(key)}</span>. config.toml isn’t writable.`, { kind: 'error', action: 'Retry', onAction: () => F.retry() });
         return resolve(false);
       }
-      if (fb) {
-        fb.innerHTML = `<span class="ok">${F.I('check', 12)}</span>Saved`;
-        fb.dataset.s = 'saved'; fb.style.animation = 'none'; void fb.offsetWidth; fb.style.animation = '';
-      }
+      F.feedback(el, 'saved');
       setGlobal(F.state.daemon ? 'saved' : 'offline');
       F.say(restart ? 'Saved. Takes effect after restart.' : 'Saved');
       if (restart) { F.state.restartKeys.add(key); F.updateRestart(); }
@@ -91,7 +117,7 @@
     const v = Number(raw);
     if (!Number.isFinite(v)) return 'Must be a number.';
     if (d.int !== undefined && !Number.isInteger(v)) return 'Must be a whole number above 0.';
-    if (v < Number(d.min)) return Number(d.min) >= 1 ? 'Must be a whole number above 0.' : `Must be at least ${d.min}.`;
+    if (v < Number(d.min)) return Number(d.min) === 1 ? 'Must be a whole number above 0.' : `Must be at least ${d.min}.`;
     if (d.max !== undefined && v > Number(d.max)) return `Must be ${d.max} or less.`;
     if (d.pair) {
       const other = document.getElementById(d.pair), ov = Number(other.value);
@@ -125,10 +151,13 @@
   // ---------- toggles
   F.initSwitch = (sw) => {
     sw.querySelector('.chk').innerHTML = F.I('check', 10);
+    const show = (on) => { sw.setAttribute('aria-checked', String(on)); sw.dispatchEvent(new CustomEvent('change', { bubbles: true, detail: on })); };
+    if (sw.dataset.key) F.onFill(sw.dataset.key, (v) => { if ((sw.getAttribute('aria-checked') === 'true') !== !!v) show(!!v); });
     sw.addEventListener('click', async () => {
+      if (sw.disabled) return;
       const prev = sw.getAttribute('aria-checked') === 'true';
-      sw.setAttribute('aria-checked', String(!prev));
-      sw.dispatchEvent(new CustomEvent('change', { bubbles: true, detail: !prev }));
+      show(!prev);
+      if (!sw.dataset.key) return; // UI-only (data-ui-only): its page wiring saves
       const ok = await F.save(sw, sw.dataset.key, !prev, {
         restart: sw.hasAttribute('data-restart'),
         revert: () => { sw.setAttribute('aria-checked', String(prev)); sw.dispatchEvent(new CustomEvent('change', { bubbles: true, detail: prev })); if (!F.rm()) { sw.classList.remove('shake'); void sw.offsetWidth; sw.classList.add('shake'); } },
@@ -145,6 +174,7 @@
       onPick?.(b.dataset.v, b);
       if (!silent && seg.dataset.key) F.save(seg, seg.dataset.key, b.dataset.v);
     };
+    if (seg.dataset.key) F.onFill(seg.dataset.key, (v) => { const b = bs().find((x) => x.dataset.v === String(v)); if (b) pick(b, true); });
     seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && b.getAttribute('aria-checked') !== 'true') pick(b); });
     seg.addEventListener('keydown', (e) => {
       const keys = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
@@ -158,17 +188,23 @@
   };
 
   // ---------- number / text inputs: validate on blur + Enter, auto-save 800 ms after typing if valid
+  // Numeric inputs (data-min) save numbers; data-scale shows value × scale (e.g. 0.2 as 20 %).
+  const tidy = (x) => Math.round(x * 1e9) / 1e9;
   F.initInput = (input) => {
     let last = input.value, timer;
+    const d = input.dataset, scale = d.scale ? +d.scale : 1;
+    const out = () => (d.min === undefined ? input.value.trim() : tidy(Number(input.value.trim()) / scale));
+    const unit = () => input.closest('.num')?.querySelector('.unit')?.textContent || '';
+    if (d.key) F.onFill(d.key, (v) => { clearTimeout(timer); input.value = last = v == null ? '' : d.min === undefined ? String(v) : String(tidy(v * scale)); F.showErr(input, null); });
     const commit = () => {
       clearTimeout(timer);
       if (input.value === last) { F.showErr(input, null); return; }
       const msg = F.validate(input);
-      if (msg) { F.showErr(input, msg, last + (input.closest('.num')?.querySelector('.unit')?.textContent ? ' ' + input.closest('.num').querySelector('.unit').textContent : '')); return; }
+      if (msg) { F.showErr(input, msg, last + (unit() ? ' ' + unit() : '')); return; }
       F.showErr(input, null);
       if (input.dataset.pair) { const o = document.getElementById(input.dataset.pair); if (o?.getAttribute('aria-invalid') && !F.validate(o)) F.showErr(o, null); }
       const prev = last; last = input.value;
-      F.save(input, input.dataset.key || input.id, input.value, { restart: input.hasAttribute('data-restart'), revert: () => { input.value = prev; last = prev; } });
+      F.save(input, d.key || input.id, out(), { restart: input.hasAttribute('data-restart'), lastGood: prev + (unit() ? ' ' + unit() : ''), revert: () => { input.value = prev; last = prev; } });
     };
     if (input.dataset.min !== undefined) {
       input.addEventListener('beforeinput', (e) => { if (e.data && /[^\d.\-]/.test(e.data)) e.preventDefault(); });
@@ -183,9 +219,10 @@
     const d = host.dataset, id = `sl-${Math.random().toString(36).slice(2, 7)}`;
     const min = +d.min, max = +d.max, step = +d.step, def = +d.default;
     const pct = (v) => ((v - min) / (max - min)) * 100;
-    host.innerHTML = `<div class="slider-col"><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${d.slider}" aria-labelledby="${d.label}" aria-describedby="${d.desc || ''}"><div class="ticks"><span class="tick" style="left:calc(8px + (100% - 16px) * ${pct(def) / 100})">default</span></div></div>
+    host.innerHTML = `<div class="slider-col"><input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${d.slider}" aria-labelledby="${d.label}" aria-describedby="${d.desc || ''}"><div class="ticks"><span class="tick">default</span></div></div>
       <div class="num"><input class="input" inputmode="numeric" value="${d.slider}" aria-label="${F.esc(document.getElementById(d.label)?.firstChild?.textContent.trim() || '')} value" data-min="${min}" data-max="${max}" data-int><span class="unit">${d.unit}</span></div>`;
     const r = host.querySelector('input[type=range]'), n = host.querySelector('.num input');
+    host.querySelector('.tick').style.left = `calc(8px + (100% - 16px) * ${pct(def) / 100})`;
     let saved = d.slider, keyT;
     const paint = () => { r.style.setProperty('--p', `${pct(+r.value)}%`); r.setAttribute('aria-valuetext', `${r.value} ${d.unit === 'ms' ? 'milliseconds' : d.unit}`); };
     const warn = () => {
@@ -211,12 +248,19 @@
     n.addEventListener('blur', numCommit);
     n.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); numCommit(); } });
     paint();
-    return { set: (v) => { r.value = n.value = saved = v; paint(); warn(); onLive?.(+v); } };
+    const set = (v) => { r.value = n.value = saved = String(v); F.showErr(n, null); paint(); warn(); onLive?.(+v); };
+    if (d.key) F.onFill(d.key, set);
+    return { set };
   };
 
   // ---------- select (native)
   F.initSelect = (sel, onPick) => {
     let prev = sel.value;
+    if (sel.dataset.key) F.onFill(sel.dataset.key, (v) => {
+      v = String(v);
+      if (![...sel.options].some((o) => o.value === v)) { const o = document.createElement('option'); o.value = o.textContent = v; sel.appendChild(o); }
+      sel.value = prev = v; onPick?.(v);
+    });
     sel.addEventListener('change', () => { const p = prev; prev = sel.value; onPick?.(sel.value); F.save(sel, sel.dataset.key, sel.value, { restart: sel.hasAttribute('data-restart'), revert: () => { sel.value = prev = p; onPick?.(p); } }); });
   };
 

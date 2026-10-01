@@ -584,3 +584,44 @@ dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
   .gallery { grid-template-columns: minmax(0, 1fr); }
   #toastGallery { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---------------------------------------------------------------- utilities
+   The page is served with `default-src 'self'`, which blocks style="" attributes,
+   so one-off layout lives here. Values that change at runtime are set through
+   element.style instead, which the policy allows. */
+.u-m0 { margin: 0; }
+.field-note.u-m0 { margin: 0; }
+.u-mt4 { margin-top: 4px; }
+.u-mt12 { margin-top: 12px; }
+.u-mt24 { margin-top: 24px; }
+.u-mb12 { margin-bottom: 12px; }
+.u-ml6 { margin-left: 6px; }
+.u-ml16 { margin-left: 16px; }
+.u-flex1 { flex: 1; }
+.u-full { flex-basis: 100%; }
+.u-span { grid-column: 1 / -1; }
+.u-bt { border-top: 1px solid var(--border); }
+.u-noanim { animation: none; }
+.u-w140 { width: 140px; }
+.u-hstack { display: flex; gap: 8px; align-items: center; }
+.field-note.u-label, .u-label { display: block; margin: 0 0 6px; }
+.mono-sm { font-family: var(--font-mono); font-size: .8125rem; }
+.u-wide { width: 100%; max-width: 360px; }
+.u-url { width: 240px; max-width: 100%; }
+.row .ctl.ctl-col { flex-direction: column; align-items: stretch; }
+.row .ctl.ctl-col.gap8 { gap: 8px; }
+.row .ctl.ctl-col.end { align-items: flex-end; }
+.meter-track.grow { flex: 1; width: auto; }
+.meter-mark.m-quiet { left: 40%; }
+.meter-mark.m-loud { left: 80%; }
+.cap-warn { color: var(--warn); display: flex; }
+.cap-ok { color: var(--primary); display: flex; }
+.danger-text { color: var(--danger); }
+.btn.danger-text { color: var(--danger); }
+.chart-table { max-height: 240px; overflow: auto; margin-top: 8px; }
+.chart-lbl { position: absolute; right: 0; translate: 0 -50%; font: 400 11px/1 var(--font-sans); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chart-ov { position: absolute; inset: 8px 0 0 0; pointer-events: none; }
+.chart-ov.narrow { display: none; }
+.sim-disabled { opacity: .45; cursor: not-allowed; }
+.row.ro, [aria-disabled="true"].switch, .segmented [aria-disabled="true"] { cursor: not-allowed; }
+.content [data-ro]:disabled { opacity: .55; cursor: not-allowed; }
