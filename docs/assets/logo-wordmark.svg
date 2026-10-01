@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 128" width="400" height="128" role="img" aria-labelledby="t">
+  <title id="t">flowd</title>
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b154f9"/><stop offset="1" stop-color="#7a22d4"/></linearGradient></defs>
+  <rect x="1.5" y="1.5" width="125" height="125" rx="27" fill="#17101f" stroke="#b154f9" stroke-opacity=".45" stroke-width="3"/>
+  <!-- A shell prompt whose cursor is sound: speech typed at the prompt -->
+  <path d="M28 42l22 22-22 22" fill="none" stroke="url(#g)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#fff" stroke-width="8" stroke-linecap="round">
+    <path d="M64 80v6" opacity=".5"/>
+    <path d="M78 70v16" opacity=".75"/>
+    <path d="M92 60v26"/>
+    <path d="M106 72v14"/>
+  </g>
+  <!-- Wordmark drawn as strokes so it does not depend on installed fonts -->
+  <g stroke="#1a1a1a" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M166 96V54a18 18 0 0 1 18-18h4"/>
+    <path d="M154 62h28"/>
+    <path d="M204 34v62"/>
+    <circle cx="242" cy="76" r="20"/>
+    <path d="M278 56l12 40 12-32 12 32 12-40"/>
+    <circle cx="362" cy="76" r="20"/>
+    <path d="M382 34v62"/>
+  </g>
+</svg>

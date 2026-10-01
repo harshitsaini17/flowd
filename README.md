@@ -1,6 +1,9 @@
 <div align="center">
 
-# flowd
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-wordmark-dark.svg">
+  <img src="docs/assets/logo-wordmark.svg" alt="flowd" width="320">
+</picture>
 
 **Local, offline, streaming dictation for Linux.**
 
