@@ -40,7 +40,9 @@ class Backend(Protocol):
 
     @property
     def recording(self) -> bool:
-        """True while a dictation holds the microphone."""
+        """True while a capture stream is open, including the idle stream kept
+        when `audio.always_open` is true. Listing devices releases PortAudio,
+        which would cut such a stream off, so it is refused while this holds."""
         ...
 
     async def reload(self) -> str | None:
@@ -65,6 +67,10 @@ def _ok(**body: Any) -> Reply:
 
 def _error(code: int, message: str, **extra: Any) -> Reply:
     return Reply(code, {"ok": False, "error": message, **extra})
+
+
+def _io_error(verb: str, path: Path, exc: OSError) -> Reply:
+    return _error(500, f"could not {verb} {path.name}: {exc.strerror or exc}")
 
 
 def _comparable(value: Any) -> Any:
@@ -148,21 +154,28 @@ class SettingsApi:
         )
 
     def _config_conflict(self) -> Reply:
+        path = self._backend.config_file
         try:
-            current = config_edit.read_config(self._backend.config_file).etag
+            current = config_edit.read_config(path).etag
+        except OSError as exc:
+            return _io_error("read", path, exc)
         except ValueError as exc:
             return _error(422, str(exc))
         return _error(409, "conflict", etag=current)
 
-    async def _reload_after_write(self) -> Reply | None:
+    async def _reload_after_write(self, etag: str) -> Reply | None:
         failure = await self._backend.reload()
         if failure is not None:
-            return _error(500, f"saved, but flowd could not apply it: {failure}")
+            # The file did change: the page needs the new etag to keep saving.
+            return _error(500, f"saved, but flowd could not apply it: {failure}", etag=etag)
         return None
 
     async def _get_config(self, query: dict[str, str], body: Any) -> Reply:
+        path = self._backend.config_file
         try:
-            snapshot = config_edit.read_config(self._backend.config_file)
+            snapshot = config_edit.read_config(path)
+        except OSError as exc:
+            return _io_error("read", path, exc)
         except ValueError as exc:
             return _error(422, str(exc))
         return self._config_reply(snapshot)
@@ -173,16 +186,19 @@ class SettingsApi:
         changes = body.get("changes")
         if not isinstance(changes, dict):
             return _error(422, "changes must be an object of section.key to value")
+        path = self._backend.config_file
         try:
-            snapshot, applied = config_edit.patch_config(
-                self._backend.config_file, body["etag"], changes
-            )
+            snapshot, applied = config_edit.patch_config(path, body["etag"], changes)
         except Conflict:
             return self._config_conflict()
-        except ValueError as exc:
+        except OSError as exc:
+            return _io_error("write", path, exc)
+        except (ValueError, TypeError, AttributeError) as exc:
+            # TypeError/AttributeError: a value of a type the validators did
+            # not expect. The write never happened, so it is the body's fault.
             return _error(422, str(exc))
         self._update_pending(snapshot)
-        failed = await self._reload_after_write()
+        failed = await self._reload_after_write(snapshot.etag)
         if failed is not None:
             return failed
         return _ok(
@@ -198,14 +214,17 @@ class SettingsApi:
         section = body.get("section")
         if section is not None and not isinstance(section, str):
             return _error(422, "section must be a section name or null")
+        path = self._backend.config_file
         try:
-            snapshot = config_edit.reset_config(self._backend.config_file, body["etag"], section)
+            snapshot = config_edit.reset_config(path, body["etag"], section)
         except Conflict:
             return self._config_conflict()
-        except ValueError as exc:
+        except OSError as exc:
+            return _io_error("write", path, exc)
+        except (ValueError, TypeError, AttributeError) as exc:
             return _error(422, str(exc))
         self._update_pending(snapshot)
-        failed = await self._reload_after_write()
+        failed = await self._reload_after_write(snapshot.etag)
         if failed is not None:
             return failed
         return self._config_reply(snapshot)
@@ -213,8 +232,11 @@ class SettingsApi:
     # -- vocab --------------------------------------------------------------
 
     async def _get_vocab(self, query: dict[str, str], body: Any) -> Reply:
+        path = self._backend.vocab_file
         try:
-            etag, vocab = config_edit.read_vocab(self._backend.vocab_file)
+            etag, vocab = config_edit.read_vocab(path)
+        except OSError as exc:
+            return _io_error("read", path, exc)
         except ValueError as exc:
             return _error(422, str(exc))
         return _ok(etag=etag, terms=vocab["terms"], replace=vocab["replace"])
@@ -228,17 +250,22 @@ class SettingsApi:
             return _error(422, "terms must be a list of strings")
         if not _is_str_dict(replace):
             return _error(422, "replace must be an object of spoken text to written text")
+        path = self._backend.vocab_file
         try:
-            etag = config_edit.write_vocab(self._backend.vocab_file, body["etag"], terms, replace)
+            etag = config_edit.write_vocab(path, body["etag"], terms, replace)
         except Conflict:
             try:
-                current, _ = config_edit.read_vocab(self._backend.vocab_file)
+                current, _ = config_edit.read_vocab(path)
+            except OSError as exc:
+                return _io_error("read", path, exc)
             except ValueError as exc:
                 return _error(422, str(exc))
             return _error(409, "conflict", etag=current)
+        except OSError as exc:
+            return _io_error("write", path, exc)
         except ValueError as exc:
             return _error(422, str(exc))
-        failed = await self._reload_after_write()
+        failed = await self._reload_after_write(etag)
         if failed is not None:
             return failed
         return _ok(etag=etag)
@@ -251,8 +278,11 @@ class SettingsApi:
             return _error(422, f"text must be at most {MAX_TEST_TEXT} characters")
         replace = body.get("replace")
         if replace is None:
+            path = self._backend.vocab_file
             try:
-                _, vocab = config_edit.read_vocab(self._backend.vocab_file)
+                _, vocab = config_edit.read_vocab(path)
+            except OSError as exc:
+                return _io_error("read", path, exc)
             except ValueError as exc:
                 return _error(422, str(exc))
             replace = vocab["replace"]

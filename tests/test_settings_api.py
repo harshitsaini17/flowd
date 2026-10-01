@@ -146,6 +146,83 @@ async def test_patch_malformed_body_is_422(api: SettingsApi, body: Any) -> None:
     assert reply.status == 422 and reply.body["ok"] is False and reply.body["error"]
 
 
+@pytest.mark.parametrize("url", [5, [1], True])
+async def test_patch_non_string_url_is_422(
+    api: SettingsApi, backend: FakeBackend, url: Any
+) -> None:
+    before = backend.config_file.read_text()
+    body = {"etag": await etag(api), "changes": {"llm.url": url}}
+    reply = await call(api, "PATCH", "/api/config", body)
+    assert reply.status == 422 and "url" in reply.body["error"]
+    assert backend.config_file.read_text() == before and backend.reloads == 0
+
+
+async def test_a_type_error_in_validation_is_422_not_a_crash(
+    api: SettingsApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: Any) -> Any:
+        raise AttributeError("'int' object has no attribute 'decode'")
+
+    monkeypatch.setattr(settings_api.config_edit, "patch_config", boom)
+    monkeypatch.setattr(settings_api.config_edit, "reset_config", boom)
+    body = {"etag": await etag(api), "changes": {"llm.url": 5}}
+    reply = await call(api, "PATCH", "/api/config", body)
+    assert reply.status == 422 and "decode" in reply.body["error"]
+    reply = await call(api, "POST", "/api/config/reset", {"etag": "e", "section": None})
+    assert reply.status == 422
+
+
+async def test_unreadable_config_is_500_naming_the_file(
+    api: SettingsApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(path: Path) -> Any:
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(settings_api.config_edit, "read_config", denied)
+    reply = await call(api, "GET", "/api/config")
+    assert reply.status == 500
+    assert reply.body == {
+        "ok": False,
+        "error": "could not read config.toml: Permission denied",
+    }
+
+
+async def test_unwritable_config_is_500_naming_the_file(
+    api: SettingsApi, backend: FakeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def full(*args: Any) -> Any:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(settings_api.config_edit, "patch_config", full)
+    body = {"etag": await etag(api), "changes": {"hotkey.debounce_ms": 90}}
+    reply = await call(api, "PATCH", "/api/config", body)
+    assert reply.status == 500
+    assert reply.body["error"] == "could not write config.toml: No space left on device"
+    assert backend.reloads == 0
+
+
+async def test_unwritable_vocab_is_500_naming_the_file(
+    api: SettingsApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def read_only(*args: Any) -> Any:
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(settings_api.config_edit, "write_vocab", read_only)
+    reply = await call(api, "PATCH", "/api/vocab", {"etag": "", "terms": [], "replace": {}})
+    assert reply.status == 500
+    assert reply.body["error"] == "could not write vocab.toml: Read-only file system"
+
+
+async def test_vocab_reload_failure_is_500_with_the_new_etag(
+    api: SettingsApi, backend: FakeBackend
+) -> None:
+    backend.reload_error = "boom"
+    reply = await call(api, "PATCH", "/api/vocab", {"etag": "", "terms": ["a"], "replace": {}})
+    assert reply.status == 500
+    assert reply.body["error"] == "saved, but flowd could not apply it: boom"
+    assert reply.body["etag"] == (await call(api, "GET", "/api/vocab")).body["etag"]
+
+
 async def test_patch_restart_key_is_pending_and_clears_when_set_back(
     api: SettingsApi, backend: FakeBackend
 ) -> None:
@@ -178,6 +255,7 @@ async def test_reload_failure_after_write_is_500_saying_it_was_saved(
     assert reply.body == {
         "ok": False,
         "error": "saved, but flowd could not apply it: model not found",
+        "etag": read_config(backend.config_file).etag,
     }
     assert "debounce_ms = 90" in backend.config_file.read_text()
 
@@ -253,6 +331,9 @@ async def test_vocab_patch_conflict(api: SettingsApi, backend: FakeBackend) -> N
         {"etag": "", "terms": [], "replace": []},
         {"terms": [], "replace": {}},
         {"etag": "", "terms": ["a,b"], "replace": {}},
+        {"etag": "", "terms": [""], "replace": {}},
+        {"etag": "", "terms": [], "replace": {"": "X"}},
+        {"etag": "", "terms": [], "replace": {"a\nb": "X"}},
     ],
 )
 async def test_vocab_patch_bad_body_is_422(

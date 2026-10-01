@@ -342,6 +342,8 @@ def _validate(cfg: Config) -> None:
         raise ValueError("[chunking] min_chunk_words must not exceed max_chunk_words")
     if cfg.guardrails.len_ratio_min > cfg.guardrails.len_ratio_max:
         raise ValueError("[guardrails] len_ratio_min must not exceed len_ratio_max")
+    if not isinstance(cfg.llm.url, str):
+        raise ValueError(f"[llm] url: must be a string, got {cfg.llm.url!r}")
     if urlsplit(cfg.llm.url).hostname not in _LOOPBACK_HOSTS:
         raise ValueError(f"[llm] url: must point at this machine ({', '.join(_LOOPBACK_HOSTS)})")
     if not cfg.inject.order:

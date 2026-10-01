@@ -116,6 +116,14 @@ def test_loopback_llm_urls_are_accepted(tmp_path: Path, url: str) -> None:
     assert load_config(path).llm.url == url
 
 
+@pytest.mark.parametrize("url", ["5", "[1]", "true"])
+def test_a_non_string_llm_url_is_rejected(tmp_path: Path, url: str) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(f"[llm]\nurl = {url}\n")
+    with pytest.raises(ValueError, match=r"\[llm\] url: must be a string"):
+        load_config(path)
+
+
 def test_a_non_positive_length_ratio_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("[guardrails]\nlen_ratio_min = 0\n")

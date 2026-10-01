@@ -48,6 +48,24 @@ def test_non_string_values_are_rejected(tmp_path: Path) -> None:
         load_vocab(path)
 
 
+@pytest.mark.parametrize("key", ['""', '" "', '"a\\nb"'])
+def test_an_empty_or_multiline_spoken_text_is_rejected(tmp_path: Path, key: str) -> None:
+    # An empty key matches between every character, so its replacement would
+    # be inserted all through every later dictation.
+    path = tmp_path / "vocab.toml"
+    path.write_text(f'[replace]\n{key} = "X"\n')
+    with pytest.raises(ValueError, match="replace"):
+        load_vocab(path)
+
+
+@pytest.mark.parametrize("term", ['""', '"  "', '"a\\nb"'])
+def test_an_empty_or_multiline_term_is_rejected(tmp_path: Path, term: str) -> None:
+    path = tmp_path / "vocab.toml"
+    path.write_text(f"terms = [{term}]\n")
+    with pytest.raises(ValueError, match="term"):
+        load_vocab(path)
+
+
 def test_vocab_lives_beside_config() -> None:
     assert vocab_path() == config_dir() / "vocab.toml"
 

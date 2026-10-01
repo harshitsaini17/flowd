@@ -57,10 +57,21 @@ def load_vocab(path: Path | None = None) -> Vocab:
         # that contains one, which would fail every later session, not just this.
         if "," in term:
             raise ValueError(f"vocab.toml: term {term!r} contains a comma")
+        if not term.strip():
+            raise ValueError("vocab.toml: a term must not be empty")
+        if "\n" in term or "\r" in term:
+            raise ValueError(f"vocab.toml: term {term!r} spans more than one line")
 
     replace_raw = raw.get("replace", {})
     if not isinstance(replace_raw, dict):
         raise ValueError("vocab.toml: [replace] must be a table")
     _strings(replace_raw.values(), "replace")
+    for spoken in replace_raw:
+        # An empty key matches between every character, so its text would be
+        # inserted all through every later dictation.
+        if not spoken.strip():
+            raise ValueError("vocab.toml: a [replace] key must not be empty")
+        if "\n" in spoken or "\r" in spoken:
+            raise ValueError(f"vocab.toml: [replace] key {spoken!r} spans more than one line")
 
-    return Vocab(terms=tuple(t for t in terms if t.strip()), replace=dict(replace_raw))
+    return Vocab(terms=tuple(terms), replace=dict(replace_raw))
