@@ -1948,6 +1948,23 @@ async def test_restart_daemon_requests_in_the_delay_schedule_one_restart(
     assert len(spawned) == 1
 
 
+async def test_restart_daemon_waits_for_a_dictation_that_starts_in_the_delay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _systemd(tmp_path, monkeypatch)
+    spawned = _record_spawns(monkeypatch, _FakeProc())
+    d = daemon(FakeSttEngine([]))
+    _with_tokens(d)
+    await d.restart("daemon", reset_position=False)
+    d.session = object()  # type: ignore[assignment]  # a dictation began in the delay
+    await asyncio.sleep(0.7)
+    assert spawned == []
+    d.session = None
+    await asyncio.sleep(0.35)
+    await asyncio.gather(*d._background)
+    assert len(spawned) == 1
+
+
 @pytest.mark.parametrize("result", [_FakeProc(1), OSError("no systemctl")])
 async def test_restart_daemon_failure_removes_the_tokens_and_allows_a_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, result: Any

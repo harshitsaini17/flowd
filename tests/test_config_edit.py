@@ -193,3 +193,58 @@ def test_vocab_plain_list_style_is_kept(tmp_path: Path) -> None:
     assert "terms = [" in text
     v = load_vocab(path)
     assert v.terms == ("Hyprland", "PipeWire")
+
+
+def test_save_writes_through_a_symlinked_config(tmp_path: Path) -> None:
+    """Dotfile managers link config.toml into place: the save must land in
+    the real file and leave the link a link."""
+    real = tmp_path / "dotfiles" / "config.toml"
+    real.parent.mkdir()
+    real.write_text('[hotkey]\nmode = "toggle"\n')
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+    snap = read_config(link)
+    patch_config(link, snap.etag, {"hotkey.mode": "ptt"})
+    assert link.is_symlink()
+    assert 'mode = "ptt"' in real.read_text()
+
+
+def test_vocab_save_through_a_symlink_keeps_the_link(tmp_path: Path) -> None:
+    real = tmp_path / "dotfiles" / "vocab.toml"
+    real.parent.mkdir()
+    real.write_text('[terms]\nkubectl = "kubectl"\n')
+    link = tmp_path / "vocab.toml"
+    link.symlink_to(real)
+    etag, _ = read_vocab(link)
+    write_vocab(link, etag, ["kubectl", "Hyprland"], {})
+    assert link.is_symlink()
+    assert "Hyprland" in real.read_text()
+
+
+def test_vocab_save_keeps_comments_on_their_entries(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.toml"
+    path.write_text(
+        "# my words\n"
+        "[terms]\n"
+        "# cluster tool\n"
+        'kubectl = "kubectl"  # always lower case\n'
+        'nginx = "nginx"\n'
+        "\n"
+        "# fixes\n"
+        "[replace]\n"
+        '"pie torch" = "PyTorch"  # common miss\n'
+    )
+    etag, _ = read_vocab(path)
+    write_vocab(path, etag, ["kubectl", "Hyprland"], {"pie torch": "PyTorch", "jason": "JSON"})
+    text = path.read_text()
+    assert '# cluster tool\nkubectl = "kubectl"  # always lower case\n' in text
+    assert '"pie torch" = "PyTorch"  # common miss' in text
+    assert "nginx" not in text
+    # New entries land in their own table, not after the next table's comment.
+    terms_part, replace_part = text.split("[replace]")
+    assert "Hyprland" in terms_part
+    assert "# fixes" in terms_part and terms_part.index("Hyprland") < terms_part.index("# fixes")
+    assert "jason" in replace_part
+    _, vocab = read_vocab(path)
+    assert vocab["terms"] == ["kubectl", "Hyprland"]
+    assert vocab["replace"] == {"pie torch": "PyTorch", "jason": "JSON"}

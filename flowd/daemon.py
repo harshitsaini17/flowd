@@ -690,7 +690,13 @@ class Daemon:
             json.dump({"tokens": tokens}, f)
 
     def _spawn_restart(self) -> None:
-        task = asyncio.get_running_loop().create_task(self._systemctl_restart())
+        loop = asyncio.get_running_loop()
+        if self.session is not None:
+            # A dictation began inside the delay: let it finish (and paste)
+            # rather than cut it off, then restart.
+            loop.call_later(RESTART_DELAY_S, self._spawn_restart)
+            return
+        task = loop.create_task(self._systemctl_restart())
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 

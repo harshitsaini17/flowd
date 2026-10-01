@@ -284,7 +284,14 @@ async def test_settings_opens_the_url(
     assert code == 0
     assert len(opened) == 1
     argv, kwargs = opened[0]
-    assert argv == ["xdg-open", _URL]
+    # The token must stay off the browser's command line (readable in /proc):
+    # xdg-open gets a private launcher file that forwards to the URL.
+    assert argv[0] == "xdg-open"
+    assert "token" not in argv[1]
+    launcher = Path(argv[1])
+    assert launcher.parent == tmp_path
+    assert launcher.stat().st_mode & 0o777 == 0o600
+    assert 'content="0;url=http://127.0.0.1:8178/#token=abc"' in launcher.read_text()
     assert kwargs == {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
@@ -294,6 +301,37 @@ async def test_settings_opens_the_url(
     out = capsys.readouterr().out
     assert out.strip() == "opened the settings page"
     assert "token" not in out
+
+
+def test_launcher_escapes_the_url_and_replaces_the_old_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flowctl = load_flowctl()
+    monkeypatch.setenv("FLOWD_SOCKET", str(tmp_path / "flowd.sock"))
+    first = flowctl.write_launcher("http://127.0.0.1:8178/#token=one")
+    second = flowctl.write_launcher('http://127.0.0.1:8178/#token="><b>')
+    assert first == second
+    text = Path(second).read_text()
+    assert "token=one" not in text
+    assert "<b>" not in text and "&quot;&gt;&lt;b&gt;" in text
+    assert sorted(p.name for p in tmp_path.iterdir()) == [flowctl.LAUNCHER_NAME]
+
+
+async def test_settings_prints_the_url_when_the_launcher_cannot_be_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def never(argv: list[str], **kwargs: Any) -> object:
+        raise AssertionError("xdg-open must not run without a launcher")
+
+    def full_disk(*args: Any, **kwargs: Any) -> object:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(load_flowctl().tempfile, "mkstemp", full_disk)
+    code = await _run_settings_in_process(tmp_path / "flowd.sock", monkeypatch, never)
+    assert code == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == _URL
+    assert "could not write the launcher page" in captured.err
 
 
 async def test_settings_without_xdg_open_prints_the_url(

@@ -83,6 +83,9 @@ def _check(path: Path, etag: str) -> tomlkit.TOMLDocument:
 
 
 def _atomic_write(path: Path, text: str) -> None:
+    # Write through a symlink (stow, chezmoi, home-manager): replacing the link
+    # itself would leave the real file stale and the two silently diverged.
+    path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         mode = path.stat().st_mode & 0o777
@@ -154,6 +157,36 @@ def read_vocab(path: Path) -> tuple[str, dict[str, Any]]:
     return _etag(data), {"terms": list(vocab.terms), "replace": dict(vocab.replace)}
 
 
+def _table(entries: dict[str, str]) -> Table:
+    table = tomlkit.table()
+    for key, value in entries.items():
+        table[key] = value
+    return table
+
+
+def _sync_table(table: Table, wanted: dict[str, str]) -> None:
+    """Make `table` hold exactly `wanted`, touching only entries that differ.
+
+    Entries that stay keep their place and their comments; clearing and
+    refilling the table would shift comments onto the wrong lines.
+    """
+    for key in [k for k in table if k not in wanted]:
+        del table[key]
+    for key, value in wanted.items():
+        if key in table:
+            if table[key] != value:
+                table[key] = value
+            continue
+        # A plain append lands after the trailing blank line and the comment
+        # that heads the next table; slot it in after the last entry instead.
+        last = next(reversed(list(table.keys())), None)
+        if last is None:
+            table[key] = value
+        else:
+            table.value._insert_after(last, key, value)
+            last = key
+
+
 def write_vocab(path: Path, etag: str, terms: list[str], replace: dict[str, str]) -> str:
     doc = _check(path, etag)
 
@@ -164,30 +197,16 @@ def write_vocab(path: Path, etag: str, terms: list[str], replace: dict[str, str]
         new_array = tomlkit.array()
         new_array.extend(terms)
         doc["terms"] = new_array.multiline(True) if len(terms) > 1 else new_array
+    elif isinstance(old_terms, Table):
+        _sync_table(old_terms, {term: term for term in terms})
     else:
-        new_terms = tomlkit.table()
-        for term in terms:
-            new_terms[term] = term
-        if isinstance(old_terms, Table):
-            # Keep the table's leading comments: clear the entries in place.
-            for key in list(old_terms.keys()):
-                del old_terms[key]
-            for key, value in new_terms.items():
-                old_terms[key] = value
-        else:
-            doc["terms"] = new_terms
+        doc["terms"] = _table({term: term for term in terms})
 
-    new_replace = tomlkit.table()
-    for spoken, written in replace.items():
-        new_replace[spoken] = written
     old_replace = doc.get("replace")
     if isinstance(old_replace, Table):
-        for key in list(old_replace.keys()):
-            del old_replace[key]
-        for key, value in new_replace.items():
-            old_replace[key] = value
+        _sync_table(old_replace, replace)
     else:
-        doc["replace"] = new_replace
+        doc["replace"] = _table(replace)
 
     text = tomlkit.dumps(doc)
     # Validate with the daemon's loader on a scratch copy before replacing.
