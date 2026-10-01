@@ -412,7 +412,9 @@ class Daemon:
                     log.warning("ignoring the settings page's saved tokens: %s", problem)
                     return []
                 data = json.loads(f.read(64 * 1024).decode("utf-8"))
-        except (OSError, ValueError) as exc:
+        # RecursionError: deeply nested JSON. A bad file is rejected, never
+        # fatal to startup.
+        except (OSError, ValueError, RecursionError) as exc:
             log.warning("ignoring the settings page's saved tokens: %s", exc)
             return []
         finally:
@@ -431,7 +433,8 @@ class Daemon:
             return "owned by another user"
         if info.st_mode & 0o077:
             return f"mode {stat.S_IMODE(info.st_mode):o} lets others reach it"
-        if time.time() - info.st_mtime >= SETTINGS_TOKENS_MAX_AGE_S:
+        # A future mtime is no proof of freshness either.
+        if not 0 <= time.time() - info.st_mtime < SETTINGS_TOKENS_MAX_AGE_S:
             return "too old"
         return None
 
@@ -1370,10 +1373,18 @@ class Daemon:
                 health.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await health
+            # Each step on its own, so a failing LLM client still lets both
+            # servers close.
             if self.cleanup is not None:
-                await self.cleanup.aclose()
+                try:
+                    await self.cleanup.aclose()
+                except Exception:
+                    log.exception("could not close the cleanup client")
             if self.settings_server is not None:
-                await self.settings_server.close()
+                try:
+                    await self.settings_server.close()
+                except Exception:
+                    log.exception("could not close the settings page's server")
                 self.settings_server = None
             server.close()
             await server.wait_closed()

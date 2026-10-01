@@ -257,14 +257,28 @@ async def _run_settings_in_process(sock: Path, monkeypatch: pytest.MonkeyPatch, 
     return code
 
 
+class _FakeXdgOpen:
+    """A launched `xdg-open`: exits with `code`, or is still running (None)."""
+
+    def __init__(self, code: int | None) -> None:
+        self.code = code
+        self.waited: list[float | None] = []
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waited.append(timeout)
+        if self.code is None:
+            raise subprocess.TimeoutExpired(["xdg-open"], timeout or 0)
+        return self.code
+
+
 async def test_settings_opens_the_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     opened: list[tuple[list[str], dict[str, Any]]] = []
 
-    def fake_popen(argv: list[str], **kwargs: Any) -> object:
+    def fake_popen(argv: list[str], **kwargs: Any) -> _FakeXdgOpen:
         opened.append((argv, kwargs))
-        return object()
+        return _FakeXdgOpen(0)
 
     code = await _run_settings_in_process(tmp_path / "flowd.sock", monkeypatch, fake_popen)
     assert code == 0
@@ -306,3 +320,56 @@ async def test_settings_reports_why_the_page_is_off(tmp_path: Path) -> None:
         await server.wait_closed()
     assert result.returncode == 1
     assert "port 8178 is in use" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "error",
+    [PermissionError(13, "Permission denied", "xdg-open"), OSError(8, "Exec format error")],
+)
+async def test_settings_prints_the_url_when_xdg_open_cannot_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: OSError,
+) -> None:
+    def broken(argv: list[str], **kwargs: Any) -> object:
+        raise error
+
+    code = await _run_settings_in_process(tmp_path / "flowd.sock", monkeypatch, broken)
+    assert code == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == _URL
+    assert "could not run xdg-open" in captured.err
+    assert "Traceback" not in captured.err
+
+
+async def test_settings_prints_the_url_when_xdg_open_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No browser or handler: xdg-open exits non-zero, and flowctl must not
+    claim it opened anything."""
+    proc = _FakeXdgOpen(3)
+    code = await _run_settings_in_process(
+        tmp_path / "flowd.sock", monkeypatch, lambda argv, **kw: proc
+    )
+    assert code == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == _URL
+    assert "opened" not in captured.out
+    assert "exit 3" in captured.err
+    assert proc.waited and proc.waited[0] is not None  # bounded, never a plain wait()
+
+
+async def test_settings_counts_an_xdg_open_still_running_as_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Some openers stay in the foreground with the browser; flowctl must not
+    wait for them, nor print the token."""
+    proc = _FakeXdgOpen(None)
+    code = await _run_settings_in_process(
+        tmp_path / "flowd.sock", monkeypatch, lambda argv, **kw: proc
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.strip() == "opened the settings page"
+    assert proc.waited == [load_flowctl().XDG_OPEN_WAIT_S]

@@ -2280,3 +2280,59 @@ async def test_the_health_loop_stamps_when_it_checked() -> None:
         await loop
     ago = d.daemon_status()["health_checked_s_ago"]
     assert isinstance(ago, float) and 0 <= ago < 5
+
+
+async def test_a_deeply_nested_tokens_file_is_rejected_not_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`json.loads` raises RecursionError, not ValueError, on deep nesting."""
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    path = _tokens_file(tmp_path, [])
+    path.write_text("[" * 60_000)
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    await _run_until_settings(d, tmp_path)
+    assert d.settings_tokens is not None
+    assert len(d.settings_tokens.export()) == 1
+    assert not path.exists()
+
+
+async def test_a_tokens_file_from_the_future_is_deleted_not_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    path = _tokens_file(tmp_path, ["from-the-future"])
+    later = time.time() + 3600
+    os.utime(path, (later, later))
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    await _run_until_settings(d, tmp_path)
+    assert d.settings_tokens is not None
+    assert not d.settings_tokens.valid("from-the-future")
+    assert not path.exists()
+
+
+class _FailingCleanup(_FakeCleanup):
+    async def aclose(self) -> None:
+        raise RuntimeError("client already broken")
+
+
+async def test_a_failing_cleanup_close_still_closes_both_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    d = daemon(FakeSttEngine([]), cfg=_settings_cfg())
+    d.cleanup = _FailingCleanup()  # type: ignore[assignment]
+    sock = tmp_path / "flowd.sock"
+    task = await _start_run(d, sock)
+    assert (await _settings_reply(d))["ok"] is True
+    assert d.settings_server is not None
+    port = d.settings_server.port
+    await _stop_run(task)
+    assert d.settings_server is None
+    with pytest.raises(OSError):
+        await _http_get(port, "/", None)
+    with pytest.raises(OSError):
+        await asyncio.open_unix_connection(str(sock))
+    overlay = overlay_of(d)
+    assert overlay.stopped is True

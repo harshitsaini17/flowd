@@ -41,6 +41,8 @@ USAGE = f"usage: flowctl {{{'|'.join(COMMANDS)}}} [--rewrite]"
 #: 800 ms) and injection; the earlier 2 s left no margin once the LLM joined, and
 #: a timeout here reports an error for a dictation that actually succeeded.
 REPLY_TIMEOUT_S = 5.0
+#: How long `flowctl settings` waits to see whether `xdg-open` failed.
+XDG_OPEN_WAIT_S = 2.0
 
 
 def socket_path() -> str:
@@ -124,21 +126,36 @@ def open_settings(url: str) -> int:
     """Open the settings page in the user's browser.
 
     The URL carries the user's own sign-in token, so it is printed only when
-    there is no `xdg-open` to hand it to: they need it to open the page by
-    hand. `xdg-open` runs detached, so a browser it starts outlives us.
+    `xdg-open` cannot open it: they need it to open the page by hand.
+    `xdg-open` runs detached, so a browser it starts outlives us. It usually
+    exits as soon as it has handed the URL over; one still running after
+    `XDG_OPEN_WAIT_S` is taken to be showing the page.
     """
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ["xdg-open", url],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-    except FileNotFoundError:
-        print(url)
-        return 0
+    except OSError as exc:
+        reason = "xdg-open is not installed" if isinstance(exc, FileNotFoundError) else exc
+        return _print_settings_url(url, f"could not run xdg-open ({reason})")
+    try:
+        code = proc.wait(timeout=XDG_OPEN_WAIT_S)
+    except subprocess.TimeoutExpired:
+        code = 0
+    if code != 0:
+        return _print_settings_url(url, f"xdg-open failed (exit {code})")
     print("opened the settings page")
+    return 0
+
+
+def _print_settings_url(url: str, reason: str) -> int:
+    """The fallback: say why on stderr, the URL alone on stdout."""
+    print(f"flowctl: {reason}; open this address in a browser:", file=sys.stderr)
+    print(url)
     return 0
 
 

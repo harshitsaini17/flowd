@@ -57,7 +57,10 @@ class Backend(Protocol):
         ...
 
     def daemon_status(self) -> dict[str, Any]:
-        """`{"state", "stt_model", "final_model", "cleanup"}`."""
+        """`{"state", "stt_model", "final_model", "cleanup",
+        "health_checked_s_ago"}`. `cleanup` is "disabled", "offline" or
+        "ready"; `health_checked_s_ago` is seconds since the last LLM health
+        probe, or None before the first."""
         ...
 
     def mic_test(self, seconds: float) -> AsyncIterator[tuple[float, float]]:
