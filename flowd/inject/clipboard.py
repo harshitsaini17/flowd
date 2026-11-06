@@ -197,6 +197,19 @@ class ClipboardBackend:
 
         offered = [t.strip() for t in types.splitlines() if t.strip()]
         formats = [t for t in offered if t not in _SELECTION_METADATA]
+        if self._wayland and formats == ["application/x-zerosize"]:
+            # GNOME can advertise an empty selection as this format, with a
+            # successful read of zero bytes. Verify the payload: trusting the
+            # label alone could overwrite actual non-text data. A failed read
+            # also leaves the selection unknown and must preserve it.
+            try:
+                payload = self._run(
+                    [*paste, "--type", "application/x-zerosize"], capture=True
+                ).stdout
+            except Exception as exc:
+                raise RuntimeError(f"could not read the clipboard: {exc}") from exc
+            if not payload:
+                formats = []
         if formats and not all(_is_text_format(t) for t in formats):
             # spec 9.4: never destroy an image or other non-text clipboard
             # payload. Raising hands the turn to the next backend in the order.

@@ -333,6 +333,47 @@ def test_empty_clipboard_is_not_an_error() -> None:
     assert len(copies) == 1, "no snapshot to restore, so exactly one copy"
 
 
+def test_wayland_zero_size_selection_can_paste_without_typing_fallback() -> None:
+    """GNOME can offer a successful, zero-byte selection instead of no owner.
+
+    Refusing that empty selection forces slow simulated typing and can truncate
+    long dictations when the subprocess deadline expires.
+    """
+    rec = Recorder(types=b"application/x-zerosize\n")
+
+    def runner(argv: list[str], **kwargs: Any) -> Any:
+        result = rec.run(argv, **kwargs)
+        if "--type" in argv:
+            result.stdout = b""
+        return result
+
+    backend = ClipboardBackend(runner=runner, sleep=lambda _s: None, wayland=True, gnome=False)
+    backend.inject("A complete sentence.", is_terminal=False)
+    assert ["wl-paste", "--no-newline", "--type", "application/x-zerosize"] in rec.calls
+    assert clipboard_writes(rec, wayland=True) == [b"A complete sentence."]
+    assert any(c[0] == "wtype" for c in rec.calls), "the empty selection must allow paste"
+
+
+def test_unreadable_zero_size_selection_is_not_overwritten() -> None:
+    rec = Recorder(types=b"application/x-zerosize\n", fail_on=lambda argv: "--type" in argv)
+    with pytest.raises(RuntimeError, match="could not read the clipboard"):
+        wayland_clipboard(rec).inject("new", is_terminal=False)
+    assert clipboard_writes(rec, wayland=True) == []
+
+
+@pytest.mark.parametrize(
+    "offered",
+    [b"application/x-zerosize\n", b"application/x-zerosize\nimage/png\n"],
+)
+def test_zero_size_label_does_not_excuse_nonempty_or_image_data(offered: bytes) -> None:
+    # Recorder supplies a nonempty payload if read. A label alone must never
+    # make unknown data safe to overwrite, nor mask a separately offered image.
+    rec = Recorder(types=offered)
+    with pytest.raises(RuntimeError, match="non-text"):
+        wayland_clipboard(rec).inject("new", is_terminal=False)
+    assert clipboard_writes(rec, wayland=True) == []
+
+
 def test_copy_does_not_capture_the_subprocess_output() -> None:
     """`wl-copy` and `xclip -i` fork a daemon that holds the clipboard open.
 
