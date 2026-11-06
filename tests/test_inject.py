@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from subprocess import CalledProcessError
+from subprocess import CalledProcessError, TimeoutExpired
 from typing import Any
 
 import pytest
@@ -170,6 +170,65 @@ def test_ydotool_disables_escape_processing() -> None:
     argv = rec.calls[0]
     assert "-e" in argv and argv[argv.index("-e") + 1] == "0"
     assert argv[-1] == r"C:\new\table"
+
+
+def test_ydotool_typing_fits_the_subprocess_deadline() -> None:
+    """ydotool 1.0.4 defaults need eight seconds for a 200-character batch.
+
+    The subprocess deadline is five seconds, so inheriting those defaults
+    truncates the batch and can interrupt a key before its release event.
+    """
+    rec = Recorder()
+    YdotoolBackend(runner=rec.run).inject("e" * 200, is_terminal=False)
+    argv = rec.calls[0]
+    delay = int(argv[argv.index("-d") + 1])
+    hold = int(argv[argv.index("-H") + 1])
+    assert 0 < delay <= 2
+    assert 0 < hold <= 2
+    assert 200 * (delay + hold) < 1000
+
+
+@pytest.mark.parametrize("failed_chunk", [1, 2])
+def test_timed_out_typing_releases_virtual_keys_and_stops(failed_chunk: int) -> None:
+    attempts = 0
+
+    def fail(argv: list[str]) -> bool:
+        nonlocal attempts
+        if argv[:2] != ["ydotool", "type"]:
+            return False
+        attempts += 1
+        return attempts == failed_chunk
+
+    rec = Recorder(fail_on=fail, error=lambda argv: TimeoutExpired(argv, 5))
+    with pytest.raises(RuntimeError, match="ydotool typing failed") as caught:
+        YdotoolBackend(runner=rec.run).inject("e" * 450, is_terminal=False)
+    assert isinstance(caught.value.__cause__, TimeoutExpired)
+    assert attempts == failed_chunk, "must not send the remaining text after partial failure"
+    release = rec.calls[-1]
+    assert release[:4] == ["ydotool", "key", "-d", "0"]
+    assert "18:0" in release, "release E, which repeated after a real typing timeout"
+    assert "42:0" in release and "29:0" in release, "release held modifiers as well"
+    assert all(code.endswith(":0") for code in release[4:]), "cleanup must never press a key"
+
+
+def test_failed_key_release_preserves_the_error_without_logging_dictation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rec = Recorder(fail_on=lambda argv: True, error=lambda argv: TimeoutExpired(argv, 5))
+    text = "private dictated words"
+    with pytest.raises(RuntimeError, match="ydotool typing failed") as caught:
+        YdotoolBackend(runner=rec.run).inject(text, is_terminal=False)
+    assert text not in str(caught.value)
+    assert text not in caplog.text
+    assert "could not release virtual keyboard keys" in caplog.text
+
+
+def test_successful_ydotool_typing_keeps_all_chunks_without_extra_key_events() -> None:
+    rec = Recorder()
+    text = "A complete sentence. " * 25
+    YdotoolBackend(runner=rec.run).inject(text, is_terminal=False)
+    assert "".join(argv[-1] for argv in rec.calls) == text
+    assert all(argv[:2] == ["ydotool", "type"] for argv in rec.calls)
 
 
 # --- Clipboard snapshot and restore -----------------------------------------
