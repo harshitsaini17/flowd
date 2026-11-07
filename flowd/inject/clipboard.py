@@ -81,6 +81,7 @@ class ClipboardBackend:
         have: Callable[[str], bool] = _tool_exists,
         ydotool: Callable[[], bool] = _ydotool_ready,
         gnome: bool | None = None,
+        x_display: bool | None = None,
     ) -> None:
         self._run = runner
         self._sleep = sleep
@@ -93,6 +94,23 @@ class ClipboardBackend:
             if gnome is None
             else gnome
         )
+        self._x_display = bool(os.environ.get("DISPLAY")) if x_display is None else x_display
+
+    def _xwayland_selection(self) -> bool:
+        """Use XWayland's CLIPBOARD instead of wl-clipboard on GNOME Wayland.
+
+        Mutter has no data-control protocol, so `wl-copy` and `wl-paste` reach
+        the clipboard by mapping a tiny window and waiting for it to get
+        keyboard focus. Each call moves focus away from the user's window and
+        back (four times per dictation), costs about 60 ms, and hangs until
+        the timeout when focus never comes, which is what pushed long
+        dictations onto the typing fallback. Mutter keeps the X11 and Wayland
+        clipboards in sync, so `xclip` through XWayland reads and writes the
+        same selection without a window. Measured on Ubuntu 26.04 / GNOME 50:
+        paste in 175 ms instead of 330 ms, no focus changes, same text, image
+        and empty-clipboard handling.
+        """
+        return self._wayland and self._gnome and self._x_display and self._have("xclip")
 
     def available(self) -> bool:
         # Checked per session type, not "either tool": reporting available and
@@ -123,13 +141,15 @@ class ClipboardBackend:
         `xclip` appears once because it both reads and writes; on Wayland those
         are two separate commands.
         """
+        if self._xwayland_selection():
+            return ("xclip", "ydotool")
         if self._wayland:
             return ("wl-copy", "wl-paste", "ydotool" if self._gnome else "wtype")
         return ("xclip", "xdotool")
 
     def _tools(self) -> tuple[list[str], list[str], list[str]]:
         """Return (list-types, paste, copy) argv prefixes for this session type."""
-        if self._wayland:
+        if self._wayland and not self._xwayland_selection():
             return (["wl-paste", "--list-types"], ["wl-paste", "--no-newline"], ["wl-copy"])
         return (
             ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
@@ -197,7 +217,11 @@ class ClipboardBackend:
 
         offered = [t.strip() for t in types.splitlines() if t.strip()]
         formats = [t for t in offered if t not in _SELECTION_METADATA]
-        if self._wayland and formats == ["application/x-zerosize"]:
+        if (
+            self._wayland
+            and not self._xwayland_selection()
+            and formats == ["application/x-zerosize"]
+        ):
             # GNOME can advertise an empty selection as this format, with a
             # successful read of zero bytes. Verify the payload: trusting the
             # label alone could overwrite actual non-text data. A failed read

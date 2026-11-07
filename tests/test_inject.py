@@ -96,6 +96,7 @@ def clipboard_writes(rec: Recorder, *, wayland: bool) -> list[bytes | None]:
 def wayland_clipboard(rec: Recorder, **kw: Any) -> ClipboardBackend:
     kw.setdefault("ydotool", lambda: True)
     kw.setdefault("gnome", False)
+    kw.setdefault("x_display", False)
     return ClipboardBackend(runner=rec.run, sleep=lambda _s: None, wayland=True, **kw)
 
 

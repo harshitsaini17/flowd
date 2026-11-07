@@ -118,6 +118,42 @@ def test_gnome_wayland_requires_ydotool_instead_of_wtype(tmp_path: Path, desktop
     assert "sudo apt install ydotool" in out
 
 
+# The bare command lists of Ubuntu 24.04's 0.1.8 and 26.04's 1.0.4 packages.
+YDOTOOL_0X = "printf 'Usage: ydotool <cmd> <args>\\nAvailable commands:\\n  type\\n  recorder\\n'"
+YDOTOOL_1X = "printf 'Usage: ydotool <cmd> <args>\\nAvailable commands:\\n  click\\n  type\\n  bakers\\n'"
+
+
+def fake_tool(path: str, name: str, body: str) -> None:
+    target = Path(path) / name
+    target.write_text("#!/bin/sh\n" + body + "\n")
+    target.chmod(0o755)
+
+
+def test_ydotool_0x_is_reported_with_the_upstream_pointer(tmp_path: Path) -> None:
+    """Ubuntu 24.04 packages 0.1.8: no ydotoold, no -d/-H, and exit 0 anyway."""
+    path = fake_path(tmp_path, "uv", "curl", "pw-cli", "llama-server", "apt-get")
+    fake_tool(path, "ydotool", YDOTOOL_0X)
+    out = dry_run(tmp_path, PATH=path, WAYLAND_DISPLAY="wayland-0", XDG_CURRENT_DESKTOP="GNOME")
+    assert "older than 1.0" in out
+    assert "github.com/ReimuNotMoe/ydotool" in out
+
+
+def test_ydotool_1x_is_accepted(tmp_path: Path) -> None:
+    path = fake_path(tmp_path, "uv", "curl", "pw-cli", "llama-server", "apt-get")
+    fake_tool(path, "ydotool", YDOTOOL_1X)
+    out = dry_run(tmp_path, PATH=path, WAYLAND_DISPLAY="wayland-0", XDG_CURRENT_DESKTOP="GNOME")
+    assert "older than 1.0" not in out
+
+
+def test_gnome_with_xwayland_needs_xclip(tmp_path: Path) -> None:
+    path = fake_path(tmp_path, "uv", "curl", "pw-cli", "llama-server", "ydotool", "apt-get")
+    out = dry_run(
+        tmp_path, PATH=path, WAYLAND_DISPLAY="wayland-0", DISPLAY=":0", XDG_CURRENT_DESKTOP="GNOME"
+    )
+    assert "missing: xclip" in out
+    assert "sudo apt install xclip" in out
+
+
 def test_gnome_wayland_can_install_with_only_ydotool(tmp_path: Path) -> None:
     path = fake_path(tmp_path, "uv", "curl", "pw-cli", "llama-server", "ydotool", "apt-get")
     out = dry_run(tmp_path, PATH=path, WAYLAND_DISPLAY="wayland-0", XDG_CURRENT_DESKTOP="GNOME")

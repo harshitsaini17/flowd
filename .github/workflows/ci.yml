@@ -50,3 +50,70 @@ jobs:
           cmake -S ui -B build/ui -DFLOWD_UI_CORE_ONLY=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build build/ui -j
           ctest --test-dir build/ui --output-on-failure
+
+  # The installer's Ubuntu paths, in real Ubuntu containers. `--dry-run`
+  # changes nothing, so this checks package detection and hints only: that a
+  # bare machine gets `apt install` lines (never pacman) and that GNOME
+  # Wayland asks for ydotool and xclip.
+  ubuntu-install:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["24.04", "26.04"]
+    container: ubuntu:${{ matrix.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bare machine gets apt hints
+        run: |
+          out="$(bash scripts/install.sh --dry-run)"
+          printf '%s\n' "$out"
+          grep -q 'sudo apt install' <<<"$out"
+          ! grep -q pacman <<<"$out"
+      - name: GNOME Wayland asks for ydotool and xclip
+        run: |
+          # Before ydotool is installed below, so both are reported missing.
+          ! command -v ydotool
+          out="$(WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 XDG_CURRENT_DESKTOP=ubuntu:GNOME bash scripts/install.sh --dry-run)"
+          printf '%s\n' "$out"
+          grep -q 'missing:.*ydotool' <<<"$out"
+          grep -q 'missing:.*xclip' <<<"$out"
+      - name: Packaged ydotool on this release
+        run: |
+          apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ydotool >/dev/null
+          out="$(WAYLAND_DISPLAY=wayland-0 XDG_CURRENT_DESKTOP=GNOME bash scripts/install.sh --dry-run)"
+          printf '%s\n' "$out"
+          if [ "${{ matrix.release }}" = "24.04" ]; then
+            grep -q 'older than 1.0' <<<"$out"   # 0.1.8 is reported, not accepted
+          else
+            ! grep -q 'older than 1.0' <<<"$out"
+          fi
+
+  # The full indicator and popup (not the GTK-free core) against Ubuntu
+  # 26.04's gtkmm and gtk4-layer-shell packages, plus the packaged
+  # llama-server started with the shipped unit's flags.
+  ubuntu-ui:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and runtime packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            cmake make g++ pkg-config libgtkmm-4.0-dev libgtk4-layer-shell-dev llama.cpp curl ca-certificates >/dev/null
+      - name: Build and test flowd-ui
+        run: |
+          cmake -S ui -B build/ui -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/ui -j
+          ctest --test-dir build/ui --output-on-failure
+      - name: llama-server accepts the unit's flags
+        run: |
+          flags="$(sed -n 's|^ExecStart=/usr/bin/llama-server -m ${FLOWD_MODEL} \(.*\) \\$|\1|p' systemd/flowd-llm.service)"
+          flags="$flags $(sed -n 's|^ *\(--host .*\)$|\1|p' systemd/flowd-llm.service)"
+          echo "flags: $flags"
+          # No model download in CI: an unknown flag fails argument parsing
+          # before the model is opened, a missing model fails after it.
+          set +e; out="$(llama-server -m /nonexistent.gguf $flags 2>&1)"; set -e
+          printf '%s\n' "$out" | tail -n 5
+          ! grep -qiE 'invalid argument|unknown argument|error: .*argument' <<<"$out"
