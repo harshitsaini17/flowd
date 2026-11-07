@@ -90,6 +90,9 @@ has_lib libportaudio.so || missing+=(portaudio)
 if ((GNOME_WAYLAND)); then
   # Mutter does not implement the virtual-keyboard protocol used by wtype.
   need ydotool ydotool
+  # With XWayland, flowd pastes through its X11 clipboard: Mutter has no
+  # data-control protocol, so wl-copy must map a window and wait for focus.
+  [[ -n "${DISPLAY:-}" ]] && need xclip xclip
 elif [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
   need wl-copy wl-clipboard
   command -v wtype >/dev/null 2>&1 || command -v ydotool >/dev/null 2>&1 || missing+=(wtype)
@@ -103,6 +106,19 @@ if ((${#missing[@]})); then
   if ((!DRY_RUN)); then exit 1; fi
 else
   echo "    all present"
+fi
+# ydotool 0.x (Ubuntu 24.04's package) has no ydotoold, rejects the options
+# flowd passes and still exits 0, so dictation would silently type nothing.
+# Told apart by the bare command list, which needs no daemon: 0.x offers a
+# `recorder` command that 1.x dropped. (`ydotool type --help` cannot be used:
+# 1.x connects to ydotoold before parsing it and prints only a socket error.)
+if command -v ydotool >/dev/null 2>&1; then
+  ydotool_commands="$(ydotool 2>&1 || true)"
+  if [[ "$ydotool_commands" == *recorder* ]]; then
+    echo "    ydotool is older than 1.0 (0.x); flowd needs ydotool 1.x."
+    echo "    Install it from https://github.com/ReimuNotMoe/ydotool (see Ubuntu 24.04 in README.md)"
+    if ((GNOME_WAYLAND && !DRY_RUN)); then exit 1; fi
+  fi
 fi
 if ((GNOME_WAYLAND)); then
   echo "    GNOME Wayland needs ydotoold running and /dev/uinput access."
@@ -201,6 +217,14 @@ esac
 
 # --- 5. start -----------------------------------------------------------------
 step "Starting the services"
+# llama-server exits at once if its port is taken, and systemd then restarts
+# it every 2 s forever while flowd quietly uses basic cleanup. Say so here.
+if command -v ss >/dev/null 2>&1 && ss -Hltn 'sport = :8177' 2>/dev/null | grep -q .; then
+  if ! systemctl --user is-active --quiet flowd-llm.service 2>/dev/null; then
+    echo "    warning: port 8177 is already in use; flowd-llm will not start until it is free"
+    echo "    (find the process with: ss -ltnp 'sport = :8177')"
+  fi
+fi
 run systemctl --user daemon-reload
 if [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]]; then
   # flowd types into windows, so it needs the compositor's environment.

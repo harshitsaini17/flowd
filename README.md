@@ -152,17 +152,37 @@ cmake --build /tmp/llama.cpp/build --target llama-server -j
 install -Dm755 /tmp/llama.cpp/build/bin/llama-server ~/.local/bin/llama-server
 ```
 
+On 24.04, replace the packaged ydotool 0.1.8 with 1.0.4 from source:
+
+```bash
+sudo -S -p '' apt remove ydotool
+sudo -S -p '' apt install cmake g++ git
+git clone --depth 1 --branch v1.0.4 https://github.com/ReimuNotMoe/ydotool /tmp/ydotool
+cmake -S /tmp/ydotool -B /tmp/ydotool/build -DCMAKE_BUILD_TYPE=Release -DBUILD_DOCS=OFF
+cmake --build /tmp/ydotool/build -j
+sudo -S -p '' cmake --install /tmp/ydotool/build
+```
+
+This installs `ydotool`, `ydotoold` and a `ydotool.service` user unit; then
+follow the [GNOME/Ubuntu ydotool setup](#gnome--ubuntu-ydotool-setup).
+
 The installer records the full path of `llama-server` in the user service.
 Ubuntu 25.10's packaged build predates the `-cram` option in
 `systemd/flowd-llm.service`; the installer notices and leaves it out.
 
 Install the typing tools for your **session**:
 
-- **GNOME Wayland (Ubuntu's default):** `sudo apt install wl-clipboard ydotool`, then
+- **GNOME Wayland (Ubuntu's default):** `sudo apt install wl-clipboard xclip ydotool`, then
   complete the [GNOME/Ubuntu ydotool setup](#gnome--ubuntu-ydotool-setup) below.
+  flowd pastes through XWayland's clipboard with `xclip` when `DISPLAY` is set:
+  Mutter has no clipboard protocol for tools, so `wl-copy` has to open a small
+  window and wait for focus, which is slower and can hang.
   `wtype` cannot type on GNOME because Mutter does not implement its virtual
-  keyboard protocol. flowd needs **ydotool 1.x**; older releases that package
-  0.x need an upgrade from [ydotool upstream](https://github.com/ReimuNotMoe/ydotool).
+  keyboard protocol. flowd needs **ydotool 1.x**. Ubuntu 24.04 packages 0.1.8,
+  which has no `ydotoold`, rejects flowd's options and still reports success,
+  so nothing is typed; the installer stops with a pointer when it finds it.
+  Build 1.x from [ydotool upstream](https://github.com/ReimuNotMoe/ydotool)
+  instead (see below).
 - **Other Wayland desktops:** `sudo apt install wl-clipboard wtype`. The
   compositor must implement wtype's virtual keyboard protocol; otherwise use
   ydotool as above.
@@ -594,7 +614,7 @@ systemctl --user daemon-reload
 ```
 
 On GNOME Wayland, set `[inject] order = ["clipboard", "ydotool"]` in
-`~/.config/flowd/config.toml` for immediate paste through wl-clipboard and
+`~/.config/flowd/config.toml` for immediate paste through the clipboard and
 ydotool, with direct typing as a fallback. flowd and ydotool must use the
 same `XDG_RUNTIME_DIR` (normally `/run/user/<uid>`), or the same explicit
 `YDOTOOL_SOCKET`.
