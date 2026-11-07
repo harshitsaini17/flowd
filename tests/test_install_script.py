@@ -120,7 +120,9 @@ def test_gnome_wayland_requires_ydotool_instead_of_wtype(tmp_path: Path, desktop
 
 # The bare command lists of Ubuntu 24.04's 0.1.8 and 26.04's 1.0.4 packages.
 YDOTOOL_0X = "printf 'Usage: ydotool <cmd> <args>\\nAvailable commands:\\n  type\\n  recorder\\n'"
-YDOTOOL_1X = "printf 'Usage: ydotool <cmd> <args>\\nAvailable commands:\\n  click\\n  type\\n  bakers\\n'"
+YDOTOOL_1X = (
+    "printf 'Usage: ydotool <cmd> <args>\\nAvailable commands:\\n  click\\n  type\\n  bakers\\n'"
+)
 
 
 def fake_tool(path: str, name: str, body: str) -> None:
